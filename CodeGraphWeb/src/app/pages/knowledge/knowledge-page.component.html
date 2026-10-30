@@ -161,6 +161,12 @@
             </section>
           }
 
+          @if (entry.kind === 'lesson' && entry.status === 'superseded' && entry.status_reason?.startsWith('Merged into ')) {
+            <div class="kn-actions">
+              <button class="cg-btn" type="button" (click)="unmerge()" [disabled]="busy()">Unmerge</button>
+            </div>
+          }
+
           @if (entry.status === 'active') {
             <div class="kn-actions">
               <button class="cg-btn" type="button" (click)="verify()" [disabled]="busy()">Verify</button>

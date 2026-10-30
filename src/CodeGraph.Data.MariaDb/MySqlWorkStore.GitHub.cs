@@ -67,6 +67,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<GitHubEvidenceResult> RecordGitHubEvidenceAsync(GitHubEvidenceSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("record review evidence");
         var targets = await RetryTransientAsync(() => FindEvidenceTargetsAsync(spec, ct), EvidenceAttempts, null, ct);
         var results = new List<GitHubEvidenceItemResult>();
         foreach (var itemId in targets)
@@ -396,6 +397,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<GitHubEvidenceView>> ListGitHubEvidenceAsync(Guid itemId, int limit, CancellationToken ct = default)
     {
+        await RequireDreamEntityAsync("work_items",itemId,ct);
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync<EvidenceViewRow>(new CommandDefinition(
             "SELECT id, kind, repository, pr_number, url, author_login, source, priority, review_state, location, body, attempt_id, superseded, external_id, created_at " +
@@ -409,6 +411,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<ItemView> AddItemAliasesAsync(Guid itemId, IReadOnlyList<string> aliases, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor,"add item aliases");
         // Leading zeros in the number do not make another alias: sc-0012 is sc-12.
         var normalized = aliases.Select(alias => WorkReferences.NormalizeAlias(alias) ?? alias.Trim()).Distinct().ToList();
         var invalid = normalized.Where(alias => WorkReferences.NormalizeAlias(alias) != alias).ToList();

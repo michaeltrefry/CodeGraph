@@ -19,7 +19,8 @@ namespace CodeGraph.Api.Controllers;
 [ApiController]
 [Authorize(AuthenticationSchemes = CodeGraphAuthenticationDefaults.Scheme + "," + McpPatAuthenticationDefaults.Scheme)]
 [Route("api/work")]
-public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<WorkController> logger) : ControllerBase
+public sealed partial class WorkController(IWorkService work, IMcpHubStore hub, ILogger<WorkController> logger,
+    IAuthorizationService authorization) : ControllerBase
 {
     /// <summary>create_work.</summary>
     [HttpPost]
@@ -64,6 +65,12 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
     /// <summary>lessons (S9): the view and its filters as the body.</summary>
     [HttpPost("knowledge/lessons")]
     public Task<IActionResult> Lessons() => RunBodyAsync(WorkTools.Lessons);
+
+    [HttpPost("knowledge/dream-proposals")]
+    public Task<IActionResult> DreamPropose() => RunBodyAsync(WorkTools.DreamPropose);
+
+    [HttpPost("knowledge/dream-proposals/{id}/review")]
+    public Task<IActionResult> DreamReview(string id) => RunWithPathIdAsync(WorkTools.DreamReview, "id", id);
 
     /// <summary>review_queue (S9): project, limit, cursor and session_id as query parameters.</summary>
     [HttpGet("knowledge/review-queue")]
@@ -347,6 +354,13 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
 
     private async Task<IActionResult> RunAsync(string tool, JsonElement arguments)
     {
+        // Settings reads remain available to the project view. Every REST write goes through
+        // this seam; PATs have already passed the same explicit entitlement check used by MCP.
+        if (tool == WorkTools.DreamSettings && arguments.TryGetProperty("settings", out _) &&
+            !User.Identities.Any(identity => identity.IsAuthenticated && identity.AuthenticationType == McpPatAuthenticationDefaults.Scheme) &&
+            !(await authorization.AuthorizeAsync(User, null, CodeGraphAuthenticationDefaults.AdminPolicy)).Succeeded)
+            return Refuse(new WorkException(WorkErrorCodes.Forbidden, "Changing global dreaming settings requires administrator access."));
+
         try
         {
             var result = await work.ExecuteAsync(tool, arguments, WorkService.ActorFor(User), HttpContext.RequestAborted);
@@ -370,6 +384,7 @@ public sealed class WorkController(IWorkService work, IMcpHubStore hub, ILogger<
 
     public static int StatusFor(string code) => code switch
     {
+        WorkErrorCodes.Forbidden => StatusCodes.Status403Forbidden,
         WorkErrorCodes.InvalidArgument => StatusCodes.Status400BadRequest,
         WorkErrorCodes.NotFound => StatusCodes.Status404NotFound,
         WorkErrorCodes.Conflict or WorkErrorCodes.AlreadyClaimed or WorkErrorCodes.Cycle or WorkErrorCodes.ClaimLost => StatusCodes.Status409Conflict,

@@ -62,6 +62,7 @@ public sealed partial class MySqlWorkStore
     public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "StartSessionAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using var messageLock = new MessageLockScope(connection, transaction);
@@ -104,6 +105,7 @@ public sealed partial class MySqlWorkStore
     public Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "TouchSessionAsync");
             var now = Now();
             var row = await RequireOwnSessionAsync(connection, null, sessionId, actor, ct);
             if (row.EndedAt is { } ended)
@@ -134,6 +136,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<SessionView?> GetSessionAsync(Guid sessionId, CancellationToken ct = default)
     {
+        await RequireDreamEntityAsync("work_sessions",sessionId,ct);
         await using var connection = await OpenAsync(ct);
         var row = await ReadSessionRowAsync(connection, null, sessionId, ct);
         return row is null ? null : ToView(row, Now());
@@ -141,6 +144,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var now = Now();
         var rows = await connection.QueryAsync<SessionRow>(new CommandDefinition(
@@ -157,6 +161,7 @@ public sealed partial class MySqlWorkStore
         var owners = (await connection.QueryAsync<Guid>(new CommandDefinition(
             "SELECT project_id FROM work_project_repositories WHERE repository_name = @repository AND role = 'owned'",
             new { repository }, cancellationToken: ct))).ToList();
+        foreach(var owner in owners)DreamPolicy.RequireCurrentProject(owner);
         return owners.Count == 1 ? owners[0] : null;
     }
 
@@ -504,6 +509,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<BriefingView> ReadBriefingAsync(Guid sessionId, Guid? focusItemId, CancellationToken ct = default)
     {
+        await RequireDreamEntityAsync("work_sessions",sessionId,ct); if(focusItemId is {} focusScopeId)await RequireDreamEntityAsync("work_items",focusScopeId,ct);
         await using var connection = await OpenAsync(ct);
         var now = Now();
         var session = await ReadSessionRowAsync(connection, null, sessionId, ct)

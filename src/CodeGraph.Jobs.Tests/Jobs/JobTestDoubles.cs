@@ -40,6 +40,7 @@ internal sealed class RecordingAdminService : IAdminService
 {
     public DiscoverRequest? LastDiscoverRequest { get; private set; }
     public DiscoverResponse NextDiscoverResponse { get; set; } = new(0, 0, 0, 0, 0, []);
+    public int DreamProjectsCalls { get; private set; }
     public int ReIndexAllCalls { get; private set; }
     public int DetectCommunitiesCalls { get; private set; }
     public int LinkAndDetectCalls { get; private set; }
@@ -79,6 +80,7 @@ internal sealed class RecordingIndexerClient : IIndexerClient
 {
     public DiscoverRequest? LastDiscoverRequest { get; private set; }
     public string? LastBatchRepo { get; private set; }
+    public int DreamProjectsCalls { get; private set; }
     public int ReIndexAllCalls { get; private set; }
     public int DetectCommunitiesCalls { get; private set; }
     public int LinkAndDetectCalls { get; private set; }
@@ -88,6 +90,14 @@ internal sealed class RecordingIndexerClient : IIndexerClient
     private readonly HashSet<string> _publishedSubmissionKeys = new(StringComparer.Ordinal);
     public IndexerAcceptedResponse NextAcceptedResponse { get; set; } =
         new("queued", "Queued indexer run.", 99, "/api/indexer/runs/99");
+
+    public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        RecordSubmission(submissionKey);
+        DreamProjectsCalls++;
+        return Task.FromResult(NextAcceptedResponse);
+    }
 
     public Task<IndexerAcceptedResponse> StartReAnalyzeRepositoryAsync(
         string username,

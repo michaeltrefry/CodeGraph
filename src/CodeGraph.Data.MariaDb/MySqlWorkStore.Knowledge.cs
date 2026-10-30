@@ -51,7 +51,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         "FROM knowledge_entries e JOIN work_projects p ON p.id = e.project_id " +
         "LEFT JOIN work_items wi ON wi.id = e.item_id LEFT JOIN work_features wf ON wf.id = e.feature_id";
 
-    private sealed class KnowledgeEntryRow
+    private sealed record KnowledgeEntryRow
     {
         public Guid Id { get; init; }
         public Guid ProjectId { get; init; }
@@ -127,6 +127,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<ProjectView> UpdateProjectAsync(Guid projectId, long expectedVersion, ProjectPatchSpec patch, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor, "UpdateProjectAsync");
         var result = await UpdateProjectCoreAsync(projectId, expectedVersion, patch, actor, ct);
         await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
         return result;
@@ -134,6 +135,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<FeatureView> UpdateFeatureAsync(Guid featureId, long expectedVersion, FeaturePatchSpec patch, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor, "UpdateFeatureAsync");
         var result = await UpdateFeatureCoreAsync(featureId, expectedVersion, patch, actor, ct);
         await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
         return result;
@@ -141,6 +143,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<ItemView> UpdateItemAsync(Guid itemId, long expectedVersion, ItemPatchSpec patch, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor, "UpdateItemAsync");
         var result = await UpdateItemCoreAsync(itemId, expectedVersion, patch, actor, ct);
         await AdoptPendingAsync(IdsOf(patch.Knowledge), ct);
         return result;
@@ -148,6 +151,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<EndSessionResult> EndSessionAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor, "EndSessionAsync");
         var result = await EndSessionCoreAsync(sessionId, itemId, handoff, knowledge, actor, ct);
         await AdoptPendingAsync(IdsOf(knowledge), ct);
         return result;
@@ -155,6 +159,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<RecordResult> RecordKnowledgeAsync(Guid projectId, KnowledgeSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default)
     {
+        RequireDreamRecord(actor, projectId, spec);
         var result = await RecordKnowledgeCoreAsync(projectId, spec, actor, keyHash, ct);
         if (!result.Created)
             return result;
@@ -166,6 +171,14 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     private async Task<KnowledgeView> ChangeKnowledgeAsync(Guid entryId, long expectedVersion, string action, WorkActor actor,
         Func<MySqlConnection, MySqlTransaction, KnowledgeEntryRow, DateTime, Task> change, CancellationToken ct)
     {
+        if(DreamExecutionScope.Current is not null)DreamPolicy.RequireScope(actor);
+        if (DreamPolicy.IsDreamer(actor))
+        {
+            var current = await GetKnowledgeAsync(entryId, false, ct) ?? throw WorkException.NotFound("No such dreamer knowledge entry.");
+            DreamPolicy.RequireProject(actor, current.ProjectId);
+            DreamPolicy.RequireWrite(actor, action);
+            if (action == "retracted") DreamPolicy.Refuse(actor, "retract knowledge");
+        }
         var view = await ChangeKnowledgeCoreAsync(entryId, expectedVersion, action, actor, change, ct);
         await AdoptPendingAsync([entryId], ct);
         return await GetKnowledgeAsync(entryId, withRevisions: false, ct) ?? view;
@@ -174,6 +187,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     public async Task<ImportKnowledgeResult> ImportKnowledgeAsync(Guid projectId, IReadOnlyList<ImportCandidateSpec> candidates, string previewToken,
         IReadOnlyList<int>? accept, string? keyHash, WorkActor actor, CancellationToken ct = default)
     {
+        DreamPolicy.Refuse(actor, "ImportKnowledgeAsync");
         var result = await ImportKnowledgeCoreAsync(projectId, candidates, previewToken, accept, keyHash, actor, ct);
         if (result.Stored)
             await AdoptPendingAsync(result.Candidates.Select(candidate => candidate.Entry?.Id).OfType<Guid>(), ct);
@@ -196,6 +210,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 return new RecordResult(false, earlier);
             }
 
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [spec.Id], ct);
             var outcome = await InsertKnowledgeAsync(connection, transaction, project, [spec], null, null, null, actor, now, ct);
             // A lesson merged into an existing one (same_as, or an exact normalized match) stores no new entry.
             var effective = outcome.EntryOf(spec.Id);
@@ -206,6 +221,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             KnowledgeRow? superseded = null;
             if (outcome.Superseded is { } old)
                 superseded = ToRow((await ReadKnowledgeRowAsync(connection, transaction, old, ct))!);
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "record", ct);
             await transaction.CommitAsync(ct);
             var merged = outcome.Merged.Contains(spec.Id);
             return new RecordResult(!merged, view, superseded, merged ? true : null);
@@ -241,6 +257,8 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             if (spec.Kind == KnowledgeKind.Lesson && spec.Supersedes is null &&
                 await LessonMergeTargetAsync(connection, transaction, project, spec, ct) is { } target)
             {
+                if (actor.Kind == WorkActor.SystemKind && actor.Name == "dreamer")
+                    throw WorkException.Invalid("This lesson already exists. Read it and use a reversible relation instead of implicit capture merging.");
                 await AddLessonEventAsync(connection, transaction, project, target, spec, linkedItem, actor, now, ct);
                 merged[spec.Id] = target;
                 continue;
@@ -344,6 +362,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     // scope and file baselines replaced by <paramref name="state"/>, within the caller's transaction.
     private async Task ApplyRevisionAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, KnowledgeEntryRow before, KnowledgeSpec state, DateTime now, CancellationToken ct)
         {
+            await RequireDreamRevisionAsync(connection, transaction, entryId, state, ct);
             var project = (await ReadProjectRowAsync(connection, transaction, before.ProjectId, ct))!;
             var (repositories, nodes) = await ResolveScopeAsync(connection, transaction, project, state.Repositories ?? [], state.Nodes, ct);
             await connection.ExecuteAsync(new CommandDefinition(
@@ -354,11 +373,13 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                     summary = state.Summary, summaryHash = KnowledgePaths.HashSummary(state.Summary), body = state.Body, details = DetailsJson(state.Details),
                     confidence = JsonName(state.Confidence), madeAutonomously = state.MadeAutonomously, activities = Activities(state.Details),
                     sourceKind = state.Details?.Source is { } source ? JsonName(source.Kind) : null,
-                    commit = state.Commit ?? await IndexedCommitAsync(connection, transaction, repositories, nodes, ct), now, id = entryId
+                    commit = DreamExecutionScope.Current is null ? state.Commit ?? await IndexedCommitAsync(connection, transaction, repositories, nodes, ct) : before.VerifiedCommit,
+                    now = DreamExecutionScope.Current is null ? now : before.VerifiedAt, id = entryId
                 },
                 transaction, cancellationToken: ct));
             await WriteScopeAsync(connection, transaction, entryId, repositories, state.Paths, nodes, ct);
-            await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories, state.Paths, nodes, ct);
+            if (DreamExecutionScope.Current is null)
+                await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories, state.Paths, nodes, ct);
             // A lesson given an applies-when activity may now be a rule (prompt source, or recurrence).
             if (before.Kind == "lesson")
                 await PromoteIfDueAsync(connection, transaction, entryId, now, promptEvent: false, ct);
@@ -377,12 +398,36 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             var paths = await ReadEntryPathsAsync(connection, transaction, [entryId], ct);
             var nodes = await ReadEntryNodesAsync(connection, transaction, [entryId], ct);
             var nodeRefs = nodes.Select(node => new NodeRef(node.NodeId, node.RepositoryName, node.QualifiedName, node.FilePath)).ToList();
+            if (DreamPolicy.IsDreamer(actor))
+            {
+                nodeRefs = await ResolveDreamVerificationNodesAsync(connection, transaction, before.ProjectId, nodes, ct);
+                await WriteScopeAsync(connection, transaction, entryId, repositories, paths.Select(path => path.Path).ToList(), nodeRefs, ct);
+            }
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE knowledge_entries SET verified_commit = @commit, verified_at = @now WHERE id = @id",
                 new { commit = commit ?? await IndexedCommitAsync(connection, transaction, repositories, nodeRefs, ct), now, id = entryId },
                 transaction, cancellationToken: ct));
             await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories,
                 paths.Select(path => path.Path).ToList(), nodeRefs, ct);
+            // Validate the dependencies just resolved from the CURRENT scope. A refusal rolls
+            // these tentative baselines back with the whole transaction. Old baselines alone
+            // would let an applies_when location change authorize unread files.
+            if (DreamPolicy.IsDreamer(actor))
+            {
+                DreamPolicy.RequireVerification(actor, (await LoadKnowledgeViewAsync(connection, transaction, entryId, false, ct))!);
+                // Locking reads see the current committed index, even if earlier reads in this
+                // transaction established an older repeatable-read snapshot. Hold the index rows
+                // through commit so a successful proof cannot race a newly indexed revision.
+                var files = await connection.QueryAsync<(string RepositoryName, string Path, string? BaselineHash, string? IndexedHash)>(new CommandDefinition(
+                    "SELECT k.repository_name,k.path,k.content_hash AS baseline_hash,h.content_hash AS indexed_hash FROM knowledge_entry_files k LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE k.entry_id=@entryId LOCK IN SHARE MODE",
+                    new { entryId }, transaction, cancellationToken: ct));
+                foreach (var file in files)
+                {
+                    var readHash = DreamExecutionScope.Current!.ReadFileHash(file.RepositoryName, file.Path);
+                    if (readHash is null || !string.Equals(readHash, file.IndexedHash, StringComparison.OrdinalIgnoreCase) || !string.Equals(readHash, file.BaselineHash, StringComparison.OrdinalIgnoreCase))
+                        throw new WorkException(WorkErrorCodes.Forbidden, "The source read no longer matches the indexed file being verified. Read the current source again; nothing was changed.");
+                }
+            }
         }, ct);
 
     // A change of an existing entry: the versioned advance, the entry must be active, the change, a
@@ -393,9 +438,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            await connection.ExecuteAsync(new CommandDefinition("SELECT id FROM knowledge_entries WHERE id=@entryId FOR UPDATE", new { entryId }, transaction, cancellationToken: ct));
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
             await change(connection, transaction, before, now);
             await InsertRevisionAsync(connection, transaction, entryId, before.Revision, action, actor, now, ct);
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, action, ct);
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
             await transaction.CommitAsync(ct);
             return view;
@@ -437,12 +485,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     {
         var snapshot = await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct);
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO knowledge_revisions (entry_id, revision, action, snapshot_json, author, author_kind, author_session_id, created_at) " +
-            "VALUES (@entryId, @revision, @action, @snapshot, @author, @authorKind, @session, @now)",
+            "INSERT INTO knowledge_revisions (entry_id, revision, action, snapshot_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
+            "VALUES (@entryId, @revision, @action, @snapshot, @author, @authorKind, @session, @harness, @model, @host, @now)",
             new
             {
                 entryId, revision, action, snapshot = JsonSerializer.Serialize(snapshot, WorkJson.Options),
-                author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, now
+                author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
     }
@@ -528,7 +576,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 "SELECT repository_name FROM work_project_repositories WHERE project_id = @projectId", new { projectId }, transaction, cancellationToken: ct))).ToArray();
 
         var lookups = concrete.SelectMany(path => targets.Select(repository => (repository, path)))
-            .Concat(nodes.Where(node => node.FilePath is not null).Select(node => (repository: node.Repository, path: node.FilePath!)))
+            .Concat(nodes.Where(node => !string.IsNullOrWhiteSpace(node.FilePath)).Select(node => (repository: node.Repository, path: node.FilePath!)))
             .Distinct()
             .ToList();
         if (lookups.Count > 0)
@@ -621,11 +669,11 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         IReadOnlyList<KnowledgeRevisionView>? revisions = null;
         if (withRevisions)
         {
-            revisions = (await connection.QueryAsync<(int Revision, string Action, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt)>(new CommandDefinition(
-                    "SELECT revision, action, author, author_kind, author_session_id, created_at FROM knowledge_revisions WHERE entry_id = @entryId ORDER BY revision DESC",
+            revisions = (await connection.QueryAsync<(int Revision, string Action, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt, string? Harness, string? Model, string? Host)>(new CommandDefinition(
+                    "SELECT r.revision,r.action,r.author,r.author_kind,r.author_session_id,r.created_at,COALESCE(r.author_harness,s.harness),COALESCE(r.author_model,s.model),COALESCE(r.author_host,s.host) FROM knowledge_revisions r LEFT JOIN work_sessions s ON s.id=r.author_session_id WHERE r.entry_id=@entryId ORDER BY r.revision DESC",
                     new { entryId }, transaction, cancellationToken: ct)))
                 .Select(revision => new KnowledgeRevisionView(revision.Revision, revision.Action,
-                    new WorkActor(revision.Author, revision.AuthorKind, revision.AuthorSessionId), Utc(revision.CreatedAt)))
+                    new WorkActor(revision.Author, revision.AuthorKind, revision.AuthorSessionId, revision.Harness, revision.Model, revision.Host), Utc(revision.CreatedAt)))
                 .ToList();
         }
 
@@ -675,7 +723,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     public async Task<KnowledgeView?> GetKnowledgeAsync(Guid entryId, bool withRevisions, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await LoadKnowledgeViewAsync(connection, null, entryId, withRevisions, ct);
+        var view=await LoadKnowledgeViewAsync(connection, null, entryId, withRevisions, ct);
+        if(view is not null) DreamPolicy.RequireCurrentProject(view.ProjectId);
+        return view;
     }
 
     public async Task<IReadOnlyList<KnowledgeRow>> GetKnowledgeRowsAsync(IReadOnlyList<Guid> entryIds, CancellationToken ct = default)
@@ -691,6 +741,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         var rows = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.id IN @ids", new { ids = ids.Concat(mergedInto.Values).Distinct().ToArray() }, cancellationToken: ct)))
             .ToDictionary(row => row.Id);
+        foreach(var row in rows.Values) DreamPolicy.RequireCurrentProject(row.ProjectId);
         var answered = new List<KnowledgeRow>();
         foreach (var id in entryIds)
         {
@@ -705,6 +756,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<RecallPage> RecallAsync(RecallSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(spec.ProjectId);
         // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines).
         await using var connection = await OpenAsync(ct);
 
@@ -851,6 +903,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
 
     public async Task<IReadOnlyList<KnowledgeRow>> ReadRelevantKnowledgeAsync(KnowledgeContext context, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(context.ProjectId);
         // Reads write nothing: baselines are adopted at index time (KnowledgeBaselines). Each tier is
         // its own query, filtered in SQL, so a matching entry is never crowded out by newer unrelated ones.
         await using var connection = await OpenAsync(ct);

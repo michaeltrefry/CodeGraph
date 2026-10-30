@@ -60,6 +60,14 @@ export const routes: Routes = [
         loadComponent: () => import('./pages/knowledge/lessons-page.component').then(m => m.LessonsPageComponent)
       },
       {
+        path: 'dreaming',
+        loadComponent: () => import('./pages/dreaming/dreaming-page.component').then(m => m.DreamingPageComponent)
+      },
+      {
+        path: 'work/projects/:key/dreaming',
+        loadComponent: () => import('./pages/dreaming/dreaming-page.component').then(m => m.DreamingPageComponent)
+      },
+      {
         path: 'review-queue',
         loadComponent: () => import('./pages/knowledge/review-queue-page.component').then(m => m.ReviewQueuePageComponent)
       },

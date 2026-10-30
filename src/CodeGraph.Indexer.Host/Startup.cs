@@ -19,6 +19,10 @@ using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Indexer.Host.Services;
 using CodeGraph.Services;
 using CodeGraph.Services.Analyzers;
+using CodeGraph.Services.Assistant;
+using CodeGraph.Services.Embeddings;
+using CodeGraph.Services.Query;
+using CodeGraph.Services.Work;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.DatabaseSchema;
 using CodeGraph.Services.Extractors;
@@ -152,6 +156,17 @@ public static class Startup
         services.AddScoped<IAnalysisModelProvider, LmStudioAnalysisProvider>();
         services.AddScoped<IAnalysisProviderRegistry, AnalysisProviderRegistry>();
         services.AddTransient<IAgentPromptService, AgentPromptService>();
+        // Dreaming is executed here, after the Jobs host submits a durable indexer run.
+        services.AddTransient<GraphQueryEngine>();
+        services.AddTransient<GraphAssistant>();
+        services.AddScoped<IAssistantDebugCapture, AssistantDebugCapture>();
+        services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
+        services.AddTransient<IWorkService, WorkService>();
+        services.AddTransient<IDreamingService, DreamingService>();
+        services.AddTransient<IDreamBatchModel>(sp => sp.GetRequiredService<GraphAssistant>());
+        services.AddTransient<IDreamSourceReader, DreamSourceReader>();
+        services.AddTransient<IKnowledgeDreamActions>(sp => (IKnowledgeDreamActions)sp.GetRequiredService<IWorkService>());
+
         services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();
         services.AddTransient<IBatchAnalysisService, BatchAnalysisService>();
         services.AddTransient<IRepositoryService, RepositoryService>();

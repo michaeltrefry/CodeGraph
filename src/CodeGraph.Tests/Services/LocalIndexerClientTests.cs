@@ -17,12 +17,14 @@ public class LocalIndexerClientTests
         await client.StartReIndexAllAsync("codegraph-jobs", "job-key-1");
         await client.StartDiscoverAsync("codegraph-jobs", new DiscoverRequest(), "job-key-2");
         await client.StartProcessBatchAnalysisAsync("codegraph-jobs", "Repo", "job-key-3");
+        await client.StartDreamProjectsAsync("codegraph-jobs", "job-key-4");
         await client.GetRunAsync("codegraph-jobs", 42);
 
         operations.Calls.ShouldBe([
             "reindex:job-key-1",
             "discover:job-key-2",
             "batch:Repo:job-key-3",
+            "dream:job-key-4",
             "run:42"
         ]);
     }
@@ -36,6 +38,9 @@ public class LocalIndexerClientTests
             Calls.Add(call);
             return Task.FromResult(new IndexerAcceptedResponse("accepted", RunId: 1));
         }
+
+        public Task<IndexerAcceptedResponse> StartDreamProjectsAsync(string username, string? submissionKey, CancellationToken ct = default)
+            => Record($"dream:{submissionKey}");
 
         public Task<IndexerAcceptedResponse> StartReIndexAllAsync(string username, string? submissionKey, CancellationToken ct = default)
             => Record($"reindex:{submissionKey}");

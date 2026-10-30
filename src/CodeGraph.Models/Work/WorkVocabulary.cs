@@ -100,6 +100,7 @@ public enum FeatureStatus
 /// </summary>
 public static class WorkErrorCodes
 {
+    public const string Forbidden = "forbidden";
     public const string NotFound = "not_found";
     public const string Conflict = "conflict";
     public const string AlreadyClaimed = "already_claimed";

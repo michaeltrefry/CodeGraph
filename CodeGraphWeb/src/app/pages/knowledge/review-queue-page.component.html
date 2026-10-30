@@ -78,7 +78,36 @@
           <p class="cg-small cg-muted">{{ item.more_challenges }} more open challenges; resolve these first.</p>
         }
 
+        @if (item.proposal; as proposal) {
+          <div class="kn-challenge">
+            <p><strong>{{ words(proposal.action) }}</strong> · target version {{ proposal.target_version }}</p>
+            <p>{{ proposal.rationale }}</p>
+            <p>{{ proposal.prevalence }}</p>
+            <p class="cg-small">Run <span class="cg-mono">{{ proposal.run_id }}</span></p>
+            <ul>
+              @for (ev of proposal.evidence; track $index) {
+                <li>{{ words(ev.kind) }} · <span class="cg-mono">{{ ev.id }}</span> · {{ ev.observed_at | date: 'medium' }}</li>
+              }
+            </ul>
+            @if (proposal.other) { <p>Merge destination: <span class="cg-mono">{{ proposal.other }}</span> · version {{ proposal.other_version }}</p> }
+            @if (proposal.replacement; as replacement) {
+              <p><strong>Replacement:</strong> {{ replacement.summary }}</p>
+              @if (replacement.body) { <pre>{{ replacement.body }}</pre> }
+            }
+            @if (proposal.draft) {
+              <p>Accepting records this draft. Apply it outside CodeGraph.</p>
+              <pre>{{ proposal.draft }}</pre>
+            }
+            <p class="cg-small">The target keeps serving, with any stale flag and open challenges, until the action is accepted.</p>
+          </div>
+        }
         @switch (item.kind) {
+          @case ('dream_proposal') {
+            <div class="kn-actions">
+              <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Accept</button>
+              <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
+            </div>
+          }
           @case ('proposed_rule') {
             <div class="kn-actions">
               <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Approve</button>

@@ -28,11 +28,14 @@ public sealed partial class MySqlWorkStore
 
     private const string NotAddressed = "NOT EXISTS (SELECT 1 FROM lesson_addressed_by ab WHERE ab.entry_id = e.id)";
 
-    private sealed class EventRow
+    private sealed record EventRow
     {
         public Guid CorrectionId { get; init; }
         public Guid EntryId { get; init; }
         public string EventHash { get; init; } = "";
+        public string? AppliesWhenJson { get; init; }
+        public string EventKey { get; init; } = "";
+        public int? ArrivalRevision { get; init; }
         public bool Counted { get; init; }
         public bool RuleAtEvent { get; init; }
         public bool? Served { get; init; }
@@ -189,19 +192,30 @@ public sealed partial class MySqlWorkStore
             new { target, hash = Sha(key), prefixLike = EscapeLike(sessionPrefix ?? "") + "%", none = sessionPrefix + "none" }, transaction, cancellationToken: ct));
     }
 
+    // Shared by normal event replay and lesson-to-lesson transfers: a session's item:none
+    // correction covers any of its items in either direction, exactly as EventSeenAsync.
+    private static bool LessonEventSeen(string key, string hash, ISet<string> hashes, ISet<string> keys)
+    {
+        if (hashes.Contains(hash)) return true;
+        var at = key.LastIndexOf(":item:", StringComparison.Ordinal);
+        if (!key.StartsWith("session:", StringComparison.Ordinal) || at < 0) return false;
+        var prefix = key[..(at + 6)];
+        return key == prefix + "none" ? keys.Any(k => k.StartsWith(prefix, StringComparison.Ordinal)) : keys.Contains(prefix + "none");
+    }
+
     private static Task InsertEventAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid entryId, KnowledgeSpec spec,
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, " +
-            "summary, summary_hash, what, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
-            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @item, @session, @author, @authorKind, " +
+            "summary, summary_hash, what, applies_when_json, arrival_revision, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
+            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @appliesWhen, (SELECT revision + IF(@correction = @entryId, 0, 1) FROM knowledge_entries WHERE id = @entryId), @item, @session, @author, @authorKind, " +
             "@harness, @model, @host, @now)",
             new
             {
                 correction = spec.Id, entryId, projectId, key = key.Length > 600 ? key[..600] : key, hash = Sha(key), counted, ruleAtEvent, served,
                 sourceKind = spec.Details?.Source is { } source ? JsonName(source.Kind) : null, sourceRef = spec.Details?.Source?.Ref,
                 sourceRefKey = SourceRefKey(spec.Details?.Source?.Ref),
-                summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, item,
+                summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, appliesWhen = AppliesWhenJson(spec.Details?.AppliesWhen), item,
                 session = actor.SessionId, author = actor.Name, authorKind = actor.Kind, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
@@ -303,13 +317,16 @@ public sealed partial class MySqlWorkStore
             }
         }
 
-        var targetEvents = (await ReadEventsAsync(connection, transaction, [to], ct))[to].Where(row => row.Counted).Select(row => row.EventHash).ToHashSet();
+        var targetEvents = (await ReadEventsAsync(connection, transaction, [to], ct))[to].Where(row => row.Counted).ToList();
+        var hashes = targetEvents.Select(row => row.EventHash).ToHashSet();
+        var keys = targetEvents.Select(row => row.EventKey).ToHashSet();
         foreach (var moved in (await ReadEventsAsync(connection, transaction, [from.Id], ct))[from.Id])
         {
-            var counted = moved.Counted && targetEvents.Add(moved.EventHash);
+            var counted = moved.Counted && !LessonEventSeen(moved.EventKey, moved.EventHash, hashes, keys);
+            if (counted) { hashes.Add(moved.EventHash); keys.Add(moved.EventKey); }
             await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE lesson_events SET entry_id = @to, counted = @counted WHERE correction_id = @correction",
-                new { to, counted, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
+                "UPDATE lesson_events SET entry_id = @to, counted = @counted, arrival_revision = @arrival WHERE correction_id = @correction",
+                new { to, counted, arrival = target.Revision + 1, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
         }
 
         var links = (await ReadContradictionsAsync(connection, transaction, [from.Id], activeOnly: false, ct))[from.Id].Where(link => link.Id != to).ToList();
@@ -370,9 +387,9 @@ public sealed partial class MySqlWorkStore
 
     private static Task LinkContradictionAsync(MySqlConnection connection, MySqlTransaction transaction, Guid a, Guid b, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
-            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) VALUES " +
-            "(@a, @b, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now), (@b, @a, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now)",
-            new { a, b, author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now },
+            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at, assertion_id) VALUES " +
+            "(@a, @b, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now, @assertion), (@b, @a, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now, @assertion) ON DUPLICATE KEY UPDATE assertion_id = @assertion",
+            new { a, b, assertion = Guid.NewGuid(), author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now },
             transaction, cancellationToken: ct));
 
     // ---- Lesson views ---------------------------------------------------------------------------
@@ -393,7 +410,7 @@ public sealed partial class MySqlWorkStore
         entryIds.Count == 0
             ? Array.Empty<EventRow>().ToLookup(row => row.EntryId)
             : (await connection.QueryAsync<EventRow>(new CommandDefinition(
-                "SELECT correction_id, entry_id, event_hash, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
+                "SELECT correction_id, entry_id, event_hash, event_key, arrival_revision, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
                 "FROM lesson_events WHERE entry_id IN @ids ORDER BY created_at, correction_id",
                 new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct))).ToLookup(row => row.EntryId);
 
@@ -479,6 +496,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<SimilarLessons>> FindSimilarLessonsAsync(Guid projectId, IReadOnlyList<Guid> entryIds, LessonEmbedder? embedder, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         if (entryIds.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
@@ -622,6 +640,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<BriefingRule>> ReadRulesAsync(RuleContext context, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(context.ProjectId);
         if (context.Activities.Count == 0)
             return [];
         await using var connection = await OpenAsync(ct);
@@ -725,6 +744,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<LessonActivity>> ReadRuleActivitiesAsync(Guid projectId, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var lists = await connection.QueryAsync<string>(new CommandDefinition(
             $"SELECT DISTINCT e.activities FROM knowledge_entries e WHERE {ActiveRule} AND NOT {AddressedEverywhere} AND e.activities IS NOT NULL",
@@ -735,6 +755,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task LogServedRulesAsync(Guid sessionId, Guid projectId, IReadOnlyList<Guid> ruleIds, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("log served rules");
         if (ruleIds.Count == 0)
             return;
         var now = Now();
@@ -747,6 +768,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task SetSessionBriefingContextAsync(Guid sessionId, IReadOnlyList<LessonActivity>? activity, IReadOnlyList<string>? skills, CancellationToken ct = default)
     {
+        DreamPolicy.RefuseAmbient("set session briefing context");
         if (activity is null && skills is null)
             return;
         await using var connection = await OpenAsync(ct);
@@ -774,55 +796,74 @@ public sealed partial class MySqlWorkStore
 
     // ---- record relate / acknowledge ----------------------------------------------------------------
 
+    public const string LessonMergeLockName = "codegraph_lesson_merges";
+
     public Task<KnowledgeView> RelateLessonAsync(Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, CancellationToken ct = default) =>
-        RunAsync([], async connection =>
+        RunAsync([LessonMergeLockName], async connection =>
         {
-            var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
-            var other = sameAs ?? contradicts ?? throw WorkException.Invalid("relate needs same_as or contradicts. Nothing was changed.");
-            if (other == entryId)
-                throw WorkException.Invalid("A lesson cannot be related to itself. Nothing was changed.");
-            var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
-                "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
-                ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
-            var project = await HoldProjectAsync(connection, transaction, projectId, ct);
-            // Both rows, in id order.
-            await connection.ExecuteAsync(new CommandDefinition(
-                "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
-                new { ids = new[] { entryId.ToString(), other.ToString() } }, transaction, cancellationToken: ct));
-
-            var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
-            if (before.Kind != "lesson")
-                throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
-            var target = await RequireLessonAsync(connection, transaction, project.Id, other, sameAs is not null ? "relate.same_as" : "relate.contradicts", ct);
-
-            if (contradicts is not null)
-            {
-                await LinkContradictionAsync(connection, transaction, entryId, other, actor, now, ct);
-                await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "contradicted", actor, now, ct);
-                await BumpLessonAsync(connection, transaction, target, "contradicted", actor, now, ct);
-                var linked = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
-                await transaction.CommitAsync(ct);
-                return linked;
-            }
-
-            // same_as: the lesson is merged into the target and superseded by it; its corrections,
-            // links, open challenges, applies-when and rule status pass to the target.
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @target, status_reason = @reason WHERE id = @entryId",
-                new { target = other, reason = $"Merged into {other}: the same lesson.", entryId }, transaction, cancellationToken: ct));
-            await TransferLessonAsync(connection, transaction, before, other, actor, now, uniteAppliesWhen: true, ct);
-
-            await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
-            await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
-            var view = (await LoadKnowledgeViewAsync(connection, transaction, other, withRevisions: false, ct))!;
+            var result = await RelateLessonCoreAsync(connection, transaction, entryId, expectedVersion, sameAs, contradicts, actor, Now(), ct);
             await transaction.CommitAsync(ct);
-            return view;
+            return result;
         }, ct);
+
+    private async Task<KnowledgeView> RelateLessonCoreAsync(MySqlConnection connection, MySqlTransaction transaction,
+        Guid entryId, long expectedVersion, Guid? sameAs, Guid? contradicts, WorkActor actor, DateTime now, CancellationToken ct)
+    {
+        var other = sameAs ?? contradicts ?? throw WorkException.Invalid("relate needs same_as or contradicts. Nothing was changed.");
+        if (other == entryId)
+            throw WorkException.Invalid("A lesson cannot be related to itself. Nothing was changed.");
+        var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
+            "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
+            ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+        DreamPolicy.RequireProject(actor, projectId);
+        DreamPolicy.RequireWrite(actor, sameAs is not null ? "same_as" : "contradicts");
+        var project = await HoldProjectAsync(connection, transaction, projectId, ct);
+        // Both rows, in id order.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
+            new { ids = new[] { entryId.ToString(), other.ToString() } }, transaction, cancellationToken: ct));
+
+        var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId, other], ct);
+        var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
+        if (before.Kind != "lesson")
+            throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
+        var target = await RequireLessonAsync(connection, transaction, project.Id, other, sameAs is not null ? "relate.same_as" : "relate.contradicts", ct);
+
+        if (sameAs is not null && DreamPolicy.IsDreamer(actor) && (before.Priority == "highest" || target.Priority == "highest"))
+            throw new WorkException("forbidden", "The dreamer may not merge a prompt-sourced lesson; propose the merge or open a challenge. Nothing was changed.");
+
+        if (contradicts is not null)
+        {
+            await LinkContradictionAsync(connection, transaction, entryId, other, actor, now, ct);
+            await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "contradicted", actor, now, ct);
+            await BumpLessonAsync(connection, transaction, target, "contradicted", actor, now, ct);
+            var linked = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "contradicts", ct);
+            return linked;
+        }
+
+        var merge = await CaptureLessonMergeAsync(connection, transaction, before, target, ct);
+
+        // same_as: the lesson is merged into the target and superseded by it; its corrections,
+        // links, open challenges, applies-when and rule status pass to the target.
+        await connection.ExecuteAsync(new CommandDefinition(
+            "UPDATE knowledge_entries SET status = 'superseded', superseded_by_id = @target, status_reason = @reason WHERE id = @entryId",
+            new { target = other, reason = $"Merged into {other}: the same lesson.", entryId }, transaction, cancellationToken: ct));
+        await TransferLessonAsync(connection, transaction, before, other, actor, now, uniteAppliesWhen: true, ct);
+
+        await SaveLessonMergeAsync(connection, transaction, merge, before.Version, actor, now, ct);
+        await InsertRevisionAsync(connection, transaction, entryId, before.Revision, "merged", actor, now, ct);
+        await BumpLessonAsync(connection, transaction, target, "merged_into", actor, now, ct);
+        var view = (await LoadKnowledgeViewAsync(connection, transaction, other, withRevisions: false, ct))!;
+        await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "same_as", ct);
+        return view;
+    }
 
     public Task<KnowledgeView> AcknowledgeKnowledgeAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default) =>
         ChangeKnowledgeAsync(entryId, expectedVersion, "acknowledged", actor, async (connection, transaction, before, now) =>
         {
+            DreamPolicy.Refuse(actor, "acknowledge decisions");
             if (before.Kind != "decision" || before.MadeAutonomously != true)
                 throw WorkException.Invalid($"Entry {entryId} is not a decision made autonomously; only those are in the review queue to acknowledge. Nothing was changed.");
             var reviewed = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(
@@ -844,8 +885,15 @@ public sealed partial class MySqlWorkStore
             var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
                 "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
                 ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+            DreamPolicy.RequireProject(actor, projectId);
+            DreamPolicy.RequireWrite(actor, "promote propose");
+            if (DreamPolicy.IsDreamer(actor) && (action != PromoteAction.Propose || addressedBy is not null))
+                throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may only propose rule status.");
             await HoldProjectAsync(connection, transaction, projectId, ct);
             var row = await RequireLessonAsync(connection, transaction, projectId, entryId, "id", ct);
+            if (DreamPolicy.IsDreamer(actor) && row.DetailsJson is { } details && JsonSerializer.Deserialize<KnowledgeDetails>(details, WorkJson.Options)?.Source?.Kind == CorrectionSourceKind.Prompt)
+                throw new WorkException(WorkErrorCodes.Forbidden, "A prompt lesson can only be challenged by the dreamer.");
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var state = row.RuleState is { } stored ? ParseName<LessonRuleState>(stored) : LessonRuleState.Candidate;
 
             // A call that would change nothing answers the lesson (a retry is safe), whatever version it read.
@@ -927,6 +975,7 @@ public sealed partial class MySqlWorkStore
                 _ => "addressed_by"
             }, actor, now, ct);
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "propose", ct);
             await transaction.CommitAsync(ct);
             return new PromoteResult(view, true);
         }, ct);
@@ -941,6 +990,8 @@ public sealed partial class MySqlWorkStore
             var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
                 "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
                 ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+            DreamPolicy.RequireProject(actor, projectId);
+            DreamPolicy.RequireWrite(actor, "open challenge");
             await HoldProjectAsync(connection, transaction, projectId, ct);
             if (keyHash is not null && await FindKeyAsync(connection, transaction, projectId, ChallengeOperation, keyHash, ct) is { EntityId: { } existing })
             {
@@ -954,6 +1005,7 @@ public sealed partial class MySqlWorkStore
             if (!row.IsRule)
                 throw WorkException.Invalid($"Lesson {entryId} is not a rule ({row.RuleState}): challenge disputes an active rule. A lesson that is not a rule is not served; retract or revise it instead. Nothing was changed.");
 
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO lesson_challenges (id, entry_id, project_id, status, reason, evidence_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
@@ -969,6 +1021,7 @@ public sealed partial class MySqlWorkStore
             // The rule stays active and unchanged: the challenge is shown with it.
             var challenge = (await ReadChallengeRowAsync(connection, transaction, id, ct))!;
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "challenge", ct);
             await transaction.CommitAsync(ct);
             return new ChallengeResult(true, ToView(challenge), view);
         }, ct);
@@ -976,6 +1029,7 @@ public sealed partial class MySqlWorkStore
     public Task<ChallengeResult> ResolveChallengeAsync(Guid challengeId, long expectedVersion, ChallengeOutcome outcome, string reason, KnowledgeSpec? amended, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "resolve challenges");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var found = await ReadChallengeRowAsync(connection, transaction, challengeId, ct)
@@ -1031,7 +1085,11 @@ public sealed partial class MySqlWorkStore
     public async Task<ChallengeView?> GetChallengeAsync(Guid challengeId, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        return await ReadChallengeRowAsync(connection, null, challengeId, ct) is { } row ? ToView(row) : null;
+        var row=await ReadChallengeRowAsync(connection,null,challengeId,ct);
+        if(row is null)return null;
+        var entry=await ReadKnowledgeRowAsync(connection,null,row.EntryId,ct);
+        if(entry is not null)DreamPolicy.RequireCurrentProject(entry.ProjectId);
+        return ToView(row);
     }
 
     // ---- lessons (the Lessons page's data) --------------------------------------------------------
@@ -1043,6 +1101,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<LessonsPage> ReadLessonsAsync(LessonsSpec spec, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(spec.ProjectId);
         if (spec.View == LessonsView.UnlearnedReviews)
             return await ReadUnlearnedReviewsAsync(spec, ct);
         await using var connection = await OpenAsync(ct);
@@ -1170,16 +1229,20 @@ public sealed partial class MySqlWorkStore
     // ---- review queue ------------------------------------------------------------------------------
 
     private const int MaxReviewCandidates = 500;
+    // Interactive views keep their existing candidate bound. A dream's immutable read snapshot
+    // must enumerate the complete queue before applying its own bounded pages.
+    private static string ReviewCandidateLimit => DreamExecutionScope.Current is null ? $" LIMIT {MaxReviewCandidates}" : "";
 
     public async Task<ReviewQueuePage> ReadReviewQueueAsync(Guid projectId, int offset, int limit, CancellationToken ct = default)
     {
+        DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var items = new List<ReviewItem>();
 
         // Open challenges of active rules, one item per rule (deduplicated).
         var challenged = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND " +
-            $"EXISTS (SELECT 1 FROM lesson_challenges c WHERE c.entry_id = e.id AND c.status = 'open') ORDER BY e.id LIMIT {MaxReviewCandidates}",
+            $"EXISTS (SELECT 1 FROM lesson_challenges c WHERE c.entry_id = e.id AND c.status = 'open') ORDER BY e.id{ReviewCandidateLimit}",
             new { projectId }, cancellationToken: ct))).ToList();
         var challenges = await ReadChallengesAsync(connection, null, challenged.Select(row => row.Id).ToList(), openOnly: true, ct);
         foreach (var row in challenged)
@@ -1193,14 +1256,14 @@ public sealed partial class MySqlWorkStore
         // Lessons proposed for rule status.
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'lesson' AND e.rule_state = 'proposed' " +
-            $"ORDER BY e.id LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
+            $"ORDER BY e.id{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
             items.Add(new ReviewItem(ReviewKinds.ProposedRule, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, Utc(row.UpdatedAt), Author: AuthorOf(row)));
 
         // Contradicting lessons, both active: one item per pair.
         var pairs = (await connection.QueryAsync<(Guid EntryId, Guid OtherId, DateTime CreatedAt)>(new CommandDefinition(
             "SELECT l.entry_id, l.other_id, l.created_at FROM lesson_links l JOIN knowledge_entries a ON a.id = l.entry_id JOIN knowledge_entries b ON b.id = l.other_id " +
             "WHERE a.project_id = @projectId AND l.relation = 'contradicts' AND l.entry_id < l.other_id AND a.status = 'active' AND b.status = 'active' " +
-            $"ORDER BY l.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct))).ToList();
+            $"ORDER BY l.created_at{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct))).ToList();
         if (pairs.Count > 0)
         {
             var linked = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
@@ -1221,8 +1284,10 @@ public sealed partial class MySqlWorkStore
         // Decisions an agent made on its own, not yet acknowledged (and not overturned).
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'decision' AND e.made_autonomously = 1 " +
-            $"AND e.reviewed_at IS NULL ORDER BY e.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
+            $"AND e.reviewed_at IS NULL ORDER BY e.created_at{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
             items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt), Author: AuthorOf(row)));
+
+        await AddDreamProposalQueueAsync(connection, projectId, items, ct);
 
         // Ranked by priority, then recurrence, then the oldest first.
         var ranked = items

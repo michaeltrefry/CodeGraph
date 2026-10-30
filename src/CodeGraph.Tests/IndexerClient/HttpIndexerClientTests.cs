@@ -14,6 +14,20 @@ namespace CodeGraph.Tests.IndexerClient;
 public class HttpIndexerClientTests
 {
     [Fact]
+    public async Task StartDreamProjects_PostsWithIdentityAndDurableSubmissionKey()
+    {
+        var accepted = new IndexerAcceptedResponse("queued", "Queued.", 42, "/api/indexer/runs/42");
+        var handler = new RecordingHandler(accepted);
+        var response = await CreateClient(handler).StartDreamProjectsAsync("codegraph-jobs", "dream-42");
+        response.ShouldBe(accepted);
+        var request = handler.Requests.ShouldHaveSingleItem();
+        request.Method.ShouldBe(HttpMethod.Post);
+        request.RequestUri!.ToString().ShouldBe("http://indexer.local/api/indexer/dream-projects");
+        request.Headers.Contains(CodeGraphInternalServiceAuthenticationDefaults.HeaderName).ShouldBeTrue();
+        request.Headers.GetValues("Idempotency-Key").Single().ShouldBe("dream-42");
+    }
+
+    [Fact]
     public void AddCodeGraphIndexerClient_DisablesHiddenTransportTimeout()
     {
         var services = new ServiceCollection();

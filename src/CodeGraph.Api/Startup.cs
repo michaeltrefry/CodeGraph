@@ -203,6 +203,10 @@ public static class Startup
         // Work tracking (agent coordination S1). IWorkStore is registered with the MariaDB
         // provider only; without it the work tools answer a plain server error.
         services.AddTransient<IWorkService, WorkService>();
+        services.AddTransient<IDreamingService, DreamingService>();
+        services.AddTransient<IDreamBatchModel>(sp => sp.GetRequiredService<GraphAssistant>());
+        services.AddTransient<IDreamSourceReader, DreamSourceReader>();
+        services.AddTransient<IKnowledgeDreamActions>(sp => (IKnowledgeDreamActions)sp.GetRequiredService<IWorkService>());
         // Overlap warnings (S8): what a touched file reaches in the graph is cached for a minute
         // across calls (one cache per process); the detector uses the impact analysis service.
         services.AddSingleton<CodeGraph.Services.Work.OverlapImpactCache>();

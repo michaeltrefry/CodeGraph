@@ -19,7 +19,7 @@ public sealed class WorkImportRestTests
     public async Task An_admins_personal_access_token_cannot_approve_settings_or_start_runs()
     {
         await using var host = await HostAsync();
-        var token = await host.CreateTokenAsync("owner");
+        var token = await host.CreateTokenAsync("admin");
         var settings = JsonSerializer.Serialize(new { holding_project_key = "SCIMPORT", teams = Array.Empty<object>(), approve = true });
 
         (await host.SendAsync(HttpMethod.Put, "/api/work/imports/shortcut/settings", settings, token: token)).Status.ShouldBeOneOf(401, 403);
@@ -28,8 +28,8 @@ public sealed class WorkImportRestTests
         (await host.SendAsync(HttpMethod.Get, $"/api/work/imports/runs/{Guid.NewGuid()}", token: token)).Status.ShouldBeOneOf(401, 403);
 
         // Signed in on the web, the same routes are reached (here without the MariaDB store: 503).
-        (await host.SendAsync(HttpMethod.Put, "/api/work/imports/shortcut/settings", settings, person: "owner")).Status.ShouldBe(503);
-        (await host.SendAsync(HttpMethod.Post, "/api/work/imports/shortcut/runs", """{"mode":"dry_run"}""", person: "owner")).Status.ShouldBe(503);
+        (await host.SendAsync(HttpMethod.Put, "/api/work/imports/shortcut/settings", settings, person: "admin")).Status.ShouldBe(503);
+        (await host.SendAsync(HttpMethod.Post, "/api/work/imports/shortcut/runs", """{"mode":"dry_run"}""", person: "admin")).Status.ShouldBe(503);
     }
 
     [Fact]

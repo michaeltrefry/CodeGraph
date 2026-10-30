@@ -5,12 +5,14 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using CodeGraph.Api.Auth;
 using CodeGraph.Api.Controllers;
+using CodeGraph.Api.Middleware;
 using CodeGraph.Data;
 using CodeGraph.Mcp.Hub;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Work;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.TestHost;
@@ -18,6 +20,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Server;
 
 namespace CodeGraph.Tests.Work;
 
@@ -25,7 +28,8 @@ namespace CodeGraph.Tests.Work;
 /// The REST surface of the work tools as a client reaches it: a test server running the real
 /// routing, the real <see cref="WorkController"/> with its [Authorize] schemes and the real personal
 /// access token authentication handler over in-memory token and hub stores. Only the web sign-in
-/// scheme is a stand-in (a request with <c>X-Test-User</c> is that signed-in person).
+/// scheme is a stand-in (a request with <c>X-Test-User</c> is that signed-in person; <c>admin</c>
+/// carries an admin claim). The admin authorization requirement is the production handler.
 /// </summary>
 internal sealed class WorkRestHost : IAsyncDisposable
 {
@@ -48,7 +52,7 @@ internal sealed class WorkRestHost : IAsyncDisposable
     /// <summary>A handler that sends requests into the test server (for clients such as cg).</summary>
     public HttpMessageHandler CreateHandler() => host.GetTestServer().CreateHandler();
 
-    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null)
+    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null, Action<IServiceCollection>? configureServices = null, bool enableMcp = false)
     {
         var hub = new InMemoryMcpHubStore();
         await new McpHubCatalogSeeder(hub, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
@@ -63,6 +67,9 @@ internal sealed class WorkRestHost : IAsyncDisposable
                 {
                     services.AddLogging();
                     services.AddSingleton(work);
+                    services.Configure<AuthOptions>(options => options.Enabled = true);
+                    services.AddSingleton<IAuthorizationHandler, AdminAuthorizationHandler>();
+                    configureServices?.Invoke(services);
                     if (store is not null)
                         services.AddSingleton(store);
                     services.AddSingleton<IMcpHubStore>(hub);
@@ -75,19 +82,42 @@ internal sealed class WorkRestHost : IAsyncDisposable
                         })
                         .AddScheme<AuthenticationSchemeOptions, SignedInPersonHandler>(CodeGraphAuthenticationDefaults.Scheme, _ => { })
                         .AddScheme<AuthenticationSchemeOptions, McpPatAuthenticationHandler>(McpPatAuthenticationDefaults.Scheme, _ => { });
-                    // The admin policy as Startup registers it (web scheme only); every signed-in test person is an admin here.
-                    services.AddAuthorization(options => options.AddPolicy(CodeGraphAuthenticationDefaults.AdminPolicy, policy =>
+                    services.AddAuthorization(options =>
                     {
-                        policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
-                        policy.RequireAuthenticatedUser();
-                    }));
+                        options.AddPolicy(CodeGraphAuthenticationDefaults.UserPolicy, policy =>
+                        {
+                            policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
+                            policy.RequireAuthenticatedUser();
+                        });
+                        options.AddPolicy(CodeGraphAuthenticationDefaults.AdminPolicy, policy =>
+                        {
+                            policy.AuthenticationSchemes.Add(CodeGraphAuthenticationDefaults.Scheme);
+                            policy.RequireAuthenticatedUser();
+                            policy.AddRequirements(new AdminAuthorizationRequirement());
+                        });
+                        options.AddPolicy(McpPatAuthenticationDefaults.Policy, policy =>
+                        {
+                            policy.AuthenticationSchemes.Add(McpPatAuthenticationDefaults.Scheme);
+                            policy.RequireAuthenticatedUser();
+                        });
+                    });
+                    if (enableMcp)
+                    {
+                        services.Configure<McpOptions>(options => options.RequirePersonalAccessToken = true);
+                        services.AddMcpServer().WithHttpTransport().WithTools(WorkMcpTool.CreateAll());
+                    }
                 })
                 .Configure(app =>
                 {
                     app.UseRouting();
                     app.UseAuthentication();
                     app.UseAuthorization();
-                    app.UseEndpoints(endpoints => endpoints.MapControllers());
+                    if (enableMcp) app.UseMiddleware<McpToolEntitlementMiddleware>();
+                    app.UseEndpoints(endpoints =>
+                    {
+                        endpoints.MapControllers();
+                        if (enableMcp) endpoints.MapMcp("/mcp").RequireAuthorization(McpPatAuthenticationDefaults.Policy);
+                    });
                 }))
             .StartAsync();
         return new WorkRestHost(started, hub, tokenService);
@@ -155,8 +185,9 @@ internal sealed class WorkRestHost : IAsyncDisposable
             if (!Request.Headers.TryGetValue("X-Test-User", out var user))
                 return Task.FromResult(AuthenticateResult.NoResult());
 
-            var identity = new ClaimsIdentity(
-                [new Claim("preferred_username", user.ToString()), new Claim(ClaimTypes.Name, user.ToString())], Scheme.Name);
+            var claims = new List<Claim> { new("preferred_username", user.ToString()), new(ClaimTypes.Name, user.ToString()) };
+            if (user == "admin") claims.Add(new Claim("codegraph_admin", "true"));
+            var identity = new ClaimsIdentity(claims, Scheme.Name);
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(identity), Scheme.Name)));
         }
     }

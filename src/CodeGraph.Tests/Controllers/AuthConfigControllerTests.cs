@@ -61,6 +61,22 @@ public class AuthConfigControllerTests
         response.IsAdmin.ShouldBeTrue();
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task GetCurrentUser_ReturnsEffectiveAdminPolicyForBothAuthenticationModes(bool enabled, bool isAdmin)
+    {
+        var controller = CreateController(new AuthOptions { Enabled = enabled },
+            [new Claim("preferred_username", "current-user")], isAdmin);
+
+        var result = await controller.GetCurrentUser();
+
+        result.Result.ShouldBeOfType<OkObjectResult>().Value.ShouldBeOfType<CurrentUserResponse>()
+            .IsAdmin.ShouldBe(isAdmin);
+    }
+
     [Fact]
     public async Task GetCurrentUser_ReturnsUnauthorized_WhenNoSupportedUsernameClaimExists()
     {

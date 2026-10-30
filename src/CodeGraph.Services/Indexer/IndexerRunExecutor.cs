@@ -3,6 +3,8 @@ using CodeGraph.Data;
 using CodeGraph.Models.Requests;
 using CodeGraph.Services.DatabaseSchema;
 using CodeGraph.Services.Overlays;
+using CodeGraph.Services.Work;
+using CodeGraph.Models.Work;
 
 namespace CodeGraph.Services.Indexer;
 
@@ -11,7 +13,9 @@ public sealed class IndexerRunExecutor(
     IDatabaseSchemaExtractor databaseSchemaExtractor,
     IAdminService adminService,
     IRepositoryService repositoryService,
-    IBranchOverlayService? branchOverlayService = null)
+    IBranchOverlayService? branchOverlayService = null,
+    IDreamingStore? dreamingStore = null,
+    IDreamingService? dreamingService = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
@@ -22,6 +26,48 @@ public sealed class IndexerRunExecutor(
 
         switch (run.Operation)
         {
+            case IndexerRunOperations.DreamProjects:
+            {
+                var store = dreamingStore ?? throw new InvalidOperationException("Dreaming is not available in this indexer host.");
+                var service = dreamingService ?? throw new InvalidOperationException("Dreaming is not available in this indexer host.");
+                var projects = await store.ListProjectIdsAsync(ct);
+                var initiator = new WorkActor(run.RequestedByUsername ?? "unknown",
+                    run.RequestedByUsername == "codegraph-jobs" ? WorkActor.SystemKind : WorkActor.UserKind);
+                var failures = new List<Exception>();
+                foreach (var projectId in projects)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var dreamRun = await service.RunAsync(projectId, "schedule", initiator, ct);
+                        switch (dreamRun.Status)
+                        {
+                            case "completed":
+                            case "skipped":
+                            case "budget_exhausted":
+                                break;
+                            case "failed":
+                                failures.Add(new InvalidOperationException(
+                                    $"Dreaming run {dreamRun.Id} failed for project {projectId}: {dreamRun.Reason ?? "See the run report."}"));
+                                break;
+                            default:
+                                failures.Add(new InvalidOperationException(
+                                    $"Dreaming run {dreamRun.Id} for project {projectId} returned unexpected status '{dreamRun.Status}'."));
+                                break;
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch (Exception ex)
+                    {
+                        // One failing project must not prevent the rest from receiving their nightly trigger.
+                        failures.Add(new InvalidOperationException($"Dreaming failed for project {projectId}.", ex));
+                    }
+                }
+                if (failures.Count > 0)
+                    throw new AggregateException($"Dreaming visited {projects.Count} projects; {failures.Count} failed.", failures);
+                return $"Completed dreaming sweep for {projects.Count} projects.";
+            }
+
             case IndexerRunOperations.ReAnalyze:
             {
                 var args = DeserializeArgs<ReAnalyzeIndexerRunArgs>(run.ArgsJson);

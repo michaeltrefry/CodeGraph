@@ -230,7 +230,7 @@ public sealed partial class WorkService
 
     // ---- lessons and review_queue (data for the Lessons page and the review queue) ------------------
 
-    private async Task<object> LessonsAsync(LessonsRequest request, SessionView? session, CancellationToken ct)
+    private async Task<object> LessonsAsync(LessonsRequest request, SessionView? session, CancellationToken ct, bool completeDreamSnapshot = false)
     {
         var project = await KnowledgeProjectAsync(request.Project, session, ct);
         var limit = request.Limit ?? LessonLimits.DefaultLimit;
@@ -247,7 +247,7 @@ public sealed partial class WorkService
         if (request.View == LessonsView.UnlearnedReviews && request.Source is not (null or CorrectionSourceKind.Review or CorrectionSourceKind.BotReview))
             throw WorkException.Invalid("With view unlearned_reviews, source is review (human reviews) or bot_review.");
 
-        var page = await Knowledge.ReadLessonsAsync(new LessonsSpec(project.Id, request.View, request.Activity, request.Source, since, offset, limit), ct);
+        var page = await Knowledge.ReadLessonsAsync(new LessonsSpec(project.Id, request.View, request.Activity, request.Source, since, offset, completeDreamSnapshot ? int.MaxValue - 1 : limit), ct);
         var next = page.More ? EncodeCursor(LessonsCursorKind, (offset + limit).ToString(CultureInfo.InvariantCulture)) : null;
         if (request.View == LessonsView.UnlearnedReviews)
             return new LessonsResult(request.View, NextCursor: next, Reviews: page.Reviews ?? []);
@@ -264,14 +264,14 @@ public sealed partial class WorkService
         return new LessonsResult(request.View, Groups: groups, NextCursor: next);
     }
 
-    private async Task<object> ReviewQueueAsync(ReviewQueueRequest request, SessionView? session, CancellationToken ct)
+    private async Task<object> ReviewQueueAsync(ReviewQueueRequest request, SessionView? session, CancellationToken ct, bool completeDreamSnapshot = false)
     {
         var project = await KnowledgeProjectAsync(request.Project, session, ct);
         var limit = request.Limit ?? LessonLimits.DefaultLimit;
         if (limit is < 1 or > LessonLimits.MaxLimit)
             throw WorkException.Invalid($"limit must be 1 to {LessonLimits.MaxLimit}.");
         var offset = request.Cursor is { } cursor ? DecodeOffset(cursor, ReviewCursorKind, "review_queue") : 0;
-        var page = await Knowledge.ReadReviewQueueAsync(project.Id, offset, limit, ct);
+        var page = await Knowledge.ReadReviewQueueAsync(project.Id, offset, completeDreamSnapshot ? int.MaxValue - 1 : limit, ct);
         return new ReviewQueueResult(page.Items, page.More ? EncodeCursor(ReviewCursorKind, (offset + limit).ToString(CultureInfo.InvariantCulture)) : null);
     }
 
