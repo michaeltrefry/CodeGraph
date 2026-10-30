@@ -84,7 +84,7 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
         },
         diagnostics,
     };
-    const nodes = buildWorkspacePackageNodes(workspacePackages);
+    const nodes = buildWorkspacePackageNodes(workspacePackages, ctx);
     const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages);
     const resolvedImports = [];
     const unresolvedImports = [];
@@ -322,7 +322,7 @@ function addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot) {
         }
     }
 }
-function buildWorkspacePackageNodes(packages) {
+function buildWorkspacePackageNodes(packages, ctx) {
     return packages.map(pkg => ({
         label: 'Module',
         name: pkg.name,
@@ -332,12 +332,133 @@ function buildWorkspacePackageNodes(packages) {
         endLine: 0,
         properties: {
             module_kind: 'typescript_workspace_package',
+            package_name: pkg.name,
+            package_entrypoints: packageEntryPoints(pkg, ctx),
             workspace_kind: pkg.kind,
             root_path: pkg.relativeRoot,
             ...(pkg.packageJsonPath ? { package_json_path: pkg.packageJsonPath } : {}),
             ...(pkg.tsconfigPath ? { tsconfig_path: pkg.tsconfigPath } : {}),
         },
     }));
+}
+/** Public package entry identities, resolved only against already admitted ASTs. No dist or
+ * node_modules reads are needed. An explicit compiler rootDir/outDir mapping can prove where a
+ * manifest's generated JS entry originates; missing/alternative targets remain visible. */
+function packageEntryPoints(pkg, ctx) {
+    if (!pkg.packageJsonPath)
+        return [];
+    const manifest = readJsonFile(path.join(ctx.rootPath, pkg.packageJsonPath));
+    if (!manifest || typeof manifest.name !== 'string' || manifest.name !== pkg.name)
+        return [];
+    const entries = new Map();
+    const runtimeTargets = (value) => {
+        if (typeof value === 'string')
+            return [value];
+        if (Array.isArray(value))
+            return value.flatMap(runtimeTargets);
+        if (!value || typeof value !== 'object')
+            return [];
+        return Object.entries(value).filter(([condition]) => condition !== 'types').flatMap(([, target]) => runtimeTargets(target));
+    };
+    if (manifest.exports !== undefined) {
+        const exports = manifest.exports;
+        if (exports && typeof exports === 'object' && !Array.isArray(exports) && Object.keys(exports).some(key => key.startsWith('.'))) {
+            for (const [subpath, target] of Object.entries(exports))
+                if (subpath === '.' || subpath.startsWith('./'))
+                    entries.set(subpath, runtimeTargets(target));
+        }
+        else
+            entries.set('.', runtimeTargets(exports));
+    }
+    else {
+        const targets = [manifest.source, manifest.module, manifest.main].filter((value) => typeof value === 'string');
+        entries.set('.', targets.length ? targets : ['./index']);
+    }
+    const config = ctx.tsconfigs.find(config => config.relativePath === pkg.tsconfigPath);
+    const emittedPath = (source, output) => {
+        if (!config?.options.rootDir || !isInside(normalizeAbsolute(config.options.rootDir), source))
+            return undefined;
+        const jsx = /\.[jt]sx$/.test(source);
+        if (jsx && config.options.jsx === undefined)
+            return undefined;
+        const extension = jsx && config.options.jsx === ts.JsxEmit.Preserve ? '.jsx' : '.js';
+        return normalizeAbsolute(path.join(output, path.relative(config.options.rootDir, source))).replace(/\.[jt]sx?$/, extension);
+    };
+    const sourceCandidates = (absolute) => {
+        if (ctx.sourceFilesByPath.has(absolute))
+            return [absolute];
+        const candidates = [];
+        if (!path.extname(absolute))
+            candidates.push(...['.ts', '.tsx', '.js', '.jsx'].map(extension => absolute + extension), ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(index => path.join(absolute, index)));
+        if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.outDir), absolute)) {
+            const stem = normalizeAbsolute(path.join(config.options.rootDir, path.relative(config.options.outDir, absolute))).replace(/\.[jt]sx?$/, '');
+            for (const extension of ['.ts', '.tsx', '.js', '.jsx']) {
+                const source = stem + extension;
+                if (emittedPath(source, config.options.outDir) === absolute)
+                    candidates.push(source);
+            }
+        }
+        return [...new Set(candidates)].filter(candidate => isInside(ctx.rootPath, candidate) && ctx.sourceFilesByPath.has(candidate));
+    };
+    const result = [];
+    for (const [subpath, targets] of entries) {
+        const importPath = subpath === '.' ? pkg.name : `${pkg.name}${subpath.slice(1)}`;
+        if (!targets.length) {
+            result.push({ import_path: importPath });
+            continue;
+        }
+        const distinctTargets = [...new Set(targets)];
+        const wildcardTargets = new Map();
+        for (const target of distinctTargets) {
+            if (!target.startsWith('./') && manifest.exports !== undefined) {
+                result.push({ import_path: importPath });
+                continue;
+            }
+            const absolute = normalizeAbsolute(path.join(pkg.rootPath, target));
+            if (!isInside(pkg.rootPath, absolute)) {
+                result.push({ import_path: importPath });
+                continue;
+            }
+            if (subpath.includes('*') || target.includes('*')) {
+                // Expand a single public wildcard from the admitted source universe, never a filesystem glob.
+                if (subpath.split('*').length !== 2 || target.split('*').length !== 2) {
+                    result.push({ import_path: importPath });
+                    continue;
+                }
+                const [prefix, suffix] = absolute.split('*');
+                for (const admitted of ctx.sourceFilesByPath.keys()) {
+                    const emitted = [admitted];
+                    if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.rootDir), admitted)) {
+                        const compiled = emittedPath(admitted, config.options.outDir);
+                        if (compiled)
+                            emitted.push(compiled);
+                    }
+                    for (const candidate of emitted)
+                        if (candidate.startsWith(prefix) && candidate.endsWith(suffix)) {
+                            const wildcard = candidate.slice(prefix.length, candidate.length - suffix.length || undefined);
+                            const publicPath = importPath.replace('*', wildcard);
+                            result.push({ import_path: publicPath, file_path: toRelative(ctx.rootPath, admitted) });
+                            if (!wildcardTargets.has(publicPath))
+                                wildcardTargets.set(publicPath, new Set());
+                            wildcardTargets.get(publicPath).add(target);
+                        }
+                }
+            }
+            else {
+                const candidates = sourceCandidates(absolute);
+                if (!candidates.length)
+                    result.push({ import_path: importPath });
+                for (const candidate of candidates)
+                    result.push({ import_path: importPath, file_path: toRelative(ctx.rootPath, candidate) });
+            }
+        }
+        if (subpath.includes('*'))
+            for (const [publicPath, resolvedTargets] of wildcardTargets)
+                if (resolvedTargets.size !== distinctTargets.length)
+                    result.push({ import_path: publicPath });
+    }
+    return [...new Map(result.map(entry => [`${entry.import_path}\0${entry.file_path ?? ''}`, entry])).values()]
+        .sort((a, b) => a.import_path.localeCompare(b.import_path) || (a.file_path ?? '').localeCompare(b.file_path ?? ''));
 }
 function buildWorkspacePackageContainmentEdges(repositoryName, packages) {
     return packages.map(pkg => ({

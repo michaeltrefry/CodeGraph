@@ -39,6 +39,7 @@ exports.sameSymbol = sameSymbol;
 exports.isCallable = isCallable;
 const ts_morph_1 = require("ts-morph");
 const path = __importStar(require("path"));
+const packageExports_1 = require("./packageExports");
 function declarationQN(file, name) {
     return [...file.replace(/\.(?:tsx?|jsx?)$/, '').replace(/\\/g, '/').split('/').filter(p => p !== 'src' && p !== ''), name].join('.');
 }
@@ -413,6 +414,7 @@ class SemanticModel {
             }
         }
     }
+    reconcilePackageExports(nodes) { (0, packageExports_1.addNpmExportMetadata)(this, nodes); }
     reconcileAngular(nodes, edges) {
         const angular = new Set(['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES']);
         for (let index = edges.length - 1; index >= 0; index--) {

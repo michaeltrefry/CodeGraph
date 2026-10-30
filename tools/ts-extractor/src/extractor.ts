@@ -183,6 +183,7 @@ export function extractProject(
   const httpCoverage = analyzeHttp(semantic, nodes, edges, diag, serviceName);
   complete &&= httpCoverage.complete;
   analyzeTauri(semantic, nodes, edges, diag);
+  semantic.reconcilePackageExports(nodes);
   for (const node of nodes) node.properties.extraction_owner = 'typescript';
   for (const edge of edges) edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
 

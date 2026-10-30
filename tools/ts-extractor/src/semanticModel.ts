@@ -1,5 +1,6 @@
 import { Node, SourceFile, SyntaxKind, CallExpression } from 'ts-morph';
 import * as path from 'path';
+import { addNpmExportMetadata } from './packageExports';
 import type { GraphNodeDto, PendingEdgeDto, ResolvedImportDto, UnresolvedCallDto } from './protocol';
 
 export function declarationQN(file: string, name: string): string {
@@ -295,6 +296,7 @@ export class SemanticModel {
       }
     }
   }
+  reconcilePackageExports(nodes: GraphNodeDto[]): void { addNpmExportMetadata(this, nodes); }
   reconcileAngular(nodes: GraphNodeDto[], edges: PendingEdgeDto[]): void {
     const angular = new Set(['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES']);
     for (let index = edges.length - 1; index >= 0; index--) {

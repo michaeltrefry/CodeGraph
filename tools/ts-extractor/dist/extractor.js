@@ -192,6 +192,7 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     const httpCoverage = (0, httpAnalysis_1.analyzeHttp)(semantic, nodes, edges, diag, serviceName);
     complete && (complete = httpCoverage.complete);
     (0, tauriAnalysis_1.analyzeTauri)(semantic, nodes, edges, diag);
+    semantic.reconcilePackageExports(nodes);
     for (const node of nodes)
         node.properties.extraction_owner = 'typescript';
     for (const edge of edges)
