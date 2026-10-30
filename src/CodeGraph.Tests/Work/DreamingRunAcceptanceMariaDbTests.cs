@@ -402,17 +402,22 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
     public async Task No_changed_signal_records_a_skipped_run_without_a_second_model_call()
     {
         var project = await ProjectAsync();
-        await RecordAsync(project, "One initial signal");
-        var model = new ScriptedModel(Response());
+        var evidence = await RecordAsync(project, "One initial signal");
+        var model = new ScriptedModel(Response(Call("own_write", "dream_record", new
+        {
+            entry = new { kind = "fact", summary = "An output of the completed run", confidence = "high" },
+            evidence = Evidence(evidence), prevalence = "one source entry"
+        })), Response());
         var service = await ServiceAsync(model);
         var first = await service.RunAsync(project, "schedule", Human);
         first.Status.ShouldBe("completed", first.Reason);
+        SuccessfulWrites(first, 1);
 
         var second = await service.RunAsync(project, "run_now", Human);
 
         second.Status.ShouldBe("skipped");
         second.Reason.ShouldBe("no_signal");
-        model.Requests.Count.ShouldBe(1);
+        model.Requests.Count.ShouldBe(2);
         second.Actions.ShouldBeEmpty();
         (await runs.ListRunsAsync(project, 10)).Select(run => run.Status).ShouldContain("skipped");
     }
