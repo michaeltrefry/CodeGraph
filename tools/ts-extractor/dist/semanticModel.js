@@ -220,10 +220,15 @@ class SemanticModel {
                 const init = node.getInitializer();
                 if (init)
                     return this.resolve(init, seen) ?? node;
+                const type = node.getTypeNode();
+                if (type)
+                    return this.resolve(type, seen) ?? node;
             }
             return node;
         }
         if (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node) || ts_morph_1.Node.isTypeAssertion(node))
+            return this.resolve(node.getExpression(), seen);
+        if (ts_morph_1.Node.isNewExpression(node))
             return this.resolve(node.getExpression(), seen);
         if (ts_morph_1.Node.isCallExpression(node)) {
             if (['memo', 'forwardRef', 'useCallback'].includes(this.reactApi(node) ?? ''))

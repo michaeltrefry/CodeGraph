@@ -660,3 +660,14 @@ export function useActions(){const reload=()=>request();return {reload};}`);
     assert.ok(result.edges.some(edge => edge.sourceQN === returned.qualifiedName && edge.targetQN === 'Demo:hooks.ts#request' && edge.type === 'CALLS'));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('imported class instance members resolve through jsconfig aliases without installed libraries', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-class-instance-'));
+  try {
+    writeJson(root, 'jsconfig.json', { compilerOptions: { baseUrl: '.', paths: { '@app/*': ['src/*'] } } });
+    writeFile(root, 'src/service.ts', 'export class Api { request(){} }');
+    writeFile(root, 'src/app.ts', "import {Api as Client} from '@app/service';export function run(){const api=new Client();api.request();} export function typed(api:Client){api.request();}");
+    const result = extractProject('Demo', root, path.join(root, 'tsconfig.json'));
+    for (const caller of ['Demo:src/app.ts#run', 'Demo:src/app.ts#typed']) assert.ok(result.edges.some(edge => edge.sourceQN === caller && edge.targetQN === 'service.Api.request' && edge.type === 'CALLS'), caller);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

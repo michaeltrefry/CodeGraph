@@ -142,10 +142,13 @@ export class SemanticModel {
       if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) {
         const init = node.getInitializer();
         if (init) return this.resolve(init, seen) ?? node;
+        const type = node.getTypeNode();
+        if (type) return this.resolve(type, seen) ?? node;
       }
       return node;
     }
     if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) return this.resolve(node.getExpression(), seen);
+    if (Node.isNewExpression(node)) return this.resolve(node.getExpression(), seen);
     if (Node.isCallExpression(node)) {
       if (['memo', 'forwardRef', 'useCallback'].includes(this.reactApi(node) ?? '')) return this.resolve(node.getArguments()[0], seen);
       if (this.reactApi(node) === 'lazy') {
