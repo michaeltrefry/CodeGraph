@@ -95,14 +95,19 @@ public sealed class DreamingLiveAcceptance
         var provenance = new List<object>();
         foreach (var seed in seedSpecs)
         {
-            var sourceText = await File.ReadAllTextAsync(Path.Combine(root, seed.Path));
-            var hash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sourceText))).ToLowerInvariant();
+            var sourceBytes = await File.ReadAllBytesAsync(Path.Combine(root, seed.Path));
+            var hash = Convert.ToHexString(SHA256.HashData(sourceBytes)).ToLowerInvariant();
+            // A harness-only commit is not new knowledge. Only changed claim material or source
+            // bytes create another observation; the attempt's exact Git commit stays in its report.
+            var material = JsonSerializer.Serialize(new { seed, source_sha256 = hash }, WorkJson.Options);
+            var observationHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(material))).ToLowerInvariant();
             await graph.UpsertFileHashBatchAsync("CodeGraph", new Dictionary<string, string> { [seed.Path] = hash });
-            var recorded = await WorkAsync(WorkTools.Record, new { project = "CODEGRAPH", idempotency_key = "s8-source-" + seed.Key + "-" + commit,
+            var recorded = await WorkAsync(WorkTools.Record, new { project = "CODEGRAPH", idempotency_key = "s8-source-" + observationHash,
                 entry = new { kind = "fact", summary = seed.Summary, confidence = seed.Confidence,
-                    body = seed.Body + "\nProvenance: local acceptance import by codex from CodeGraph/" + seed.Path + " at " + commit + "; one source observation, not a historical session or review. Recheck related current source before curation.",
-                    repositories = new[] { "CodeGraph" }, paths = new[] { seed.Path }, commit } });
-            provenance.Add(new { seed.Key, seed.Path, sha256 = hash, entry_id = recorded.GetProperty("entry").GetProperty("id").GetGuid(), source_commit = commit });
+                    body = seed.Body + "\nProvenance: local acceptance import by codex from CodeGraph/" + seed.Path + " with source SHA-256 " + hash + "; one source observation, not a historical session or review. Recheck related current source before curation.",
+                    repositories = new[] { "CodeGraph" }, paths = new[] { seed.Path } } });
+            provenance.Add(new { seed.Key, seed.Path, sha256 = hash, observation_sha256 = observationHash,
+                entry_id = recorded.GetProperty("entry").GetProperty("id").GetGuid(), source_commit = commit });
         }
         await WriteAsync("environment.json", new { environment = "local native MariaDB acceptance; not production", database = builder.Database,
             database_server = builder.Server, database_port = builder.Port, source_root = root, source_commit = commit,
@@ -120,7 +125,8 @@ public sealed class DreamingLiveAcceptance
         var settings = previousSettings with { Enabled = true, DefaultProvider = provider, DefaultModel = model,
             MaxTurns = 12, MaxTokensPerRun = 160000, MinimumIntervalMinutes = 0, InputCostPerMillion = 0, OutputCostPerMillion = 0 };
         await using var snapshotConnection = new MySqlConnection(connectionString);
-        var originalIds = (await snapshotConnection.QueryAsync<string>("SELECT id FROM knowledge_entries WHERE project_id=@project", new { project })).ToArray();
+        var originalIds = (await snapshotConnection.QueryAsync<Guid>("SELECT id FROM knowledge_entries WHERE project_id=@project", new { project }))
+            .Select(id => id.ToString("D")).ToArray();
         var before = await SnapshotAsync(connectionString, project, originalIds);
         await WriteAsync("before.json", before);
         DreamRun? run = null;

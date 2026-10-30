@@ -4,6 +4,8 @@ This is the epic's separately dispatched model run. Normal tests skip `DreamingL
 
 The command uses a persistent **local native MariaDB acceptance environment**, not production. It creates or reuses a real `CODEGRAPH` work project linked to the actual committed CodeGraph checkout. It imports two source-derived facts: the default storage provider from its owning source, and a literal low-confidence claim from the generated root CODEGRAPH.md about CodeGraph.Cg. It records the source commit, file hashes and import provenance. It creates no fictitious sessions, correction events, review comments or graph nodes. The configured model chooses whether and how to curate these facts; the harness does not script its answers or guarantee a write/proposal.
 
+Source observations are idempotent by claim material and the source file's exact content hash. A test-only helper commit therefore reuses unchanged observations instead of manufacturing new knowledge signal. Entry provenance uses the stable content hash; each attempt's `environment.json` retains its exact Git commit separately.
+
 Use a stationary, clean, integrated candidate containing S2–S5, these instructions and the live harness. The local provider must already be configured to serve a tool-capable model. The observed local route for the original S8 preparation was LM Studio at `http://127.0.0.1:1234/v1`, model `google/gemma-4-31b`; the old `oldlocal` provider alias is normalized to `lmstudio`. Recheck availability before running. The unavailable remote worker and unauthenticated production endpoints are not required by this local route.
 
 From that checkout, explicitly dispatch:
