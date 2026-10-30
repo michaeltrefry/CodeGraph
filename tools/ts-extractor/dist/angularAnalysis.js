@@ -42,10 +42,20 @@ const semanticModel_1 = require("./semanticModel");
  * Provider tables remain scoped: overrides never leak into a sibling application's injector.
  */
 function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnostic, reader = new boundedTextReader_1.BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)) {
+    const charge = (units = 1) => model.work.charge(units);
+    charge(0);
     let complete = true;
     const processedTemplates = new Set();
-    const classes = model.files.flatMap(file => file.getClasses());
-    const interfaces = model.files.flatMap(file => file.getInterfaces());
+    const classes = [];
+    const interfaces = [];
+    const importsByFile = new Map();
+    for (const file of model.files) {
+        charge(file.getFullWidth() + 1);
+        classes.push(...file.getClasses());
+        interfaces.push(...file.getInterfaces());
+        importsByFile.set(file, file.getImportDeclarations());
+    }
+    charge(nodes.length + 1);
     const graphNodes = new Map(nodes.map(node => [node.qualifiedName, node]));
     const tokenQNs = new Map();
     const tokenIdentities = new Map();
@@ -63,22 +73,42 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     // Keep its edge identities so only superseded call evidence is retracted below.
     const callKey = (source, target) => JSON.stringify([source, target]);
     const provisionalCalls = new Map();
-    for (const edge of edges)
+    const injectionsBySource = new Map();
+    const supersededEdges = new Set();
+    for (const edge of edges) {
+        charge(edge.sourceQN.length + edge.targetQN.length + 1);
+        if (edge.type === 'INJECTS' && typeof edge.properties?.parameter_name === 'string') {
+            const source = injectionsBySource.get(edge.sourceQN) ?? new Map();
+            const name = edge.properties.parameter_name;
+            charge(name.length + 1);
+            const member = source.get(name) ?? [];
+            member.push(edge);
+            source.set(name, member);
+            injectionsBySource.set(edge.sourceQN, source);
+        }
         if (edge.type === 'CALLS' && !edge.properties?.call_kind) {
             const key = callKey(edge.sourceQN, edge.targetQN);
             const existing = provisionalCalls.get(key) ?? new Set();
             existing.add(edge);
             provisionalCalls.set(key, existing);
         }
+    }
+    const directCalls = new Map([...provisionalCalls].map(([key, values]) => [key, values.values()]));
     const redirectedCallSites = new Set();
     const redirectedCallKeys = new Set();
     const edgeKeys = new Set();
     function addEdge(sourceQN, targetQN, type, properties = {}) {
+        // Charge the serialized output/key size before constructing either, including
+        // repeated edges that would later deduplicate. Input bytes alone do not bound this.
+        let output = (sourceQN.length + targetQN.length + type.length) * 6 + 96;
+        for (const name in properties)
+            output += name.length + (typeof properties[name] === 'string' ? properties[name].length * 6 : 8) + 8;
+        charge(output);
         const props = { framework: 'angular', ...properties };
         const key = `${type}|${sourceQN}|${targetQN}|${JSON.stringify(props)}`;
         if (!edgeKeys.has(key)) {
             edgeKeys.add(key);
-            const direct = type === 'CALLS' ? edges.find(edge => edge.type === type && edge.sourceQN === sourceQN && edge.targetQN === targetQN && !edge.properties?.call_kind) : undefined;
+            const direct = type === 'CALLS' ? directCalls.get(callKey(sourceQN, targetQN))?.next().value : undefined;
             if (direct)
                 direct.properties = { ...direct.properties, ...props };
             else
@@ -86,6 +116,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         }
     }
     function emit(node, qualifiedName, label, name, properties = {}) {
+        charge(qualifiedName.length + name.length + 96);
         const existing = graphNodes.get(qualifiedName);
         if (existing) {
             Object.assign(existing.properties, properties);
@@ -96,9 +127,11 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         graphNodes.set(qualifiedName, value);
     }
     function imported(node, packageName) {
+        charge(packageName.length + 1);
         if (!node)
             return undefined;
-        for (const imp of node.getSourceFile().getImportDeclarations()) {
+        for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
+            charge(imp.getFullWidth() + 1);
             if (imp.getModuleSpecifierValue() !== packageName)
                 continue;
             if (ts_morph_1.Node.isIdentifier(node)) {
@@ -124,6 +157,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     }
     function classOf(node) { return ts_morph_1.Node.isClassDeclaration(node) ? node : node.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ClassDeclaration); }
     function reference(node, seen = new Set()) {
+        charge();
         if (!node || seen.has(node))
             return undefined;
         seen.add(node);
@@ -159,7 +193,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         let identity;
         if (ts_morph_1.Node.isStringLiteral(node))
             identity = `angular-token:literal:${node.getLiteralText()}`;
-        for (const imp of node.getSourceFile().getImportDeclarations()) {
+        for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
             const resolution = model.imports.find(item => item.filePath === model.relative(node) && item.importedNamespace === imp.getModuleSpecifierValue());
             if (resolution?.classification !== 'external_npm_package')
                 continue;
@@ -246,19 +280,23 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         return undefined;
     }
     const angular = classes.flatMap(declaration => {
+        charge(declaration.getFullWidth() + 1);
         for (const kind of ['Component', 'NgModule', 'Directive', 'Injectable']) {
             if (declaration.getDecorators().some(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === kind))
                 return [{ declaration, metadata: decorator(declaration, kind), kind }];
         }
         return [];
     });
+    charge(angular.length + 1);
+    const angularByClass = new Map(angular.map(item => [item.declaration, item]));
     const components = angular.filter(value => value.kind === 'Component');
     const componentSet = new Set(components.map(component => component.declaration));
     for (const cls of classes) {
         const node = graphNodes.get(qn(cls));
         if (!node)
             continue;
-        const angularClass = angular.find(item => item.declaration === cls);
+        charge();
+        const angularClass = angularByClass.get(cls);
         node.properties.is_service = angularClass?.kind === 'Injectable';
         node.properties.is_ng_module = angularClass?.kind === 'NgModule';
         if (componentSet.has(cls)) {
@@ -280,6 +318,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     }
     const interfaceMembers = new Map();
     function members(iface, seen = new Set()) {
+        charge();
         if (interfaceMembers.has(iface))
             return interfaceMembers.get(iface);
         if (seen.has(iface))
@@ -289,8 +328,10 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         for (const parent of iface.getExtends()) {
             const value = reference(parent.getExpression());
             if (value && ts_morph_1.Node.isInterfaceDeclaration(value))
-                for (const [name, method] of members(value, seen))
+                for (const [name, method] of members(value, seen)) {
+                    charge();
                     result.set(name, method);
+                }
         }
         for (const member of iface.getMembers()) {
             if (ts_morph_1.Node.isMethodSignature(member) || (ts_morph_1.Node.isPropertySignature(member) && member.getType().getCallSignatures().length > 0)) {
@@ -307,11 +348,13 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         members(iface);
     const implementers = new Map();
     function contracts(cls, seen = new Set()) {
+        charge();
         if (seen.has(cls))
             return new Set();
         seen.add(cls);
         const result = new Set();
         const add = (iface) => {
+            charge();
             if (result.has(iface))
                 return;
             result.add(iface);
@@ -399,7 +442,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         moduleImports.set(item.declaration, imports);
         moduleExports.set(item.declaration, values(property(item.metadata, 'exports')).filter(ts_morph_1.Node.isClassDeclaration));
         for (const imported of imports)
-            if (angular.some(item => item.declaration === imported && item.kind === 'NgModule'))
+            if (angularByClass.get(imported)?.kind === 'NgModule')
                 providerScope.parents.push(makeScope(imported));
     }
     function collectProviders(node, providerScope, seen = new Set()) {
@@ -514,15 +557,25 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             scopeForClass(component).parents.push(value);
         }
     const modules = angular.filter(item => item.kind === 'NgModule').map(item => item.declaration);
+    const moduleSet = new Set(modules);
     function moduleReaches(root, target, seen = new Set()) {
+        charge();
         if (root === target)
             return true;
         if (seen.has(root))
             return false;
         seen.add(root);
-        return (moduleImports.get(root) ?? []).some(child => modules.includes(child) && moduleReaches(child, target, seen));
+        return (moduleImports.get(root) ?? []).some(child => moduleSet.has(child) && moduleReaches(child, target, seen));
     }
-    const moduleRoots = modules.filter(module => !modules.some(other => other !== module && (moduleImports.get(other) ?? []).includes(module)));
+    const importedModules = new Set();
+    for (const module of modules)
+        for (const imported of moduleImports.get(module) ?? []) {
+            charge();
+            if (module !== imported && moduleSet.has(imported))
+                importedModules.add(imported);
+        }
+    const moduleRoots = modules.filter(module => !importedModules.has(module));
+    const moduleRootSet = new Set(moduleRoots);
     for (const [cls, owners] of moduleDeclarations) {
         const contexts = moduleRoots.filter(root => owners.some(owner => moduleReaches(root, owner)));
         for (const owner of contexts.length ? contexts : owners)
@@ -536,31 +589,36 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                     scopeForClass(binding.implementation).parents.push(providerScope);
             }
     function lookup(token, providerScope, seen = new Set()) {
+        charge();
         if (seen.has(providerScope))
             return { bindings: [], certain: false };
         seen.add(providerScope);
         const local = providerScope.bindings.get(token);
         if (local)
             return { bindings: local, certain: !providerScope.uncertain && local.length === 1 && !local[0].multi };
+        charge((renderedParents.get(providerScope)?.size ?? providerScope.parents.length) + 1);
         const parents = [...(renderedParents.get(providerScope) ?? providerScope.parents)];
         const branches = parents.map(parent => lookup(token, parent, new Set(seen))).filter(result => result.bindings.length);
         // NgModule imports are ordered in one injector: later imported providers win.
-        if (ts_morph_1.Node.isClassDeclaration(providerScope.owner) && modules.includes(providerScope.owner) && branches.length)
+        if (ts_morph_1.Node.isClassDeclaration(providerScope.owner) && moduleSet.has(providerScope.owner) && branches.length)
             return branches[branches.length - 1];
+        for (const branch of branches)
+            charge(branch.bindings.length + 1);
         const bindings = [...new Set(branches.flatMap(result => result.bindings))];
         return { bindings, certain: !providerScope.uncertain && branches.length > 0 && branches.every(result => result.certain) && new Set(bindings.map(binding => binding.implementation ?? binding.alias)).size === 1 };
     }
     function aliasInjectors(binding, consumingScope) {
-        if (!ts_morph_1.Node.isClassDeclaration(binding.scope.owner) || !modules.includes(binding.scope.owner))
+        if (!ts_morph_1.Node.isClassDeclaration(binding.scope.owner) || !moduleSet.has(binding.scope.owner))
             return [binding.scope];
         const declaringModule = binding.scope.owner;
         const contexts = new Set();
         const visited = new Set();
         const visit = (current) => {
+            charge();
             if (visited.has(current))
                 return;
             visited.add(current);
-            if (ts_morph_1.Node.isClassDeclaration(current.owner) && moduleRoots.includes(current.owner) && moduleReaches(current.owner, declaringModule))
+            if (ts_morph_1.Node.isClassDeclaration(current.owner) && moduleRootSet.has(current.owner) && moduleReaches(current.owner, declaringModule))
                 contexts.add(current);
             for (const parent of renderedParents.get(current) ?? current.parents)
                 visit(parent);
@@ -573,6 +631,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         return contexts.size ? [...contexts] : [binding.scope];
     }
     function resolveBinding(token, providerScope, seen = new Set()) {
+        charge();
         if (seen.has(token)) {
             diagnostic(`angularProvider: alias cycle at ${qn(token)}`);
             return { implementations: [], certain: false, token };
@@ -582,6 +641,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         const implementations = new Set();
         let certain = selected.certain;
         for (const binding of selected.bindings) {
+            charge();
             if (binding.alias) {
                 const contexts = aliasInjectors(binding, providerScope);
                 const targets = contexts.map(context => resolveBinding(binding.alias, context, new Set(seen)));
@@ -607,16 +667,62 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                     confidence_band: selected.certain ? 'high' : 'medium', candidate: !selected.certain,
                 });
         }
-    const selectors = components.flatMap(component => (string(property(component.metadata, 'selector')) ?? '').split(',').map(selector => ({ selector: selector.trim(), component: component.declaration })).filter(item => item.selector));
+    const byElement = new Map();
+    const byAttribute = new Map();
+    const byClass = new Map();
+    const universal = [];
+    const indexSelector = (index, key, item) => {
+        charge(key.length + 1);
+        const bucket = index.get(key) ?? [];
+        bucket.push(item);
+        index.set(key, bucket);
+    };
+    for (const component of components) {
+        const text = string(property(component.metadata, 'selector')) ?? '';
+        charge(text.length + 1);
+        for (const raw of text.split(',')) {
+            charge(raw.length + 1);
+            const selector = raw.trim();
+            if (!selector)
+                continue;
+            // The existing selector grammar uses bounded regular expressions. Charge their
+            // conservative quadratic scan cost before parsing a potentially malformed selector.
+            charge(selector.length * selector.length + 1);
+            const positive = selector.replace(/:not\(([^)]+)\)/g, '');
+            const item = { selector, component: component.declaration };
+            const element = positive.match(/^[\w-]+/);
+            const attribute = positive.match(/\[([^\]=\s]+)/);
+            const className = positive.match(/\.([\w-]+)/);
+            if (element)
+                indexSelector(byElement, element[0].toLowerCase(), item);
+            else if (attribute)
+                indexSelector(byAttribute, attribute[1], item);
+            else if (className)
+                indexSelector(byClass, className[1], item);
+            else {
+                charge();
+                universal.push(item);
+            }
+        }
+    }
+    // A template's compilation scope is immutable during one extraction. Build it once
+    // per component instead of rewalking every module for each selector/tag comparison.
+    const visibleComponents = new Map();
     function available(owner, target) {
-        const item = components.find(item => item.declaration === owner);
+        charge();
+        if (visibleComponents.has(owner))
+            return visibleComponents.get(owner)?.has(target) ?? true;
+        const item = angularByClass.get(owner);
         const explicitImports = property(item?.metadata, 'imports');
         const modules = moduleDeclarations.get(owner) ?? [];
-        if (!explicitImports && !modules.length)
+        if (!explicitImports && !modules.length) {
+            visibleComponents.set(owner, undefined);
             return true;
+        }
         const admitted = new Set();
         const visited = new Set();
         const exported = (cls) => {
+            charge();
             if (componentSet.has(cls)) {
                 admitted.add(cls);
                 return;
@@ -630,15 +736,19 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (explicitImports)
             values(explicitImports).filter(ts_morph_1.Node.isClassDeclaration).forEach(exported);
         for (const module of modules) {
-            for (const [child, owners] of moduleDeclarations)
+            for (const [child, owners] of moduleDeclarations) {
+                charge(owners.length + 1);
                 if (owners.includes(module))
                     admitted.add(child);
+            }
             for (const imported of moduleImports.get(module) ?? [])
                 exported(imported);
         }
+        visibleComponents.set(owner, admitted);
         return admitted.has(target);
     }
     function htmlReference(owner, expression) {
+        charge(expression.length * 2 + owner.getSourceFile().getFullWidth() + 1);
         const names = expression.trim().replace(/;.*$/, '').split('.');
         if (!names.every(name => /^[\w$]+$/.test(name)))
             return [];
@@ -648,7 +758,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (!declaration) {
             const file = owner.getSourceFile();
             declaration = file.getClasses().find(cls => cls.getName() === names[0]) ?? file.getVariableDeclaration(names[0]);
-            for (const imp of file.getImportDeclarations()) {
+            for (const imp of importsByFile.get(file) ?? []) {
                 const named = imp.getNamedImports().find(item => (item.getAliasNode()?.getText() ?? item.getName()) === names[0]);
                 if (named) {
                     const target = model.module(imp, imp.getModuleSpecifierValue());
@@ -677,6 +787,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         return value && ts_morph_1.Node.isClassDeclaration(value) && componentSet.has(value) ? [value] : [];
     }
     function render(owner, target, templatePath, properties = {}) {
+        charge();
         addEdge(qn(owner), qn(target), 'RENDERS', { template_path: templatePath, confidence_band: 'high', ...properties });
         if (owner !== target) {
             const parents = renderedParents.get(scopeForClass(target)) ?? new Set();
@@ -719,15 +830,55 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         }
         if (html === undefined)
             continue;
-        const clean = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
-        for (const tag of clean.matchAll(/<([a-zA-Z][\w:.-]*)\b((?:"[^"]*"|'[^']*'|[^'">])*)>/g)) {
+        const seenPatterns = new Set();
+        for (const tag of templateTags(html, charge)) {
+            charge(tag.attributes.length * 2 + tag.name.length + 1);
             const attributes = new Map();
-            for (const attr of tag[2].matchAll(/([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g))
+            for (const attr of tag.attributes.matchAll(/([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+                charge(attr[0].length + 1);
                 attributes.set(attr[1].replace(/^(?:\[\(|\[|\(|\*)|(?:\)\]|\]|\))$/g, ''), attr[2] ?? attr[3] ?? attr[4] ?? '');
-            const matches = selectors.filter(({ selector, component }) => available(item.declaration, component) && matchesSelector(selector, tag[1], attributes));
-            const targets = new Set(matches.map(match => match.component));
-            for (const { selector, component } of matches)
+            }
+            // Repeating an identical static tag cannot add a new render dependency or injector
+            // parent. Cache before candidate lookup/matching/rendering, not after edge dedup.
+            charge(tag.name.length + tag.attributes.length * 8 + attributes.size * 8 + 1);
+            const pattern = `${tag.name}\0${JSON.stringify([...attributes])}`;
+            if (seenPatterns.has(pattern))
+                continue;
+            seenPatterns.add(pattern);
+            const candidates = new Set();
+            const append = (bucket) => {
+                charge((bucket?.length ?? 0) + 1);
+                for (const candidate of bucket ?? []) {
+                    charge();
+                    candidates.add(candidate);
+                }
+            };
+            append(byElement.get(tag.name.toLowerCase()));
+            append(universal);
+            for (const name of attributes.keys()) {
+                charge(name.length + 1);
+                append(byAttribute.get(name));
+            }
+            const classText = attributes.get('class') ?? '';
+            charge(classText.length + 1);
+            for (const name of classText.split(/\s+/)) {
+                charge(name.length + 1);
+                append(byClass.get(name));
+            }
+            const matches = [];
+            const targets = new Set();
+            for (const candidate of candidates) {
+                charge();
+                if (available(item.declaration, candidate.component) && matchesSelector(candidate.selector, tag.name, attributes, charge)) {
+                    charge(2);
+                    matches.push(candidate);
+                    targets.add(candidate.component);
+                }
+            }
+            for (const { selector, component } of matches) {
+                charge();
                 render(item.declaration, component, templatePath, { render_kind: 'selector', selector, ...(targets.size > 1 ? { confidence_band: 'medium', candidate: true } : {}) });
+            }
             const outlet = attributes.get('ngComponentOutlet');
             if (outlet) {
                 const targets = htmlReference(item.declaration, outlet);
@@ -858,7 +1009,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (!ts_morph_1.Node.isParameterDeclaration(declaration) || !ts_morph_1.Node.isConstructorDeclaration(declaration.getParent()) || !ts_morph_1.Node.isClassDeclaration(context))
             return false;
         const injector = scopes.get(context);
-        return angular.some(item => item.declaration === context) || !!injector && (injector.bindings.size > 0 || injector.parents.length > 0);
+        return angularByClass.has(context) || !!injector && (injector.bindings.size > 0 || injector.parents.length > 0);
     }
     function scopeForContext(context) {
         return configScopes.get(context) ?? makeScope(context);
@@ -921,10 +1072,15 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 continue;
             sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
         }
-        const injectionNames = new Set(sites.map(site => site.name));
-        for (let index = edges.length - 1; index >= 0; index--)
-            if (edges[index].type === 'INJECTS' && edges[index].sourceQN === qn(cls) && injectionNames.has(String(edges[index].properties?.parameter_name)))
-                edges.splice(index, 1);
+        if (sites.length) {
+            charge(sites.length + 1);
+            const existing = injectionsBySource.get(qn(cls));
+            for (const site of sites)
+                for (const edge of existing?.get(site.name) ?? []) {
+                    charge();
+                    supersededEdges.add(edge);
+                }
+        }
         for (const site of sites) {
             const selected = select(site.expression, cls, site.contract);
             for (const target of selected.implementations)
@@ -960,32 +1116,112 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 if (redirectedCallKeys.has(key))
                     retainedKeys.add(key);
             }
-        const superseded = new Set();
         for (const key of redirectedCallKeys)
             if (!retainedKeys.has(key))
-                for (const edge of provisionalCalls.get(key) ?? [])
-                    superseded.add(edge);
-        for (let index = edges.length - 1; index >= 0; index--)
-            if (superseded.has(edges[index]))
-                edges.splice(index, 1);
+                for (const edge of provisionalCalls.get(key) ?? []) {
+                    charge();
+                    supersededEdges.add(edge);
+                }
     }
+    if (supersededEdges.size) {
+        charge(edges.length + 1);
+        let retained = 0;
+        for (const edge of edges)
+            if (!supersededEdges.has(edge))
+                edges[retained++] = edge;
+        edges.length = retained;
+    }
+    charge(edges.length * 5 + interfaceMembers.size + 1);
     diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
     return { complete: complete && reader.complete, processedTemplates: [...processedTemplates].sort() };
 }
-function matchesSelector(selector, tag, attributes) {
+function matchesSelector(selector, tag, attributes, charge) {
+    charge(selector.length * selector.length + tag.length + (attributes.get('class')?.length ?? 0) + 1);
     const negatives = [];
     const positive = selector.replace(/:not\(([^)]+)\)/g, (_, value) => { negatives.push(value); return ''; });
-    if (negatives.some(value => matchesSelector(value, tag, attributes)))
+    if (negatives.some(value => matchesSelector(value, tag, attributes, charge)))
         return false;
     const element = positive.match(/^[\w-]+/);
     if (element && element[0].toLowerCase() !== tag.toLowerCase())
         return false;
-    for (const match of positive.matchAll(/\[([^\]=\s]+)(?:\s*=\s*["']?([^\]"']+)["']?)?\]/g))
+    for (const match of positive.matchAll(/\[([^\]=\s]+)(?:\s*=\s*["']?([^\]"']+)["']?)?\]/g)) {
+        charge(match[1].length + (match[2]?.length ?? 0) + (attributes.get(match[1])?.length ?? 0) + 1);
         if (!attributes.has(match[1]) || (match[2] !== undefined && attributes.get(match[1]) !== match[2]))
             return false;
+    }
     const classNames = new Set((attributes.get('class') ?? '').split(/\s+/));
     for (const match of positive.matchAll(/\.([\w-]+)/g))
         if (!classNames.has(match[1]))
             return false;
     return !!positive && !positive.replace(/^[\w-]+/, '').replace(/\[[^\]]+\]/g, '').replace(/\.[\w-]+/g, '').trim();
+}
+/** Linear HTML scan: malformed repeated comment/script/tag prefixes must not make a
+ * backtracking search retry the rest of the template for every opening prefix. */
+function* templateTags(html, charge) {
+    let index = 0;
+    let rawText;
+    const nameCharacter = (code) => code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code === 95 || code === 58 || code === 46 || code === 45;
+    while (index < html.length) {
+        charge();
+        if (html[index] !== '<') {
+            index++;
+            continue;
+        }
+        if (rawText) {
+            charge(rawText.length + 3);
+            if (html.slice(index, index + rawText.length + 2).toLowerCase() !== `</${rawText}` || nameCharacter(html.charCodeAt(index + rawText.length + 2))) {
+                index++;
+                continue;
+            }
+            rawText = undefined;
+        }
+        charge(4);
+        if (html.startsWith('<!--', index)) {
+            index += 4;
+            while (index < html.length) {
+                charge(3);
+                if (html.startsWith('-->', index)) {
+                    index += 3;
+                    break;
+                }
+                index++;
+            }
+            continue;
+        }
+        const start = ++index;
+        const first = html.charCodeAt(index);
+        if (!(first >= 65 && first <= 90 || first >= 97 && first <= 122))
+            continue;
+        while (index < html.length && nameCharacter(html.charCodeAt(index))) {
+            charge();
+            index++;
+        }
+        charge(index - start + 1);
+        const name = html.slice(start, index);
+        const attributesStart = index;
+        let quote;
+        while (index < html.length) {
+            charge();
+            const character = html[index];
+            if (quote) {
+                if (character === quote)
+                    quote = undefined;
+            }
+            else if (character === '"' || character === "'")
+                quote = character;
+            else if (character === '>' || character === '<')
+                break;
+            index++;
+        }
+        if (html[index] !== '>')
+            continue;
+        charge(index - attributesStart + name.length + 1);
+        const attributes = html.slice(attributesStart, index++);
+        const lower = name.toLowerCase();
+        if ((lower === 'script' || lower === 'style') && !attributes.trimEnd().endsWith('/')) {
+            rawText = lower;
+            continue;
+        }
+        yield { name, attributes };
+    }
 }

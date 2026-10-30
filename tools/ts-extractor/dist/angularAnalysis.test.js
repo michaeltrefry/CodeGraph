@@ -41,10 +41,11 @@ const path = __importStar(require("path"));
 const ts_morph_1 = require("ts-morph");
 const angularAnalysis_1 = require("./angularAnalysis");
 const extractor_1 = require("./extractor");
+const extractionWork_1 = require("./extractionWork");
 const semanticModel_1 = require("./semanticModel");
 const workspaceResolver_1 = require("./workspaceResolver");
 const discoveryScope_1 = require("./discoveryScope");
-function fixture(sources, includedFiles = Object.keys(sources)) {
+function fixture(sources, includedFiles = Object.keys(sources), control = {}, onAngularStart = () => { }) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-angular-'));
     for (const [file, contents] of Object.entries(sources)) {
         fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -57,7 +58,7 @@ function fixture(sources, includedFiles = Object.keys(sources)) {
         const discovery = new discoveryScope_1.DiscoveryScope(root, included);
         const diagnostics = [];
         const imports = (0, workspaceResolver_1.analyzeWorkspaceImports)('Fixture', root, '', project.getSourceFiles(), message => diagnostics.push(message), discovery);
-        const model = new semanticModel_1.SemanticModel('Fixture', root, project.getSourceFiles(), imports.resolvedImports, message => diagnostics.push(message));
+        const model = new semanticModel_1.SemanticModel('Fixture', root, project.getSourceFiles(), imports.resolvedImports, message => diagnostics.push(message), control);
         const nodes = [];
         const edges = [];
         for (const [declaration, qualifiedName] of model.declarations) {
@@ -66,6 +67,7 @@ function fixture(sources, includedFiles = Object.keys(sources)) {
             nodes.push({ label: declaration.getKindName() === 'ClassDeclaration' ? 'Class' : 'Interface', name: qualifiedName.split('.').pop(), qualifiedName, filePath: model.relative(declaration), startLine: 1, endLine: 1, properties: {} });
         }
         model.extract(nodes, edges, []);
+        onAngularStart(model);
         const result = (0, angularAnalysis_1.analyzeAngular)(model, nodes, edges, discovery, message => diagnostics.push(message));
         return { ...result, nodes, edges, diagnostics, model };
     }
@@ -516,5 +518,121 @@ const contract = `import {InjectionToken} from '@angular/core';
     }
     finally {
         f.dispose();
+    }
+});
+function selectorCrowd(count, template, eachTemplate = '') {
+    return `import {Component as C} from '@angular/core';` +
+        Array.from({ length: count }, (_, index) => `@C({selector:'x',template:${JSON.stringify(eachTemplate)}})class C${index}{}`).join('') +
+        `@C({selector:'host',template:${JSON.stringify(template)}})class Host{}`;
+}
+(0, node_test_1.test)('the 10k selector by 10k repeated-tag shape has bounded growth and retains every ambiguous component target', t => {
+    let importViews = 0;
+    let semanticWork = 0;
+    const f = fixture({ 'app.ts': selectorCrowd(10000, '<x/>'.repeat(10000)) }, ['app.ts'], {}, model => {
+        semanticWork = model.work.used;
+        const file = model.files[0];
+        const original = file.getImportDeclarations.bind(file);
+        file.getImportDeclarations = () => { importViews++; return original(); };
+    });
+    try {
+        const result = f.extract();
+        assert_1.strict.equal(result.complete, true);
+        const renders = matching(result.edges, 'RENDERS', 'Host');
+        assert_1.strict.equal(renders.length, 10000);
+        assert_1.strict.ok(renders.every(edge => edge.properties?.candidate === true && edge.properties?.confidence_band === 'medium'));
+        assert_1.strict.ok(result.model.work.used <= 20000000, `work=${result.model.work.used}`);
+        assert_1.strict.equal(importViews, 1, 'the source import list is materialized once, not once per component/API check');
+        t.diagnostic(JSON.stringify({ semanticWork, angularWork: result.model.work.used - semanticWork, totalWork: result.model.work.used, importViews }));
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('doubling both selectors and repeated tags grows charged work linearly rather than multiplying matching/render attempts', t => {
+    const one = fixture({ 'app.ts': selectorCrowd(120, '<x/>'.repeat(120)) });
+    const two = fixture({ 'app.ts': selectorCrowd(240, '<x/>'.repeat(240)) });
+    try {
+        const first = one.extract();
+        const second = two.extract();
+        assert_1.strict.equal(matching(first.edges, 'RENDERS', 'Host').length, 120);
+        assert_1.strict.equal(matching(second.edges, 'RENDERS', 'Host').length, 240);
+        assert_1.strict.ok(second.model.work.used < first.model.work.used * 3, `${first.model.work.used} -> ${second.model.work.used}`);
+        t.diagnostic(JSON.stringify({ firstWork: first.model.work.used, secondWork: second.model.work.used }));
+    }
+    finally {
+        one.dispose();
+        two.dispose();
+    }
+});
+(0, node_test_1.test)('unique selector/template output exhausts a shared allowance before graph or processed-file output can escape', () => {
+    const f = fixture({ 'app.ts': selectorCrowd(80, '', '<x/>') });
+    try {
+        let lastWork = 0;
+        let angularStarted = false;
+        const direct = fixture({ 'app.ts': selectorCrowd(80, '', '<x/>') }, ['app.ts'], { maxWork: 300000 }, () => { angularStarted = true; });
+        try {
+            assert_1.strict.throws(() => direct.extract(), error => error instanceof extractionWork_1.ExtractionWorkLimitError && error.reason === 'work_limit');
+            assert_1.strict.equal(angularStarted, true, 'the refusal covers Angular expansion after semantic extraction');
+        }
+        finally {
+            direct.dispose();
+        }
+        const refused = (0, extractor_1.extractProject)('Fixture', f.root, '', () => { }, ['app.ts'], {}, { maxWork: 300000, onWork: work => { lastWork = work; } });
+        assert_1.strict.equal(refused.complete, false);
+        assert_1.strict.deepEqual(refused.nodes, []);
+        assert_1.strict.deepEqual(refused.edges, []);
+        assert_1.strict.deepEqual(refused.processedFiles, []);
+        assert_1.strict.ok(lastWork > 0 && lastWork <= 300000);
+        assert_1.strict.ok(refused.diagnostics?.some(message => message.includes('semantic analysis work limit or cancellation')));
+        const normal = (0, extractor_1.extractProject)('Fixture', f.root, '', () => { }, ['app.ts']);
+        assert_1.strict.equal(normal.complete, true, 'a fresh independent allowance can retain the complete graph');
+        assert_1.strict.equal(normal.edges.filter(edge => edge.type === 'RENDERS').length, 80 * 80);
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('Angular synchronously polls cancellation, poisons the refused run, and does not poison a fresh extraction', () => {
+    let active = false;
+    let enabled = true;
+    let polls = 0;
+    let lastWork = 0;
+    const f = fixture({ 'app.ts': selectorCrowd(80, '<x/>'.repeat(80)) }, ['app.ts'], {
+        shouldCancel: () => active && enabled && ++polls > 100,
+        onWork: work => { lastWork = work; },
+    }, () => { active = true; });
+    try {
+        assert_1.strict.throws(() => f.extract(), error => error instanceof extractionWork_1.ExtractionWorkLimitError && error.reason === 'cancelled' && error.work === lastWork);
+        enabled = false;
+        active = false;
+        polls = 0;
+        assert_1.strict.equal(f.extract().complete, true);
+        const refused = (0, extractor_1.extractProject)('Fixture', f.root, '', () => { }, ['app.ts'], {}, { shouldCancel: () => true });
+        assert_1.strict.equal(refused.complete, false);
+        assert_1.strict.deepEqual(refused.edges, []);
+        assert_1.strict.deepEqual(refused.processedFiles, []);
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('malformed repeated HTML prefixes scan linearly while comments and raw-text content remain ignored', () => {
+    const normal = fixture({ 'app.ts': `import {Component} from '@angular/core';
+    @Component({selector:'child',template:''}) class Child{}
+    @Component({selector:'app',template:'<!-- <child/> --><script><child/></script><style><child/></style><div title="<child/>"></div>@defer {<child/>}'}) class App{}` });
+    const openComments = fixture({ 'app.ts': selectorCrowd(1, '<!--'.repeat(20000) + '<x/>') });
+    const openScripts = fixture({ 'app.ts': selectorCrowd(1, '<script>'.repeat(20000) + '<x/>') });
+    const openTags = fixture({ 'app.ts': selectorCrowd(1, '<div '.repeat(20000) + '<x/>') });
+    try {
+        assert_1.strict.equal(matching(normal.extract().edges, 'RENDERS', 'App', 'Child').length, 1);
+        assert_1.strict.equal(matching(openComments.extract().edges, 'RENDERS', 'Host').length, 0);
+        assert_1.strict.equal(matching(openScripts.extract().edges, 'RENDERS', 'Host').length, 0);
+        assert_1.strict.equal(matching(openTags.extract().edges, 'RENDERS', 'Host', 'C0').length, 1);
+    }
+    finally {
+        normal.dispose();
+        openComments.dispose();
+        openScripts.dispose();
+        openTags.dispose();
     }
 });
