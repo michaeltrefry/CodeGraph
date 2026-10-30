@@ -5,7 +5,7 @@ const node_test_1 = require("node:test");
 const ts_morph_1 = require("ts-morph");
 const semanticModel_1 = require("./semanticModel");
 const httpAnalysis_1 = require("./httpAnalysis");
-function fixture(sources) {
+function fixture(sources, serviceName) {
     const project = new ts_morph_1.Project({ useInMemoryFileSystem: true, compilerOptions: { allowJs: true, target: ts_morph_1.ts.ScriptTarget.ES2020, module: ts_morph_1.ts.ModuleKind.ESNext, experimentalDecorators: true } });
     const files = Object.entries(sources).map(([file, source]) => project.createSourceFile(`/repo/${file}`, source));
     const imports = [];
@@ -18,7 +18,7 @@ function fixture(sources) {
     const diagnostics = [];
     const model = new semanticModel_1.SemanticModel('Demo', '/repo', files, imports, d => diagnostics.push(d));
     const edges = [];
-    const coverage = (0, httpAnalysis_1.analyzeHttp)(model, [], edges, d => diagnostics.push(d));
+    const coverage = (0, httpAnalysis_1.analyzeHttp)(model, [], edges, d => diagnostics.push(d), serviceName);
     return { edges, coverage, diagnostics };
 }
 const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner).map(e => e.targetQN).sort();
@@ -193,4 +193,65 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     const result = fixture({ 'startup.ts': `const url='https://api.example/api/v1/config?cache=1';export const config=fetch(url);` });
     assert_1.strict.deepEqual(routes(result, 'Demo:startup.ts'), ['route:*:GET:/api/v1/config']);
     assert_1.strict.deepEqual((0, httpAnalysis_1.normalizeHttpUrl)('https://example.test?x=1'), { path: '/', origin: 'https://example.test' });
+});
+(0, node_test_1.test)('same path and method with conflicting origins persists one ambiguous raw edge independent of source order', () => {
+    const extract = (origins) => fixture({ 'origins.ts': `export function load(){${origins.map(origin => `fetch('${origin}/api/v1/items');`).join('')}}` });
+    const before = extract(['https://a.example', 'https://b.example']);
+    const reversed = extract(['https://b.example', 'https://a.example']);
+    assert_1.strict.deepEqual(before.edges, reversed.edges);
+    assert_1.strict.equal(before.edges.length, 1);
+    const properties = before.edges[0].properties;
+    assert_1.strict.equal(properties.binding_ambiguous, true);
+    assert_1.strict.equal(properties.binding_candidate_count, 2);
+    assert_1.strict.deepEqual(properties.binding_candidates, [
+        { http_method: 'GET', origin: 'https://a.example' },
+        { http_method: 'GET', origin: 'https://b.example' },
+    ]);
+    assert_1.strict.equal(properties.origin, undefined);
+    assert_1.strict.equal(properties.confidence_band, 'low');
+    assert_1.strict.equal(before.coverage.direct, 1);
+    assert_1.strict.equal(before.coverage.ambiguous, 1);
+    assert_1.strict.equal(before.coverage.unresolved, 1);
+    assert_1.strict.deepEqual(before.coverage, reversed.coverage);
+    assert_1.strict.ok(before.diagnostics.some(message => message.includes('conflicting HTTP target evidence')));
+});
+(0, node_test_1.test)('same matching evidence deduplicates while different methods retain separate identities', () => {
+    const result = fixture({ 'same.ts': `export function load(){
+    fetch('https://API.example:443/api/v1/items?x=1');
+    fetch('https://api.example/api/v1/items?x=2#fragment');
+    fetch('https://api.example/api/v1/items',{method:'DELETE'});
+  }` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:same.ts#load'), ['route:*:DELETE:/api/v1/items', 'route:*:GET:/api/v1/items']);
+    assert_1.strict.ok(result.edges.every(edge => edge.properties?.binding_ambiguous === undefined));
+    assert_1.strict.ok(result.edges.every(edge => edge.properties?.origin === 'https://api.example'));
+    assert_1.strict.equal(result.coverage.direct, 2);
+    assert_1.strict.equal(result.coverage.ambiguous, 0);
+    assert_1.strict.equal(result.coverage.unresolved, 0);
+    assert_1.strict.deepEqual((0, httpAnalysis_1.normalizeHttpUrl)('//API.example:80/api/v1/items'), { path: '/api/v1/items', origin: '//api.example:80' });
+});
+(0, node_test_1.test)('same normalized route with scoped and unscoped service evidence cannot retain an authoritative service hint', () => {
+    const extract = (reverse) => fixture({ 'services.ts': `
+    @ApiContract({endpoint:'/api/v1/items',httpMethod:'POST'}) class Request {}
+    export function load(service){${reverse ?
+            `service.send(new Request());fetch('/api/v1/items',{method:'POST'});` :
+            `fetch('/api/v1/items',{method:'POST'});service.send(new Request());`}}
+  ` }, 'Catalog');
+    const result = extract(false);
+    assert_1.strict.deepEqual(result.edges, extract(true).edges);
+    assert_1.strict.equal(result.edges.length, 1);
+    assert_1.strict.equal(result.edges[0].properties?.binding_ambiguous, true);
+    assert_1.strict.equal(result.edges[0].properties?.service_name, undefined);
+    assert_1.strict.equal(result.edges[0].properties?.request_dto, undefined);
+    assert_1.strict.equal(result.coverage.ambiguous, 1);
+});
+(0, node_test_1.test)('ambiguous target candidate evidence is bounded and canonical across many origins', () => {
+    const origins = Array.from({ length: 15 }, (_, index) => `https://host-${index.toString().padStart(2, '0')}.example`);
+    const extract = (values) => fixture({ 'bounded.ts': `export function load(){${values.map(origin => `fetch('${origin}/api/v1/items');`).join('')}}` });
+    const result = extract(origins);
+    assert_1.strict.deepEqual(result.edges, extract([...origins].reverse()).edges);
+    assert_1.strict.equal(result.edges[0].properties?.binding_candidate_count, 15);
+    assert_1.strict.equal((result.edges[0].properties?.binding_candidates).length, 8);
+    assert_1.strict.equal(result.edges[0].properties?.origin, undefined);
+    assert_1.strict.equal(result.coverage.unresolved, 1);
+    assert_1.strict.equal(result.coverage.direct, 1);
 });

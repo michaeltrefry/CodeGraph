@@ -5,7 +5,7 @@ import { SemanticModel } from './semanticModel';
 import { analyzeHttp, normalizeHttpUrl } from './httpAnalysis';
 import type { PendingEdgeDto, ResolvedImportDto } from './protocol';
 
-function fixture(sources: Record<string, string>) {
+function fixture(sources: Record<string, string>, serviceName?: string) {
   const project = new Project({ useInMemoryFileSystem: true, compilerOptions: { allowJs: true, target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext, experimentalDecorators: true } });
   const files = Object.entries(sources).map(([file, source]) => project.createSourceFile(`/repo/${file}`, source));
   const imports: ResolvedImportDto[] = [];
@@ -17,7 +17,7 @@ function fixture(sources: Record<string, string>) {
   const diagnostics: string[] = [];
   const model = new SemanticModel('Demo', '/repo', files, imports, d => diagnostics.push(d));
   const edges: PendingEdgeDto[] = [];
-  const coverage = analyzeHttp(model, [], edges, d => diagnostics.push(d));
+  const coverage = analyzeHttp(model, [], edges, d => diagnostics.push(d), serviceName);
   return { edges, coverage, diagnostics };
 }
 const routes = (result: ReturnType<typeof fixture>, owner: string) => result.edges.filter(e => e.sourceQN === owner).map(e => e.targetQN).sort();
@@ -207,4 +207,70 @@ test('module initialization HTTP has explicit file ownership and origin query no
   const result=fixture({'startup.ts':`const url='https://api.example/api/v1/config?cache=1';export const config=fetch(url);`});
   assert.deepEqual(routes(result,'Demo:startup.ts'),['route:*:GET:/api/v1/config']);
   assert.deepEqual(normalizeHttpUrl('https://example.test?x=1'),{path:'/',origin:'https://example.test'});
+});
+
+
+test('same path and method with conflicting origins persists one ambiguous raw edge independent of source order', () => {
+  const extract=(origins:string[])=>fixture({'origins.ts':`export function load(){${origins.map(origin=>`fetch('${origin}/api/v1/items');`).join('')}}`});
+  const before=extract(['https://a.example','https://b.example']);
+  const reversed=extract(['https://b.example','https://a.example']);
+  assert.deepEqual(before.edges,reversed.edges);
+  assert.equal(before.edges.length,1);
+  const properties=before.edges[0].properties!;
+  assert.equal(properties.binding_ambiguous,true);
+  assert.equal(properties.binding_candidate_count,2);
+  assert.deepEqual(properties.binding_candidates,[
+    {http_method:'GET',origin:'https://a.example'},
+    {http_method:'GET',origin:'https://b.example'},
+  ]);
+  assert.equal(properties.origin,undefined);
+  assert.equal(properties.confidence_band,'low');
+  assert.equal(before.coverage.direct,1);
+  assert.equal(before.coverage.ambiguous,1);
+  assert.equal(before.coverage.unresolved,1);
+  assert.deepEqual(before.coverage,reversed.coverage);
+  assert.ok(before.diagnostics.some(message=>message.includes('conflicting HTTP target evidence')));
+});
+
+test('same matching evidence deduplicates while different methods retain separate identities', () => {
+  const result=fixture({'same.ts':`export function load(){
+    fetch('https://API.example:443/api/v1/items?x=1');
+    fetch('https://api.example/api/v1/items?x=2#fragment');
+    fetch('https://api.example/api/v1/items',{method:'DELETE'});
+  }`});
+  assert.deepEqual(routes(result,'Demo:same.ts#load'),['route:*:DELETE:/api/v1/items','route:*:GET:/api/v1/items']);
+  assert.ok(result.edges.every(edge=>edge.properties?.binding_ambiguous===undefined));
+  assert.ok(result.edges.every(edge=>edge.properties?.origin==='https://api.example'));
+  assert.equal(result.coverage.direct,2);
+  assert.equal(result.coverage.ambiguous,0);
+  assert.equal(result.coverage.unresolved,0);
+  assert.deepEqual(normalizeHttpUrl('//API.example:80/api/v1/items'),{path:'/api/v1/items',origin:'//api.example:80'});
+});
+
+test('same normalized route with scoped and unscoped service evidence cannot retain an authoritative service hint', () => {
+  const extract=(reverse:boolean)=>fixture({'services.ts':`
+    @ApiContract({endpoint:'/api/v1/items',httpMethod:'POST'}) class Request {}
+    export function load(service){${reverse?
+      `service.send(new Request());fetch('/api/v1/items',{method:'POST'});`:
+      `fetch('/api/v1/items',{method:'POST'});service.send(new Request());`}}
+  `},'Catalog');
+  const result=extract(false);
+  assert.deepEqual(result.edges,extract(true).edges);
+  assert.equal(result.edges.length,1);
+  assert.equal(result.edges[0].properties?.binding_ambiguous,true);
+  assert.equal(result.edges[0].properties?.service_name,undefined);
+  assert.equal(result.edges[0].properties?.request_dto,undefined);
+  assert.equal(result.coverage.ambiguous,1);
+});
+
+test('ambiguous target candidate evidence is bounded and canonical across many origins', () => {
+  const origins=Array.from({length:15},(_,index)=>`https://host-${index.toString().padStart(2,'0')}.example`);
+  const extract=(values:string[])=>fixture({'bounded.ts':`export function load(){${values.map(origin=>`fetch('${origin}/api/v1/items');`).join('')}}`});
+  const result=extract(origins);
+  assert.deepEqual(result.edges,extract([...origins].reverse()).edges);
+  assert.equal(result.edges[0].properties?.binding_candidate_count,15);
+  assert.equal((result.edges[0].properties?.binding_candidates as unknown[]).length,8);
+  assert.equal(result.edges[0].properties?.origin,undefined);
+  assert.equal(result.coverage.unresolved,1);
+  assert.equal(result.coverage.direct,1);
 });

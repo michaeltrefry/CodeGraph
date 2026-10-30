@@ -10,10 +10,15 @@ const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIO
  * resolved admitted body must lead to a recognized transport. All caches are per run. */
 function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
     const evaluator = new staticEvaluation_1.StaticEvaluator(model, diagnostic);
-    const coverage = { direct: 0, wrapped: 0, unresolved: 0, bounded: 0, complete: true };
+    const coverage = { direct: 0, wrapped: 0, unresolved: 0, ambiguous: 0, bounded: 0, complete: true };
     const cache = new Map();
     const calls = new Map();
-    const seenEdges = new Set(edges.filter(e => e.type === 'HTTP_CALLS').map(e => `${e.sourceQN}|${e.targetQN}`));
+    const existingEdges = new Map(edges.filter(e => e.type === 'HTTP_CALLS').map(e => [`${e.sourceQN}|${e.targetQN}`, e]));
+    // Persistence has one edge per source/target/type. Accumulate matching evidence before
+    // choosing metadata so duplicate normalized paths cannot silently pick the first origin.
+    const emitted = new Map();
+    const propertiesKey = (properties) => JSON.stringify(Object.entries(properties).sort(([a], [b]) => a.localeCompare(b)));
+    const matchingEvidence = (properties) => Object.fromEntries(['http_method', 'origin', 'origin_pattern', 'service_name'].filter(key => properties[key] !== undefined).map(key => [key, properties[key]]));
     let samples = 0, summaries = 0;
     const diag = (message) => { if (samples++ < 60)
         diagnostic(`httpUnresolved: ${message}`); };
@@ -120,20 +125,63 @@ function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
             }
             const targetQN = `route:*:${fact.method}:${url.path}`;
             const key = `${qn}|${targetQN}`;
-            if (seenEdges.has(key))
-                continue;
-            seenEdges.add(key);
-            if (fact.chain.length)
+            const properties = {
+                http_method: fact.method, url_pattern: url.path, http_kind: fact.kind,
+                call_kind: fact.chain.length ? 'wrapper' : 'direct',
+                confidence_band: url.path.includes('{param}') || url.dynamicOrigin ? 'medium' : 'high',
+                ...(url.origin ? { origin: url.origin } : {}), ...(url.dynamicOrigin ? { origin_pattern: '{param}' } : {}),
+                ...(fact.chain.length ? { wrapper_chain: fact.chain } : {}), ...(fact.requestDto ? { request_dto: fact.requestDto, ...(serviceName ? { service_name: serviceName } : {}) } : {}),
+            };
+            const evidence = matchingEvidence(properties);
+            const evidenceKey = propertiesKey(evidence);
+            const representative = propertiesKey(properties);
+            let aggregate = emitted.get(key);
+            if (!aggregate) {
+                const existing = existingEdges.get(key);
+                const edge = existing ?? { sourceQN: qn, targetQN, type: 'HTTP_CALLS', properties };
+                const priorProperties = existing?.properties ?? properties;
+                edge.properties ?? (edge.properties = properties);
+                aggregate = { edge, representative: propertiesKey(priorProperties), candidates: new Map(), existing: !!existing };
+                if (existing) {
+                    const priorCandidates = priorProperties.binding_candidates;
+                    for (const candidate of Array.isArray(priorCandidates) ? priorCandidates : [matchingEvidence(priorProperties)]) {
+                        if (candidate && typeof candidate === 'object')
+                            aggregate.candidates.set(propertiesKey(candidate), candidate);
+                    }
+                }
+                emitted.set(key, aggregate);
+            }
+            aggregate.candidates.set(evidenceKey, evidence);
+            // Other annotations (e.g. wrapper chains) also have a deterministic representative.
+            if (representative < aggregate.representative) {
+                aggregate.edge.properties = properties;
+                aggregate.representative = representative;
+            }
+        }
+    }
+    for (const aggregate of emitted.values()) {
+        const { edge, candidates } = aggregate;
+        const properties = edge.properties;
+        if (candidates.size > 1) {
+            properties.binding_ambiguous = true;
+            properties.binding_candidate_count = candidates.size;
+            properties.binding_candidates = [...candidates].sort(([a], [b]) => a.localeCompare(b)).slice(0, 8).map(([, evidence]) => evidence);
+            properties.confidence_band = 'low';
+            // None of the incompatible target hints is an authoritative scalar claim.
+            delete properties.origin;
+            delete properties.origin_pattern;
+            delete properties.service_name;
+            delete properties.request_dto;
+            coverage.ambiguous++;
+            coverage.unresolved++;
+            diag(`${edge.sourceQN}: conflicting HTTP target evidence for ${edge.targetQN} (${candidates.size} candidates)`);
+        }
+        if (!aggregate.existing) {
+            edges.push(edge);
+            if (properties.call_kind === 'wrapper')
                 coverage.wrapped++;
             else
                 coverage.direct++;
-            edges.push({ sourceQN: qn, targetQN, type: 'HTTP_CALLS', properties: {
-                    http_method: fact.method, url_pattern: url.path, http_kind: fact.kind,
-                    call_kind: fact.chain.length ? 'wrapper' : 'direct',
-                    confidence_band: url.path.includes('{param}') || url.dynamicOrigin ? 'medium' : 'high',
-                    ...(url.origin ? { origin: url.origin } : {}), ...(url.dynamicOrigin ? { origin_pattern: '{param}' } : {}),
-                    ...(fact.chain.length ? { wrapper_chain: fact.chain } : {}), ...(fact.requestDto ? { request_dto: fact.requestDto, ...(serviceName ? { service_name: serviceName } : {}) } : {}),
-                } });
         }
     }
     diagnostic(`HTTP coverage: ${JSON.stringify(coverage)}`);
@@ -155,6 +203,19 @@ function normalizeHttpUrl(raw) {
     else if (route.startsWith('{param}/')) {
         dynamicOrigin = true;
         route = route.slice('{param}'.length);
+    }
+    if (origin) {
+        try {
+            const relative = origin.startsWith('//');
+            const parsed = new URL(relative ? `http:${origin}` : origin);
+            // A scheme-relative origin has no known default port. Preserve an explicit port
+            // rather than applying the temporary parser scheme's HTTP default.
+            const explicitPort = relative ? origin.match(/:(\d+)$/)?.[1] : undefined;
+            origin = relative ? `//${parsed.hostname}${explicitPort ? `:${Number(explicitPort)}` : ''}` : parsed.origin;
+        }
+        catch {
+            return undefined;
+        }
     }
     route = route.split(/[?#]/)[0];
     if (!route.startsWith('/') || route.includes('://'))
