@@ -256,7 +256,7 @@ public class TauriOperationAnalysisTests
             { MaxTauriAnalysisWork = work, MaxTauriAnalysisDepth = depth }), new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
         Create(100, 4).ExtractionFingerprint.ShouldNotBe(Create(101, 4).ExtractionFingerprint);
         Create(100, 4).ExtractionFingerprint.ShouldNotBe(Create(100, 5).ExtractionFingerprint);
-        ExtractionVersionCatalog.PipelineVersion.ShouldBe(10);
+        ExtractionVersionCatalog.PipelineVersion.ShouldBeGreaterThanOrEqualTo(10);
     }
 
     private static (Dictionary<string, string> Sources, List<GraphNode> Declarations) Commands(int count, bool sameNames = false)

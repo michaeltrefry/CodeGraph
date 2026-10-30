@@ -26,8 +26,14 @@ public class IndexingOptions
     /// <summary>Total decoded text budget (KB) shared by native endpoint and Tauri analysis per run.</summary>
     public int MaxRegistrationAnalysisTextKb { get; set; } = 64 * 1024;
 
-    /// <summary>Deterministic examined work allowed for source-only Tauri binding analysis.
+    /// <summary>Deterministic examined work shared by native endpoint preliminary/binding passes.
     /// Exhaustion preserves the prior graph/hashes; raising this limit retries unchanged commits.</summary>
+    public long MaxBackendEndpointAnalysisWork { get; set; } = 100_000_000;
+
+    /// <summary>Endpoint AST nesting limit, capped at 2048; interpretation is independently capped at 512.</summary>
+    public int MaxBackendEndpointAnalysisDepth { get; set; } = 2048;
+
+    /// <summary>Deterministic examined work allowed for source-only Tauri binding analysis.</summary>
     public long MaxTauriAnalysisWork { get; set; } = 20_000_000;
 
     /// <summary>Maximum Tauri delimiter, module/import and constant-resolution nesting depth,

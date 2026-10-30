@@ -33,6 +33,9 @@ public class ExtractorContext
     /// </summary>
     public string? DotnetProject { get; init; }
 
+    /// <summary>Run-scoped endpoint allowance; preliminary and resolved passes share it.</summary>
+    public BackendEndpointWorkBudget? BackendEndpointWork { get; init; }
+
     /// <summary>Discovery-admitted, bounded Go module manifests keyed by repository-relative
     /// path. Extractors consume this snapshot and never discover/read manifests themselves.</summary>
     public IReadOnlyDictionary<string, string> GoModuleManifests { get; init; } = new Dictionary<string, string>();

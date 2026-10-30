@@ -21,14 +21,22 @@ public partial class TreeSitterExtractor
             return Task.FromResult(new ExtractionResult());
         try
         {
+            var work = context.BackendEndpointWork ?? new BackendEndpointWorkBudget();
+            work.Charge(content.Length, ct); // charge before native UTF conversion/parse
+            var handlers = availableNodes as BackendEndpointHandlerIndex
+                ?? new BackendEndpointHandlerIndex(availableNodes, context.RepositoryName, work, ct);
             using var parser = new Parser { Language = _specForExtension(Path.GetExtension(filePath))!.GetLanguage() };
             using var tree = parser.Parse(content);
             // Registration extraction cannot safely replace a previously complete route tree from
             // a recovered syntax tree: partial output could silently remove endpoints.
             if (tree is null || tree.RootNode.HasError)
                 return Task.FromResult(ExtractionResult.Failure("Backend registration source has syntax errors"));
-            var pass = new BackendRegistrationPass(tree.RootNode, filePath, context, availableNodes, ct);
+            var pass = new BackendRegistrationPass(tree.RootNode, filePath, content, context, handlers, work, ct);
             return Task.FromResult(pass.Extract());
+        }
+        catch (BackendEndpointLimitException ex)
+        {
+            return Task.FromResult(new ExtractionResult { Succeeded = false, Complete = false, FailureReason = ex.Message });
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -37,19 +45,28 @@ public partial class TreeSitterExtractor
         }
     }
 
-    private sealed class BackendRegistrationPass(Node root, string filePath, ExtractorContext context,
-        IReadOnlyCollection<GraphNode> availableNodes, CancellationToken ct)
+    private sealed class BackendRegistrationPass(Node root, string filePath, string content, ExtractorContext context,
+        BackendEndpointHandlerIndex handlers, BackendEndpointWorkBudget work, CancellationToken ct)
     {
         private readonly string _relative = Path.GetRelativePath(context.RootPath, filePath).Replace('\\', '/');
-        private readonly Dictionary<string, string> _imports = new(StringComparer.Ordinal);
+        private Dictionary<string, string> _imports = new(StringComparer.Ordinal);
         private readonly List<GraphNode> _nodes = [];
         private readonly List<PendingEdge> _edges = [];
         private readonly List<Router> _routers = [];
         private readonly bool _rust = Path.GetExtension(filePath) == ".rs";
-        private List<Node> _rustModules = [];
         private List<Node> _functions = [];
         private List<Node> _rustUses = [];
-        private readonly Dictionary<(int, int), List<Node>> _shadowDeclarations = [];
+        private readonly Dictionary<(int Start, int End, string Type), (string Scope, Node? Function)> _locations = [];
+        private readonly Dictionary<(int Start, int End, string Type), string> _texts = [];
+        private readonly Dictionary<(int Start, int End, string Type), string?> _literals = [];
+        private readonly Dictionary<(string Scope, string Name), HashSet<int>> _functionLines = [];
+        private readonly Dictionary<((int, int, string) Function, string Name), int> _shadowStarts = [];
+        private readonly Dictionary<string, Dictionary<string, string>> _scopeImports = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Expression, string Scope), IReadOnlyList<GraphNode>> _resolved = [];
+        private readonly List<Node> _goImports = [];
+        private readonly Dictionary<string, string> _emptyImports = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _ginAliases = new(StringComparer.Ordinal);
+        private int _evaluationDepth;
         private string? _goModule;
         private string? _goRoot;
 
@@ -67,14 +84,10 @@ public partial class TreeSitterExtractor
 
         public ExtractionResult Extract()
         {
-            _functions = Descendants(root).Where(n => n.Type is "function_item" or "function_declaration" or "method_declaration").ToList();
-            if (_rust)
-            {
-                _rustModules = Descendants(root).Where(n => n.Type == "mod_item").ToList();
-                _rustUses = Descendants(root).Where(n => n.Type == "use_declaration").ToList();
-            }
+            IndexAst();
             ReadImports();
-            if (_rust ? !_imports.Values.Any(x => x.StartsWith("axum::", StringComparison.Ordinal)) && !root.Text.Contains("axum::Router")
+            work.Charge(content.Length, ct);
+            if (_rust ? !_scopeImports.Values.Any(map => map.Values.Any(x => x.StartsWith("axum::", StringComparison.Ordinal))) && !content.Contains("axum::Router")
                       : !_imports.Values.Contains("github.com/gin-gonic/gin"))
                 return new ExtractionResult();
             foreach (var function in _functions)
@@ -87,11 +100,11 @@ public partial class TreeSitterExtractor
                     foreach (var parameter in Descendants(function.GetChildForField("parameters"))
                                  .Where(n => n.Type == "parameter_declaration"))
                     {
-                        var type = parameter.GetChildForField("type")?.Text ?? "";
-                        if (_imports.Any(i => i.Value == "github.com/gin-gonic/gin" &&
-                                              (type == $"*{i.Key}.Engine" || type == $"*{i.Key}.RouterGroup")))
+                        var type = Text(parameter.GetChildForField("type"));
+                        if (type.StartsWith('*') && type.LastIndexOf('.') is var dot && dot > 1
+                            && _ginAliases.Contains(type[1..dot]) && type[(dot + 1)..] is "Engine" or "RouterGroup")
                             foreach (var name in parameter.NamedChildren.Where(n => n.Type == "identifier"))
-                                env[name.Text] = new Router { Prefix = type.EndsWith("RouterGroup") ? null : "" };
+                                env[Text(name)] = new Router { Prefix = type.EndsWith("RouterGroup") ? null : "" };
                     }
                 }
                 Process(function.GetChildForField("body"), env);
@@ -101,6 +114,7 @@ public partial class TreeSitterExtractor
                 // Axum's any handler is the MethodRouter fallback: an explicit method wins,
                 // including when Router::route merges registrations for the same static path.
                 // Gin registers every Any method directly, so conflicting entries remain ambiguous.
+                foreach (var route in router.Routes) work.Charge(6L * (1 + (route.Path?.Length ?? 0)), ct);
                 var registrations = router.Routes;
                 if (_rust)
                 {
@@ -120,6 +134,10 @@ public partial class TreeSitterExtractor
                     if (!_rust || !registration.Wildcard || !explicitMethods.Contains((registration.Path, registration.Verb)))
                         Emit(registration);
             }
+            foreach (var node in _nodes) work.Charge(node.QualifiedName.Length * 3L +
+                (node.Properties.GetValueOrDefault("handler_qualified_name")?.ToString()?.Length ?? 0) * 2L, ct);
+            foreach (var edge in _edges) work.Charge(edge.SourceQN.Length * 2L + edge.TargetQN.Length, ct);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
             foreach (var duplicate in _nodes.GroupBy(n => n.QualifiedName).Where(g => g.Select(n =>
                          n.Properties.GetValueOrDefault("handler_qualified_name")?.ToString() ?? n.Properties["handler_expression"].ToString()).Distinct().Count() > 1))
             {
@@ -130,32 +148,41 @@ public partial class TreeSitterExtractor
                     route.Properties["confidence"] = "low";
                     route.Properties.Remove("handler_qualified_name");
                 }
-                _edges.RemoveAll(e => e.SourceQN == duplicate.Key);
+                ambiguous.Add(duplicate.Key);
             }
+            _edges.RemoveAll(edge => ambiguous.Contains(edge.SourceQN));
             return new ExtractionResult { Nodes = _nodes.DistinctBy(n => n.QualifiedName).ToList(),
                 Edges = _edges.DistinctBy(e => (e.SourceQN, e.TargetQN, e.Type)).ToList() };
         }
 
         private void ReadImports()
         {
-            foreach (var node in Descendants(root))
+            if (_rust)
             {
-                if (_rust && node.Type == "use_declaration") ReadRustUse(node);
-                else if (!_rust && node.Type == "import_spec")
+                foreach (var group in _rustUses.GroupBy(RustScope))
                 {
-                    var path = Literal(node.GetChildForField("path"));
-                    if (path is not null)
-                        _imports[node.GetChildForField("name")?.Text ?? path.Split('/').Last()] = path;
+                    _imports = new(StringComparer.Ordinal);
+                    foreach (var node in group) { work.Charge(1, ct); ReadRustUse(node); }
+                    _scopeImports[group.Key] = _imports;
                 }
+            }
+            else foreach (var node in _goImports)
+            {
+                work.Charge(1, ct);
+                var path = Literal(node.GetChildForField("path"));
+                if (path is not null)
+                    _imports[node.GetChildForField("name") is { } alias ? Text(alias) : path.Split('/').Last()] = path;
             }
             if (!_rust)
             {
+                foreach (var import in _imports) if (import.Value == "github.com/gin-gonic/gin") _ginAliases.Add(import.Key);
                 var directory = DirectoryOf(_relative);
                 while (true)
                 {
                     var manifest = directory.Length == 0 ? "go.mod" : directory + "/go.mod";
                     if (context.GoModuleManifests.TryGetValue(manifest, out var content))
                     {
+                        work.Charge(content.Length, ct);
                         var modules = Regex.Matches(content, @"(?m)^[ \t]*module[ \t]+(?:""(?<path>[^""\r\n]+)""|(?<path>[^ \t\r\n""]+))[ \t]*(?://[^\r\n]*)?\r?$");
                         if (modules.Count != 1)
                             throw new InvalidOperationException($"Supplied Go manifest {manifest} has no unique module identity");
@@ -171,22 +198,22 @@ public partial class TreeSitterExtractor
 
         private void SetRustImports(Node origin)
         {
-            _imports.Clear();
-            var scope = RustScope(origin);
-            foreach (var use in _rustUses.Where(n => RustScope(n) is var s && scope == s)
-                         .OrderBy(n => RustScope(n).Length))
-                ReadRustUse(use);
+            work.Charge(1, ct);
+            _imports = _scopeImports.GetValueOrDefault(RustScope(origin)) ?? _emptyImports;
         }
 
         private void ReadRustUse(Node node)
         {
-            var text = node.Text.Trim().TrimEnd(';');
+            var text = Text(node).Trim().TrimEnd(';');
             text = text[(text.IndexOf("use ", StringComparison.Ordinal) + 4)..].Trim();
             ExpandUse(text, "");
         }
 
-        private void ExpandUse(string text, string prefix)
+        private void ExpandUse(string text, string prefix, int depth = 0)
         {
+            work.CheckDepth(depth, ct);
+            if (depth > 512) throw new BackendEndpointLimitException("Backend endpoint evaluation depth limit exceeded");
+            work.Charge(text.Length + prefix.Length, ct);
             var brace = text.IndexOf('{');
             if (brace >= 0 && text.EndsWith('}'))
             {
@@ -195,7 +222,7 @@ public partial class TreeSitterExtractor
                 {
                     if (text[i] == '{') nesting++;
                     if ((text[i] == ',' && nesting == 0) || i == text.Length - 1)
-                    { ExpandUse(text[start..i].Trim(), prefix + text[..brace]); start = i + 1; }
+                    { ExpandUse(text[start..i].Trim(), prefix + text[..brace], depth + 1); start = i + 1; }
                     if (text[i] == '}') nesting--;
                 }
                 return;
@@ -209,7 +236,8 @@ public partial class TreeSitterExtractor
         private void Process(Node? node, Dictionary<string, Router> env)
         {
             if (node is null) return;
-            ct.ThrowIfCancellationRequested();
+            using var evaluation = EnterEvaluation();
+            work.Charge(1, ct);
             if (node.Type is "let_declaration" or "short_var_declaration" or "var_spec" or "assignment_expression" or "assignment_statement")
             {
                 var value = node.GetChildForField("value") ?? node.GetChildForField("right");
@@ -219,32 +247,40 @@ public partial class TreeSitterExtractor
                 if (value is not null && name is not null)
                 {
                     var router = Evaluate(value, env);
-                    if (router is not null) env[name.Text] = router;
-                    else env.Remove(name.Text);
+                    if (router is not null) env[Text(name)] = router;
+                    else env.Remove(Text(name));
                 }
                 return;
             }
             if (node.Type == "call_expression") { Evaluate(node, env); return; }
             if (node.Type is "function_item" or "function_declaration" or "method_declaration" or "closure_expression" or "func_literal") return;
             foreach (var child in node.NamedChildren)
-                Process(child, node.Type is "if_expression" or "if_statement" ? new(env, StringComparer.Ordinal) : env);
+                Process(child, node.Type is "if_expression" or "if_statement" ? CopyEnvironment(env) : env);
         }
 
         private Router? Evaluate(Node node, Dictionary<string, Router> env)
         {
-            if (node.Type == "identifier") return env.GetValueOrDefault(node.Text);
+            using var evaluation = EnterEvaluation();
+            work.Charge(1, ct);
+            if (node.Type == "identifier") return env.GetValueOrDefault(Text(node));
             if (node.Type is "reference_expression" or "parenthesized_expression" or "try_expression")
                 return node.NamedChildren.Select(n => Evaluate(n, env)).FirstOrDefault(r => r is not null);
             if (node.Type != "call_expression") return null;
             var function = node.GetChildForField("function");
             if (function is null) return null;
             var arguments = node.GetChildForField("arguments")?.NamedChildren.ToList() ?? [];
-            var text = function.Text;
-            var constructor = _rust ? text.EndsWith("::new") && ExpandPath(text[..^5]) == "axum::Router"
-                : _imports.Any(i => i.Value == "github.com/gin-gonic/gin" && (text == i.Key + ".New" || text == i.Key + ".Default"));
-            if (constructor) return NewRouter();
             var receiver = function.GetChildForField(_rust ? "value" : "operand");
-            var method = function.GetChildForField("field")?.Text;
+            var field = function.GetChildForField("field");
+            var method = field is null ? null : Text(field);
+            var constructor = false;
+            if (_rust && receiver is null)
+            {
+                var text = Text(function);
+                constructor = text.EndsWith("::new") && ExpandPath(text[..^5]) == "axum::Router";
+            }
+            else if (!_rust && receiver?.Type == "identifier" && method is "New" or "Default")
+                constructor = _imports.GetValueOrDefault(Text(receiver)) == "github.com/gin-gonic/gin";
+            if (constructor) return NewRouter();
             if (receiver is null || method is null) return null;
             var parent = Evaluate(receiver, env);
             if (parent is null) return null;
@@ -264,7 +300,9 @@ public partial class TreeSitterExtractor
                 return parent;
             }
             // Rust routers are values; transfer the accumulated tree to the outer builder.
-            var result = NewRouter(); parent.Consumed = true; result.Routes.AddRange(parent.Routes);
+            var result = NewRouter(); parent.Consumed = true;
+            work.Charge(parent.Routes.Count, ct);
+            result.Routes.AddRange(parent.Routes);
             if (method == "route" && arguments.Count >= 2)
             {
                 foreach (var (verb, handler) in MethodHandlers(arguments[1]))
@@ -276,14 +314,16 @@ public partial class TreeSitterExtractor
                 if (nested is not null)
                 {
                     nested.Consumed = true;
+                    work.Charge(nested.Routes.Count, ct);
                     result.Routes.AddRange(nested.Routes.Select(r => r with { Path = method == "nest" ? Join(Literal(arguments[0]), r.Path) : r.Path }));
                 }
             }
             return result;
         }
 
-        private static void AddRegistration(Router router, Registration registration)
+        private void AddRegistration(Router router, Registration registration)
         {
+            work.Charge(registration.Wildcard ? WildcardHttpMethods.Length : 1, ct);
             if (registration.Wildcard)
                 foreach (var method in WildcardHttpMethods)
                     router.Routes.Add(registration with { Verb = method, Wildcard = true, RegistrationMethod = "ANY" });
@@ -298,28 +338,33 @@ public partial class TreeSitterExtractor
         }
         private IEnumerable<(string Verb, Node Handler)> MethodHandlers(Node node)
         {
+            using var evaluation = EnterEvaluation();
+            work.Charge(1, ct);
             if (node.Type != "call_expression") yield break;
             var function = node.GetChildForField("function");
             var args = node.GetChildForField("arguments")?.NamedChildren.ToList() ?? [];
             if (function is null || args.Count == 0) yield break;
             var receiver = function.GetChildForField("value");
-            var name = function.GetChildForField("field")?.Text ?? ExpandPath(function.Text).Split("::").Last();
+            var name = function.GetChildForField("field") is { } field ? Text(field) : ExpandPath(Text(function)).Split("::").Last();
             if (receiver is not null)
                 foreach (var previous in MethodHandlers(receiver)) yield return previous;
-            else if (!ExpandPath(function.Text).StartsWith("axum::routing::", StringComparison.Ordinal)) yield break;
+            else if (!ExpandPath(Text(function)).StartsWith("axum::routing::", StringComparison.Ordinal)) yield break;
             if (name is "get" or "post" or "put" or "patch" or "delete" or "head" or "options" or "trace" or "connect" or "any")
                 yield return (name.ToUpperInvariant(), args[0]);
         }
 
         private void Emit(Registration registration)
         {
+            work.Charge(1, ct);
             if (_rust) SetRustImports(registration.Origin);
             var path = registration.Path;
             var handlerText = registration.Handler.Type == "call_expression"
-                ? registration.Handler.GetChildForField("function")?.Text ?? registration.Handler.Text
-                : registration.Handler.Text;
-            var targets = ResolveHandler(handlerText, registration.Origin).ToList();
+                ? Text(registration.Handler.GetChildForField("function") ?? registration.Handler)
+                : Text(registration.Handler);
+            var targets = ResolveHandler(handlerText, registration.Origin);
             var resolved = path is not null && registration.Verb != "UNKNOWN" && targets.Count == 1;
+            work.Charge((path?.Length ?? 0) * 4L + _relative.Length * 3L + handlerText.Length * 5L
+                + context.RepositoryName.Length + (targets.Count == 1 ? targets[0].QualifiedName.Length : 0), ct);
             var routeIdentity = path ?? $"dynamic:{_relative}:{registration.Origin.StartPosition.Row + 1}:{registration.Origin.StartPosition.Column + 1}";
             var qn = $"route:{context.RepositoryName}:{registration.Verb}:{routeIdentity}";
             var properties = new Dictionary<string, object>
@@ -344,104 +389,165 @@ public partial class TreeSitterExtractor
                 new() { ["origin_file"] = _relative, ["semantic_owner"] = "http_endpoints", ["framework"] = _rust ? "axum" : "gin", ["confidence"] = "high" }));
         }
 
-        private IEnumerable<GraphNode> ResolveHandler(string expression, Node origin)
+        private IReadOnlyList<GraphNode> ResolveHandler(string expression, Node origin)
         {
+            work.Charge(expression.Length + 1, ct);
             if (!Regex.IsMatch(expression, _rust ? @"^\w+(::\w+)*$" : @"^\w+(\.\w+)*$")) return [];
             var separator = _rust ? "::" : ".";
             var parts = expression.Split(separator);
-            // A local variable/parameter can shadow a callable or imported package. Until its
-            // semantic target is proven, retain the registration without inventing HANDLES.
-            var enclosing = _functions.Where(n => Before(n, origin) && After(n, origin)).LastOrDefault();
-            if (enclosing is not null)
-            {
-                var key = (enclosing.StartPosition.Row, enclosing.StartPosition.Column);
-                if (!_shadowDeclarations.TryGetValue(key, out var identifiers))
-                    _shadowDeclarations[key] = identifiers = Descendants(enclosing).Where(n => n.Type is "let_declaration" or "short_var_declaration" or "parameter" or "parameter_declaration").ToList();
-                if (identifiers.Any(n => Before(n, origin) &&
-                    (n.GetChildForField("pattern") ?? n.GetChildForField("name") ?? n.GetChildForField("left"))?.Text == parts[0])) return [];
-            }
+            var location = _locations[Key(origin)];
+            work.Charge(parts[0].Length, ct);
+            if (location.Function is { } function && _shadowStarts.TryGetValue((Key(function), parts[0]), out var shadow)
+                && shadow < origin.StartIndex) return [];
+            work.Charge(expression.Length + location.Scope.Length, ct);
+            var cacheKey = (expression, location.Scope);
+            if (_resolved.TryGetValue(cacheKey, out var cached)) return cached;
             var name = (_rust ? ExpandPath(expression).Split("::") : parts)[^1];
-            var candidates = availableNodes.Where(n => n.Repository == context.RepositoryName &&
-                n.Label is NodeLabel.Function or NodeLabel.Method && n.Name == name &&
-                Path.GetExtension(n.FilePath) == (_rust ? ".rs" : ".go"));
+            var result = new List<GraphNode>(2);
+            void Candidates(IReadOnlyList<GraphNode> candidates, HashSet<int>? lines = null)
+            {
+                if (lines is { Count: 0 }) return;
+                foreach (var candidate in candidates)
+                {
+                    work.Charge(1L + candidate.QualifiedName.Length * (result.Count + 1), ct);
+                    if ((lines is null || lines.Contains(candidate.StartLine)) && result.All(n => n.QualifiedName != candidate.QualifiedName)) result.Add(candidate);
+                    if (result.Count == 2) break;
+                }
+            }
+            void File(string path, HashSet<int>? lines = null)
+            { work.Charge(path.Length + name.Length, ct); if (result.Count < 2) Candidates(handlers.InFile(_rust ? ".rs" : ".go", name, path), lines); }
             if (!_rust)
             {
-                if (parts.Length == 1) return candidates.Where(n => DirectoryOf(n.FilePath) == DirectoryOf(_relative));
-                if (parts.Length != 2 || !_imports.TryGetValue(parts[0], out var import)) return [];
-                if (_goModule is not null && _goRoot is not null && (import == _goModule || import.StartsWith(_goModule + "/", StringComparison.Ordinal)))
+                if (parts.Length == 1)
+                { work.Charge(name.Length + _relative.Length, ct); Candidates(handlers.InDirectory(".go", name, DirectoryOf(_relative))); }
+                else if (parts.Length == 2 && _imports.TryGetValue(parts[0], out var import) && _goModule is not null && _goRoot is not null
+                    && (import == _goModule || import.StartsWith(_goModule + "/", StringComparison.Ordinal)))
                 {
                     var directory = string.Join('/', new[] { _goRoot == "." ? "" : _goRoot, import[_goModule.Length..].Trim('/') }.Where(x => x.Length > 0));
-                    return candidates.Where(n => DirectoryOf(n.FilePath) == directory);
+                    work.Charge(name.Length + directory.Length, ct);
+                    Candidates(handlers.InDirectory(".go", name, directory));
                 }
-                // Package suffixes cannot prove that an external import is this repository's
-                // package. Missing or mismatched admitted module identity stays unresolved.
-                return [];
             }
-            var expanded = ExpandPath(expression);
-            parts = expanded.Split("::");
-            if (parts.Length == 1)
+            else
             {
-                // A same-file symbol must also belong to the registering lexical module. Match
-                // source declarations, then reuse their exact semantic or fallback identity.
-                var scope = RustScope(origin);
-                var declarations = _functions.Where(n => n.Type == "function_item" &&
-                    n.GetChildForField("name")?.Text == name && RustScope(n) == scope).ToList();
-                return candidates.Where(n => n.FilePath == _relative && declarations.Any(d =>
-                    n.StartLine == (int)d.StartPosition.Row + 1 || n.StartLine == (int)d.GetChildForField("name")!.StartPosition.Row + 1));
+                parts = ExpandPath(expression).Split("::");
+                if (parts.Length == 1)
+                { work.Charge(location.Scope.Length + name.Length, ct); File(_relative, _functionLines.GetValueOrDefault((location.Scope, name)) ?? []); }
+                else
+                {
+                    var srcIndex = _relative.LastIndexOf("/src/", StringComparison.Ordinal);
+                    var crate = srcIndex >= 0 ? _relative[..(srcIndex + 5)] : _relative.StartsWith("src/") ? "src/" : (DirectoryOf(_relative).Length == 0 ? "" : DirectoryOf(_relative) + "/");
+                    var module = Regex.Replace(_relative[crate.Length..].Replace("/", "::"), @"(^|::)(lib|main|mod)\.rs$|\.rs$", "").Trim(':');
+                    var fileModules = module.Length == 0 ? [] : module.Split("::");
+                    var segments = fileModules.ToList();
+                    if (location.Scope.Length > 0) segments.AddRange(location.Scope.Split("::"));
+                    if (_imports.ContainsKey(expression.Split("::")[0]) && parts[0] is not ("self" or "super" or "crate")) segments.Clear();
+                    work.Charge(parts.Length + location.Scope.Length + _relative.Length, ct);
+                    var start = 0;
+                    if (parts[0] == "crate") { segments.Clear(); start++; }
+                    else if (parts[0] == "self") start++;
+                    while (start < parts.Length - 1 && parts[start] == "super")
+                    { work.Charge(1, ct); if (segments.Count > 0) segments.RemoveAt(segments.Count - 1); start++; }
+                    segments.AddRange(parts.Skip(start).Take(parts.Length - start - 1));
+                    var target = crate + string.Join('/', segments);
+                    var inlineScope = string.Join("::", segments.Skip(fileModules.Length));
+                    work.Charge(inlineScope.Length + name.Length, ct);
+                    if (segments.Take(fileModules.Length).SequenceEqual(fileModules))
+                        File(_relative, _functionLines.GetValueOrDefault((inlineScope, name)) ?? []);
+                    File(target + ".rs"); File(target + "/mod.rs");
+                    if (segments.Count == 0) { File(crate + "lib.rs"); File(crate + "main.rs"); }
+                }
             }
-            var srcIndex = _relative.LastIndexOf("/src/", StringComparison.Ordinal);
-            var crate = srcIndex >= 0 ? _relative[..(srcIndex + 5)] : _relative.StartsWith("src/") ? "src/" : (DirectoryOf(_relative).Length == 0 ? "" : DirectoryOf(_relative) + "/");
-            var module = (_relative[crate.Length..].Replace("/", "::"));
-            module = Regex.Replace(module, @"(^|::)(lib|main|mod)\.rs$|\.rs$", "").Trim(':');
-            var segments = (module.Length == 0 ? Array.Empty<string>() : module.Split("::")).ToList();
-            var lexicalScope = RustScope(origin);
-            if (lexicalScope.Length > 0) segments.AddRange(lexicalScope.Split("::"));
-            // A bare use path begins at the crate root; an expression path begins at the
-            // current module. Explicit self/super/crate imports retain their stated scope.
-            if (_imports.ContainsKey(expression.Split("::")[0]) && parts[0] is not ("self" or "super" or "crate")) segments.Clear();
-            var path = parts[..^1].ToList();
-            if (path[0] == "crate") { segments.Clear(); path.RemoveAt(0); }
-            else if (path[0] == "self") path.RemoveAt(0);
-            while (path.Count > 0 && path[0] == "super") { if (segments.Count > 0) segments.RemoveAt(segments.Count - 1); path.RemoveAt(0); }
-            segments.AddRange(path);
-            var target = crate + string.Join('/', segments);
-            var inlineScope = string.Join("::", segments.Skip(module.Length == 0 ? 0 : module.Split("::").Length));
-            var inlineDeclarations = (segments.Take(module.Length == 0 ? 0 : module.Split("::").Length).SequenceEqual(module.Length == 0 ? [] : module.Split("::")) ? _functions : []).Where(n => n.GetChildForField("name")?.Text == name && RustScope(n) == inlineScope).ToList();
-            return candidates.Where(n => n.FilePath == _relative && inlineDeclarations.Any(d => n.StartLine == (int)d.StartPosition.Row + 1 || n.StartLine == (int)d.GetChildForField("name")!.StartPosition.Row + 1) || n.FilePath == target + ".rs" || n.FilePath == target + "/mod.rs" ||
-                (segments.Count == 0 && (n.FilePath == crate + "lib.rs" || n.FilePath == crate + "main.rs")));
+            return _resolved[cacheKey] = result;
         }
 
-        private string RustScope(Node node)
+        private Dictionary<string, Router> CopyEnvironment(Dictionary<string, Router> env)
+        { work.Charge(env.Count, ct); return new(env, StringComparer.Ordinal); }
+        private EvaluationScope EnterEvaluation()
         {
-            // Tree-sitter wrappers need not expose Parent: containment bounds give the lexical module.
-            return string.Join("::", _rustModules.Where(n => Before(n, node) && After(n, node))
-                .OrderBy(n => n.StartPosition.Row).ThenBy(n => n.StartPosition.Column).Select(n => n.GetChildForField("name")?.Text));
+            work.Charge(1, ct);
+            if (_evaluationDepth >= 512) throw new BackendEndpointLimitException("Backend endpoint evaluation depth limit exceeded");
+            _evaluationDepth++; return new(this);
         }
-        private static bool Before(Node a, Node b) => a.StartPosition.Row < b.StartPosition.Row ||
-            a.StartPosition.Row == b.StartPosition.Row && a.StartPosition.Column < b.StartPosition.Column;
-        private static bool After(Node a, Node b) => a.EndPosition.Row > b.EndPosition.Row ||
-            a.EndPosition.Row == b.EndPosition.Row && a.EndPosition.Column > b.EndPosition.Column;
+        private readonly struct EvaluationScope(BackendRegistrationPass pass) : IDisposable
+        { public void Dispose() => pass._evaluationDepth--; }
+        private static (int, int, string) Key(Node node) => (node.StartIndex, node.EndIndex, node.Type);
+        private string RustScope(Node node)
+        { var scope = _locations[Key(node)].Scope; work.Charge(scope.Length + 1, ct); return scope; }
+        private string Text(Node? node)
+        {
+            if (node is null) return "";
+            var key = Key(node);
+            if (_texts.TryGetValue(key, out var cached)) return cached;
+            work.Charge(Math.Max(1, (long)node.EndIndex - node.StartIndex), ct);
+            return _texts[key] = node.Text;
+        }
+        private void IndexAst()
+        {
+            var pending = new Stack<(Node Node, int Depth, string Scope, Node? Function)>();
+            pending.Push((root, 0, "", null));
+            while (pending.TryPop(out var item))
+            {
+                work.CheckDepth(item.Depth, ct);
+                var node = item.Node;
+                _locations[Key(node)] = (item.Scope, item.Function);
+                var function = item.Function;
+                if (node.Type is "function_item" or "function_declaration" or "method_declaration")
+                {
+                    _functions.Add(node); function = node;
+                    var name = Text(node.GetChildForField("name"));
+                    work.Charge(item.Scope.Length + name.Length, ct);
+                    if (!_functionLines.TryGetValue((item.Scope, name), out var lines)) _functionLines[(item.Scope, name)] = lines = [];
+                    lines.Add(node.StartPosition.Row + 1);
+                    if (node.GetChildForField("name") is { } nameNode) lines.Add(nameNode.StartPosition.Row + 1);
+                }
+                if (node.Type == "use_declaration") _rustUses.Add(node);
+                if (node.Type == "import_spec") _goImports.Add(node);
+                if (function is not null && node.Type is "let_declaration" or "short_var_declaration" or "parameter" or "parameter_declaration")
+                {
+                    var name = Text(node.GetChildForField("pattern") ?? node.GetChildForField("name") ?? node.GetChildForField("left"));
+                    work.Charge(name.Length, ct);
+                    var key = (Key(function), name);
+                    _shadowStarts[key] = Math.Min(_shadowStarts.GetValueOrDefault(key, int.MaxValue), node.StartIndex);
+                }
+                var scope = item.Scope;
+                if (node.Type == "mod_item")
+                { var name = Text(node.GetChildForField("name")); work.Charge(scope.Length + name.Length, ct); scope = scope.Length == 0 ? name : scope + "::" + name; }
+                foreach (var child in node.NamedChildren)
+                { work.Charge(1, ct); pending.Push((child, item.Depth + 1, scope, function)); }
+            }
+        }
         private static string DirectoryOf(string path) => path.Contains('/') ? path[..path.LastIndexOf('/')] : "";
-        private static string? Join(string? prefix, string? path)
+        private string? Join(string? prefix, string? path)
         {
             if (prefix is null || path is null) return null;
+            work.Charge(prefix.Length + path.Length, ct);
             var joined = prefix.TrimEnd('/') + "/" + path.TrimStart('/');
             return "/" + joined.TrimStart('/');
         }
-        private static string? Literal(Node? node)
+        private string? Literal(Node? node)
         {
             if (node is null || node.Type is not ("string_literal" or "raw_string_literal" or "interpreted_string_literal")) return null;
-            var text = node.Text;
-            if (text.StartsWith('`') && text.EndsWith('`')) return text[1..^1];
-            if (text.StartsWith('r')) { var first = text.IndexOf('"'); var last = text.LastIndexOf('"'); return first >= 0 && last > first ? text[(first + 1)..last] : null; }
-            try { return JsonSerializer.Deserialize<string>(text); } catch (JsonException) { return null; }
+            var key = Key(node);
+            if (_literals.TryGetValue(key, out var cached)) return cached;
+            var text = Text(node);
+            work.Charge(text.Length, ct);
+            string? value = null;
+            if (text.StartsWith('`') && text.EndsWith('`')) value = text[1..^1];
+            else if (text.StartsWith('r'))
+            { var first = text.IndexOf('"'); var last = text.LastIndexOf('"'); value = first >= 0 && last > first ? text[(first + 1)..last] : null; }
+            else try { value = JsonSerializer.Deserialize<string>(text); } catch (JsonException) { }
+            return _literals[key] = value;
         }
-        private static IEnumerable<Node> Descendants(Node? node)
+        private IEnumerable<Node> Descendants(Node? node)
         {
             if (node is null) yield break;
-            yield return node;
-            foreach (var child in node.NamedChildren)
-                foreach (var descendant in Descendants(child)) yield return descendant;
+            var pending = new Stack<Node>(); pending.Push(node);
+            while (pending.TryPop(out var current))
+            {
+                work.Charge(1, ct); yield return current;
+                foreach (var child in current.NamedChildren) { work.Charge(1, ct); pending.Push(child); }
+            }
         }
     }
 }

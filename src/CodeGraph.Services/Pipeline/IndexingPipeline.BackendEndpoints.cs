@@ -28,12 +28,13 @@ public partial class IndexingPipeline
                 oldPaths.Add(NormalizeRelativePath(path));
         var protectedPaths = new HashSet<string>(oldPaths, StringComparer.OrdinalIgnoreCase);
         var storedEdges = new List<PendingEdge>();
+        var storedRouteIds = storedRoutes.ToDictionary(node => node.Id);
         foreach (var batch in storedRoutes.Select(node => node.Id).Chunk(500))
         {
             var rows = await _store.FindEdgesBySourceBatchAsync(batch, [EdgeType.HANDLES]);
             var targetIds = rows.Select(edge => edge.TargetId).Distinct().ToArray();
             var targets = await _store.FindNodesByIdBatchAsync(targetIds);
-            var sources = storedRoutes.ToDictionary(node => node.Id);
+            var sources = storedRouteIds;
             foreach (var target in targets.Values)
                 if (target.FilePath is { } path) protectedPaths.Add(NormalizeRelativePath(path));
             storedEdges.AddRange(rows.Where(edge => sources.ContainsKey(edge.SourceId) && targets.ContainsKey(edge.TargetId))
@@ -87,33 +88,48 @@ public partial class IndexingPipeline
                 }
             }
         }
+        var work = new BackendEndpointWorkBudget(_options.MaxBackendEndpointAnalysisWork, _options.MaxBackendEndpointAnalysisDepth);
+        var preliminaryIndex = new BackendEndpointHandlerIndex([], repository, work, ct);
         var endpointContext = new ExtractorContext
         {
             RepositoryName = context.RepositoryName, RootPath = context.RootPath,
             DotnetProject = context.DotnetProject, FoundationalKnowledge = context.FoundationalKnowledge,
-            RepositoryToolingTrust = context.RepositoryToolingTrust, GoModuleManifests = goManifests
+            RepositoryToolingTrust = context.RepositoryToolingTrust, GoModuleManifests = goManifests, BackendEndpointWork = work
         };
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var registration in registrations)
         {
-            var preliminary = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, [], ct);
+            var preliminary = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, preliminaryIndex, ct);
             if (!preliminary.Succeeded || !preliminary.Complete)
                 throw new InvalidOperationException($"Backend registration analysis incomplete for {registration.Path}; retaining prior graph.");
             foreach (var route in preliminary.Nodes)
+            {
+                work.Charge(1L + (TypeScriptNodeText(route.Properties.GetValueOrDefault("handler_name"))?.Length ?? 0), ct);
                 if (TypeScriptNodeText(route.Properties.GetValueOrDefault("handler_name")) is { Length: > 0 } name) names.Add(name);
+            }
         }
         var excluded = processed.Concat(deleted).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var available = buffer.AllNodes.ToDictionary(node => node.QualifiedName, StringComparer.Ordinal);
+        var available = new Dictionary<string, GraphNode>(StringComparer.Ordinal);
+        foreach (var node in buffer.AllNodes)
+        {
+            work.Charge(1L + node.Name.Length, ct);
+            if (names.Contains(node.Name))
+            { work.Charge(node.QualifiedName.Length, ct); available.TryAdd(node.QualifiedName, node); }
+        }
         if (incremental)
             foreach (var batch in names.Chunk(500))
                 foreach (var node in await _store.FindNodesByNamesAsync(repository, batch, ct))
+                {
+                    work.Charge(1L + node.QualifiedName.Length + (node.FilePath?.Length ?? 0), ct);
                     if (node.FilePath is null || !excluded.Contains(NormalizeRelativePath(node.FilePath)))
                         available.TryAdd(node.QualifiedName, node);
+                }
+        var handlerIndex = new BackendEndpointHandlerIndex(available.Values, repository, work, ct);
         var nodes = new List<GraphNode>();
         var edges = new List<PendingEdge>();
         foreach (var registration in registrations)
         {
-            var result = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, available.Values.ToList(), ct);
+            var result = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, handlerIndex, ct);
             if (!result.Succeeded || !result.Complete)
                 throw new InvalidOperationException($"Backend registration analysis incomplete for {registration.Path}; retaining prior graph.");
             nodes.AddRange(result.Nodes);
@@ -121,18 +137,19 @@ public partial class IndexingPipeline
         }
         // The legacy backend identity is method+path. Conflicting registrations across apps/files
         // cannot overwrite one another and masquerade as a single proven endpoint.
-        foreach (var group in nodes.GroupBy(node => node.QualifiedName).Where(group => group.Select(node => node.FilePath).Distinct().Count() > 1).ToList())
+        foreach (var node in nodes) work.Charge(node.QualifiedName.Length + node.FilePath.Length * 3L, ct);
+        foreach (var edge in edges) work.Charge(edge.SourceQN.Length + edge.TargetQN.Length, ct);
+        var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+        nodes = nodes.GroupBy(node => node.QualifiedName).Select(group =>
         {
-            var first = group.OrderBy(node => node.FilePath, StringComparer.Ordinal).First();
-            var properties = new Dictionary<string, object>(first.Properties)
-            {
-                ["registration_ambiguous"] = true,
-                ["registration_sources"] = group.Select(node => node.FilePath).Distinct().Order(StringComparer.Ordinal).ToArray()
-            };
-            nodes.RemoveAll(node => node.QualifiedName == group.Key);
-            nodes.Add(first with { Properties = properties });
-            edges.RemoveAll(edge => edge.SourceQN == group.Key);
-        }
+            var paths = group.Select(node => node.FilePath).Distinct().Order(StringComparer.Ordinal).ToArray();
+            if (paths.Length == 1) return group.First();
+            ambiguous.Add(group.Key);
+            var first = group.First(node => node.FilePath == paths[0]);
+            return first with { Properties = new Dictionary<string, object>(first.Properties)
+            { ["registration_ambiguous"] = true, ["registration_sources"] = paths } };
+        }).ToList();
+        edges.RemoveAll(edge => ambiguous.Contains(edge.SourceQN));
         var before = Signatures(repository, storedRoutes, storedEdges);
         var after = Signatures(repository, nodes, edges);
         var changed = before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase)
