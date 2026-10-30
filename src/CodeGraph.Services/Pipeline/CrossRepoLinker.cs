@@ -7,6 +7,7 @@ namespace CodeGraph.Services.Pipeline;
 
 public partial class CrossRepoLinker
 {
+    internal const string OwnedLinksLockName = ".codegraph/owned-http-npm-links";
     private static readonly IReadOnlyList<NodeLabel> RustDefinitionLabels =
     [
         NodeLabel.Function,
@@ -89,13 +90,20 @@ public partial class CrossRepoLinker
     private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust, int Npm)> LinkCoreAsync(
         string? scopeRepository, CancellationToken ct)
     {
-        var http = await LinkHttpRoutesAsync(scopeRepository, ct);
+        int http, npm;
+        // These passes reconcile global uniqueness, including pairs outside the indexed repo.
+        // Serialize their complete snapshot→diff interval across processes: an older event
+        // must never delete a newer repair using a snapshot it captured before that repair.
+        await using (var ownedLinks = await _store.AcquireRepositoryIndexingLockAsync(OwnedLinksLockName, ct))
+        {
+            http = await LinkHttpRoutesAsync(scopeRepository, ct);
+            npm = await LinkNpmExportsAsync(scopeRepository, ct);
+        }
         var messaging = await LinkMessagingAsync(scopeRepository, ct);
         var nuget = await LinkNuGetPackagesAsync(scopeRepository, ct);
         var cargo = await LinkManifestPackagesAsync(Cargo, scopeRepository, ct);
         var swift = await LinkManifestPackagesAsync(SwiftPm, scopeRepository, ct);
         var rust = await LinkRustSymbolsAsync(scopeRepository, ct);
-        var npm = await LinkNpmExportsAsync(scopeRepository, ct);
         return (http, messaging, nuget, cargo, swift, rust, npm);
     }
 
