@@ -19,6 +19,25 @@ namespace CodeGraph.Tests.Services;
 public class TauriOperationAnalysisTests
 {
     [Theory]
+    [InlineData("fn", false)]
+    [InlineData("label", false)]
+    [InlineData("label", true)]
+    public async Task StringContents_AreNotRustKeywordsOrImportDelimiters(string label, bool bracePrefix)
+    {
+        var sources = Fixture();
+        sources["apps/desktop/src/lib.rs"] = (bracePrefix ? "const PREFIX: &str = \"{\";\n" : "")
+            + "use tauri::Emitter;\nfn produce(app: tauri::AppHandle) { let label = \"" + label + "\"; app.emit(\"ready\", ()); }";
+        var extracted = await new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance).ExtractAsync(
+            "/test/apps/desktop/src/lib.rs", sources["apps/desktop/src/lib.rs"], new ExtractorContext { RepositoryName = "App", RootPath = "/test" });
+        extracted.Succeeded.ShouldBeTrue();
+        var function = extracted.Nodes.Single(node => node.Name == "produce" && node.Label == NodeLabel.Function);
+        var analysis = TauriOperationAnalysis.Analyze("App", sources, extracted.Nodes, []);
+        analysis.Result.Complete.ShouldBeTrue(string.Join(';', analysis.Diagnostics));
+        var eventNode = analysis.Result.Nodes.Single(node => node.Label == NodeLabel.Event && node.Name == "ready");
+        analysis.Result.Edges.ShouldContain(edge => edge.SourceQN == function.QualifiedName && edge.TargetQN == eventNode.QualifiedName && edge.Type == EdgeType.PUBLISHES);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void ScipPointSpan_CommandAndEventReuseTheNativeDeclaration(bool multilineName)

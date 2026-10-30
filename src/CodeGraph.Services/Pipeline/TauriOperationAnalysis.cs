@@ -312,6 +312,7 @@ internal static partial class TauriOperationAnalysis
                     for (var index = 1; index + 3 < file.Tokens.Count; index++)
                     {
                         Charge();
+                        if (file.Tokens[index].String) continue;
                         if (file.Tokens[index - 1].Text != "." || file.Tokens[index].Text is not ("emit" or "emit_all" or "emit_to") || file.Tokens[index + 1].Text != "(") continue;
                         if (index < 2 || !IsTauriEmitter(file.Tokens, index - 2)) continue;
                         var nameIndex = index + 2;
@@ -367,7 +368,7 @@ internal static partial class TauriOperationAnalysis
             for (var start = receiver; start >= 0; start--)
             {
                 Charge();
-                if (tokens[start].Text != "fn") continue;
+                if (tokens[start].String || tokens[start].Text != "fn") continue;
                 var parameters = start + 2;
                 while (parameters < receiver && tokens[parameters].Text != "(") { Charge(); parameters++; }
                 var end = Close(tokens, parameters);
@@ -400,7 +401,7 @@ internal static partial class TauriOperationAnalysis
             if (!QualifiedPath(target)) return null;
             // Parameters/locals can shadow constants. Look only within this producer's lexical body.
             var functionStart = start;
-            while (functionStart > 0 && file.Tokens[functionStart].Text != "fn") { Charge(); functionStart--; }
+            while (functionStart > 0 && (file.Tokens[functionStart].String || file.Tokens[functionStart].Text != "fn")) { Charge(); functionStart--; }
             for (var index = functionStart; index + 1 < start; index++)
             {
                 Charge();
@@ -488,7 +489,7 @@ internal static partial class TauriOperationAnalysis
         }
         private int FindToken(List<Token> tokens, int from, int count, string value)
         {
-            for (var index = from; index < from + count; index++) { Charge(); if (tokens[index].Text == value) return index; }
+            for (var index = from; index < from + count; index++) { Charge(); if (!tokens[index].String && tokens[index].Text == value) return index; }
             return -1;
         }
         private int FindText(string source, string value, int from)
@@ -541,6 +542,7 @@ internal static partial class TauriOperationAnalysis
             for (var index = from; index < end; index++)
             {
                 Charge();
+                if (tokens[index].String) continue;
                 if (tokens[index].Text == "#" && index + 1 < end && tokens[index + 1].Text == "[")
                 {
                     var close = Close(tokens, index + 1);
@@ -636,6 +638,7 @@ internal static partial class TauriOperationAnalysis
             for (var index = from; index < limit; index++)
             {
                 Charge();
+                if (tokens[index].String) continue;
                 if (tokens[index].Text == "{") { index = Close(tokens, index); continue; }
                 if (tokens[index].Text != "use") continue;
                 var end = index + 1; while (end < limit && tokens[end].Text != ";") { Charge(); end++; }
@@ -654,6 +657,7 @@ internal static partial class TauriOperationAnalysis
                     for (var cursor = item; cursor <= close; cursor++)
                     {
                         Charge();
+                        if (tokens[cursor].String) continue;
                         if (tokens[cursor].Text == "{") depth++;
                         if (tokens[cursor].Text == "}") depth--;
                         if (cursor != close && (tokens[cursor].Text != "," || depth != 0)) continue;
