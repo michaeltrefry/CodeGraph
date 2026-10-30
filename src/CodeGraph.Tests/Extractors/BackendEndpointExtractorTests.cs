@@ -109,7 +109,8 @@ public sealed class BackendEndpointExtractorTests
             """;
         var candidates = new[] { Handler("MetricsSummaryHandler", "internal/admin/metrics.go"), Handler("Update", "internal/admin/update.go"),
             Handler("Delete", "internal/admin/delete.go"), Handler("MetricsSummaryHandler", "unrelated/admin/metrics.go") };
-        var result = await _extractor.ExtractBackendEndpointsAsync("/test/internal/server/server.go", source, _context, candidates);
+        var result = await _extractor.ExtractBackendEndpointsAsync("/test/internal/server/server.go", source, new ExtractorContext { RepositoryName = _context.RepositoryName, RootPath = _context.RootPath,
+            GoModuleManifests = new Dictionary<string, string> { ["go.mod"] = "module example.com/router\n" } }, candidates);
         result.Succeeded.ShouldBeTrue(result.FailureReason);
         result.Nodes.Count.ShouldBe(3);
         result.Nodes.ShouldContain(n => n.QualifiedName == "route:app:GET:/admin/v1/metrics/summary");

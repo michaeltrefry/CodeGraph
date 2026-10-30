@@ -71,7 +71,8 @@ public sealed class ExtractionVersionCatalog
     /// 6 (sc-27972): native endpoint/Tauri reconciliation and local/cross-repository HTTP binding.
     /// 7 (sc-27972): scoped callable-edge admission and case-insensitive analyzer version coverage.
     /// 8: bounded native registration reads and language-specific analyzer case selection.
-    public const int PipelineVersion = 8;
+    /// 9: admitted bounded Go manifests and contained regular-file registration input.
+    public const int PipelineVersion = 9;
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];

@@ -150,17 +150,21 @@ public partial class TreeSitterExtractor
             }
             if (!_rust)
             {
-                var directory = Path.GetDirectoryName(filePath);
-                while (directory is not null && Path.GetRelativePath(context.RootPath, directory) is var relative && !relative.StartsWith(".."))
+                var directory = DirectoryOf(_relative);
+                while (true)
                 {
-                    var manifest = Path.Combine(directory, "go.mod");
-                    if (File.Exists(manifest))
+                    var manifest = directory.Length == 0 ? "go.mod" : directory + "/go.mod";
+                    if (context.GoModuleManifests.TryGetValue(manifest, out var content))
                     {
-                        _goModule = Regex.Match(File.ReadAllText(manifest), @"(?m)^module\s+(\S+)").Groups[1].Value;
-                        _goRoot = Path.GetRelativePath(context.RootPath, directory).Replace('\\', '/');
+                        var modules = Regex.Matches(content, @"(?m)^[ \t]*module[ \t]+(?:""(?<path>[^""\r\n]+)""|(?<path>[^ \t\r\n""]+))[ \t]*(?://[^\r\n]*)?\r?$");
+                        if (modules.Count != 1)
+                            throw new InvalidOperationException($"Supplied Go manifest {manifest} has no unique module identity");
+                        _goModule = modules[0].Groups["path"].Value;
+                        _goRoot = directory;
                         break;
                     }
-                    directory = Path.GetDirectoryName(directory);
+                    if (directory.Length == 0) break;
+                    directory = DirectoryOf(directory);
                 }
             }
         }
@@ -369,9 +373,9 @@ public partial class TreeSitterExtractor
                     var directory = string.Join('/', new[] { _goRoot == "." ? "" : _goRoot, import[_goModule.Length..].Trim('/') }.Where(x => x.Length > 0));
                     return candidates.Where(n => DirectoryOf(n.FilePath) == directory);
                 }
-                // Without a module manifest the package path must still select exactly one directory.
-                var directories = candidates.Select(n => DirectoryOf(n.FilePath)).Distinct().Where(d => import.EndsWith("/" + d) || d.EndsWith("/" + import)).ToList();
-                return directories.Count == 1 ? candidates.Where(n => DirectoryOf(n.FilePath) == directories[0]) : [];
+                // Package suffixes cannot prove that an external import is this repository's
+                // package. Missing or mismatched admitted module identity stays unresolved.
+                return [];
             }
             var expanded = ExpandPath(expression);
             parts = expanded.Split("::");

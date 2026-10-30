@@ -19,7 +19,7 @@ public interface IFileSystem
         Directory.Exists(path) ? Directory.EnumerateDirectories(path) : [];
 
     /// <summary>Opens a readable stream without materializing the file body.</summary>
-    Stream OpenRead(string path);
+    Stream OpenRead(string path, string? repositoryRoot = null);
 
     string ReadAllText(string path);
 

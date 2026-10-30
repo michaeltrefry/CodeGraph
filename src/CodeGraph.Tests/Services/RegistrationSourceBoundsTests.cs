@@ -162,7 +162,7 @@ public class RegistrationSourceBoundsTests
         public List<string> Opened { get; } = [];
         public string Add(string path, string content) => Add(path, Encoding.UTF8.GetBytes(content));
         public string Add(string path, byte[] bytes) { path = Path.GetFullPath(path); _bodies[path] = bytes; return path; }
-        public Stream OpenRead(string path) { Opened.Add(path); return new CountingStream(_bodies[path], count => BytesRead += count); }
+        public Stream OpenRead(string path, string? repositoryRoot = null) { Opened.Add(path); return new CountingStream(_bodies[path], count => BytesRead += count); }
         public bool DirectoryExists(string path) => Directory.Exists(path);
         public bool FileExists(string path) => _bodies.ContainsKey(Path.GetFullPath(path));
         public IEnumerable<string> EnumerateFiles(string root, string pattern, SearchOption option) => Directory.EnumerateFiles(root, pattern, option);

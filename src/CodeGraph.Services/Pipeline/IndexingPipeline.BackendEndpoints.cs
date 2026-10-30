@@ -61,10 +61,42 @@ public partial class IndexingPipeline
             if (oldPaths.Contains(relative) || extractor.MayContainBackendEndpoints(Path.GetExtension(fullPath), source))
                 registrations.Add((fullPath, source, extractor));
         }
+        // Only discovery-admitted nearest manifests can establish Go package identity. Share
+        // the source budget/cache with Rust/Tauri and validate the opened repository handle.
+        var goManifests = new Dictionary<string, string>(StringComparer.Ordinal);
+        var goRegistrations = registrations.Where(item => Path.GetExtension(item.Path) == ".go").ToList();
+        if (goRegistrations.Count > 0)
+        {
+            var admitted = DiscoverPaths(root, "**/go.mod").ToDictionary(
+                path => NormalizeRelativePath(Path.GetRelativePath(root, path)), StringComparer.Ordinal);
+            foreach (var registration in goRegistrations)
+            {
+                var directory = NormalizeRelativePath(Path.GetDirectoryName(Path.GetRelativePath(root, registration.Path)) ?? "");
+                while (true)
+                {
+                    var manifest = directory.Length == 0 ? "go.mod" : directory + "/go.mod";
+                    if (admitted.TryGetValue(manifest, out var fullPath))
+                    {
+                        var source = await sourceReader.ReadAsync(fullPath, ct)
+                            ?? throw new InvalidOperationException($"Backend registration analysis incomplete: required manifest {manifest} exceeds its text limit; retaining prior graph and hashes.");
+                        goManifests[manifest] = source.Content;
+                        break;
+                    }
+                    if (directory.Length == 0) break;
+                    directory = NormalizeRelativePath(Path.GetDirectoryName(directory) ?? "");
+                }
+            }
+        }
+        var endpointContext = new ExtractorContext
+        {
+            RepositoryName = context.RepositoryName, RootPath = context.RootPath,
+            DotnetProject = context.DotnetProject, FoundationalKnowledge = context.FoundationalKnowledge,
+            RepositoryToolingTrust = context.RepositoryToolingTrust, GoModuleManifests = goManifests
+        };
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var registration in registrations)
         {
-            var preliminary = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, context, [], ct);
+            var preliminary = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, [], ct);
             if (!preliminary.Succeeded || !preliminary.Complete)
                 throw new InvalidOperationException($"Backend registration analysis incomplete for {registration.Path}; retaining prior graph.");
             foreach (var route in preliminary.Nodes)
@@ -81,7 +113,7 @@ public partial class IndexingPipeline
         var edges = new List<PendingEdge>();
         foreach (var registration in registrations)
         {
-            var result = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, context, available.Values.ToList(), ct);
+            var result = await registration.Extractor.ExtractBackendEndpointsAsync(registration.Path, registration.Content, endpointContext, available.Values.ToList(), ct);
             if (!result.Succeeded || !result.Complete)
                 throw new InvalidOperationException($"Backend registration analysis incomplete for {registration.Path}; retaining prior graph.");
             nodes.AddRange(result.Nodes);

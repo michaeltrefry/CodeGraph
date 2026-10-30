@@ -730,7 +730,7 @@ public partial class IndexingPipeline
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
-        var registrationSources = new RegistrationSourceReader(_fileSystem, _options);
+        var registrationSources = new RegistrationSourceReader(_fileSystem, _options, rootPath);
         IReadOnlyList<string> endpointSlices = hasBackendEndpointSources
             ? await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
                 successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, registrationSources, ct)
@@ -1237,6 +1237,8 @@ public partial class IndexingPipeline
         if (changedFilesOnly != null)
             return changedFilesOnly
                 .Select(f => Path.Combine(rootPath, f))
+                // Go module metadata is read only by the admitted, bounded registration pass.
+                .Where(path => Path.GetFileName(path) != "go.mod")
                 .Where(_fileSystem.FileExists)
                 .ToList();
 

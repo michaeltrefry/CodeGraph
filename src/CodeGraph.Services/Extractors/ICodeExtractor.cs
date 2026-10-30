@@ -33,6 +33,10 @@ public class ExtractorContext
     /// </summary>
     public string? DotnetProject { get; init; }
 
+    /// <summary>Discovery-admitted, bounded Go module manifests keyed by repository-relative
+    /// path. Extractors consume this snapshot and never discover/read manifests themselves.</summary>
+    public IReadOnlyDictionary<string, string> GoModuleManifests { get; init; } = new Dictionary<string, string>();
+
     /// <summary>
     /// Known foundational types and their meanings (populated after analyzing framework repos).
     /// </summary>
