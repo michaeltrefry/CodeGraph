@@ -8,7 +8,7 @@ import type { GraphNodeDto, PendingEdgeDto } from './protocol';
 type Binding = { token: Node; implementation?: ClassDeclaration; alias?: Node; multi: boolean; scope: ProviderScope };
 type ProviderScope = { owner: Node; qn: string; identity: string; bindings: Map<Node, Binding[]>; parents: ProviderScope[]; uncertain: boolean };
 type Selection = { implementations: ClassDeclaration[]; certain: boolean; token?: Node; runtime?: boolean };
-type Receiver = { contract?: InterfaceDeclaration; selection?: Selection };
+type Receiver = { contract?: InterfaceDeclaration; selection?: Selection; injected?: boolean };
 
 /** Derive Angular links exclusively from admitted declarations and imported framework APIs.
  * Provider tables remain scoped: overrides never leak into a sibling application's injector.
@@ -31,6 +31,17 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     }
     return model.fileQN(node);
   }
+  // The semantic pass resolves declared types before Angular selects an injector binding.
+  // Keep its edge identities so only superseded call evidence is retracted below.
+  const callKey = (source: string, target: string) => JSON.stringify([source, target]);
+  const provisionalCalls = new Map<string, Set<PendingEdgeDto>>();
+  for (const edge of edges) if (edge.type === 'CALLS' && !edge.properties?.call_kind) {
+    const key = callKey(edge.sourceQN, edge.targetQN);
+    const existing = provisionalCalls.get(key) ?? new Set<PendingEdgeDto>();
+    existing.add(edge); provisionalCalls.set(key, existing);
+  }
+  const redirectedCallSites = new Set<Node>();
+  const redirectedCallKeys = new Set<string>();
   const edgeKeys = new Set<string>();
   function addEdge(sourceQN: string, targetQN: string, type: string, properties: Record<string, unknown> = {}) {
     const props = { framework: 'angular', ...properties };
@@ -546,7 +557,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (Node.isCallExpression(expression) && injectionCall(expression)) {
       const typed = typeInterface(expression.getTypeArguments()[0]);
       const contract = typed ?? tokenInterface(reference(expression.getArguments()[0]));
-      return { contract, selection: select(expression.getArguments()[0], context, contract) };
+      return { contract, selection: select(expression.getArguments()[0], context, contract), injected: true };
     }
     const declaration = fieldDeclaration(expression);
     if (declaration) {
@@ -558,13 +569,21 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
       }
       if (Node.isParameterDeclaration(declaration)) {
         const inject = declaration.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
-        if (inject) return { contract: typed, selection: select(inject.getArguments()[0], context, typed) };
+        if (inject) return { contract: typed, selection: select(inject.getArguments()[0], context, typed), injected: true };
       }
       if (typed) return { contract: typed };
       const declaredType = reference(typeNode(declaration));
-      if (declaredType && Node.isClassDeclaration(declaredType)) return {selection:resolveBinding(declaredType, scopeForContext(context))};
+      if (declaredType && Node.isClassDeclaration(declaredType)) {
+        const injected = isConstructorInjection(declaration, context);
+        return { selection: injected ? resolveBinding(declaredType, scopeForContext(context)) : { implementations: [declaredType], certain: true }, injected };
+      }
     }
     return {};
+  }
+  function isConstructorInjection(declaration: Node, context: Node): boolean {
+    if (!Node.isParameterDeclaration(declaration) || !Node.isConstructorDeclaration(declaration.getParent()) || !Node.isClassDeclaration(context)) return false;
+    const injector = scopes.get(context);
+    return angular.some(item => item.declaration === context) || !!injector && (injector.bindings.size > 0 || injector.parents.length > 0);
   }
   function scopeForContext(context: Node): ProviderScope {
     return configScopes.get(context) ?? makeScope(context);
@@ -576,17 +595,22 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     const member = evidence.contract ? members(evidence.contract).get(expression.getName()) : undefined;
     if (!member && (evidence.contract || !evidence.selection?.implementations.length)) return;
     const targets = evidence.selection?.implementations ?? [];
+    const targetQNs = targets.map(target => implementationMethod(target, expression.getName())).filter((target): target is string => !!target);
+    if (evidence.injected && targets.length) {
+      const original = model.target(expression);
+      if (original && !targetQNs.includes(original)) {
+        const key = callKey(model.owner(call), original);
+        if (provisionalCalls.has(key)) { redirectedCallSites.add(call); redirectedCallKeys.add(key); }
+      }
+    }
     const properties = {
-      call_kind: evidence.contract ? 'interface_dispatch' : 'injected_dispatch',
+      call_kind: evidence.contract ? 'interface_dispatch' : evidence.injected ? 'injected_dispatch' : 'typed_dispatch',
       ...(evidence.contract ? { interface_qn: qn(evidence.contract) } : {}),
       confidence_band: evidence.selection?.certain ? 'high' : 'medium', candidate: !evidence.selection?.certain,
       ...(evidence.selection?.token ? { token_qn: qn(evidence.selection.token) } : {}),
     };
     if (targets.length) {
-      for (const target of targets) {
-        const targetQN = implementationMethod(target, expression.getName());
-        if (targetQN) addEdge(model.owner(call), targetQN, 'CALLS', properties);
-      }
+      for (const targetQN of targetQNs) addEdge(model.owner(call), targetQN, 'CALLS', properties);
     } else if (member) {
       const owner = member.getFirstAncestorByKind(SyntaxKind.InterfaceDeclaration)!;
       addEdge(model.owner(call), `${qn(owner)}.${expression.getName()}`, 'CALLS', properties);
@@ -597,6 +621,10 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     for (const ctor of cls.getConstructors()) for (const parameter of ctor.getParameters()) {
       const inject = parameter.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
       if (inject) sites.push({ name: parameter.getName(), expression: inject.getArguments()[0], contract: typeInterface(parameter.getTypeNode()) });
+      else if (isConstructorInjection(parameter, cls)) {
+        const token = reference(parameter.getTypeNode());
+        if (token && Node.isClassDeclaration(token)) sites.push({ name: parameter.getName(), expression: parameter.getTypeNode() });
+      }
     }
     for (const field of cls.getProperties()) {
       const initial = field.getInitializer();
@@ -606,9 +634,10 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
       if (classOf(call) !== cls || !injectionCall(call) || Node.isPropertyDeclaration(call.getParent())) continue;
       sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
     }
+    const injectionNames = new Set(sites.map(site => site.name));
+    for (let index = edges.length - 1; index >= 0; index--) if (edges[index].type === 'INJECTS' && edges[index].sourceQN === qn(cls) && injectionNames.has(String(edges[index].properties?.parameter_name))) edges.splice(index, 1);
     for (const site of sites) {
       const selected = select(site.expression, cls, site.contract);
-      for (let index = edges.length - 1; index >= 0; index--) if (edges[index].type === 'INJECTS' && edges[index].sourceQN === qn(cls) && edges[index].properties?.parameter_name === site.name) edges.splice(index, 1);
       for (const target of selected.implementations) addEdge(qn(cls), qn(target), 'INJECTS', {
         parameter_name: site.name, token_qn: selected.token ? qn(selected.token) : undefined, provider_scope: scopeForClass(cls).qn,
         confidence_band: selected.certain ? 'high' : 'medium', candidate: !selected.certain, runtime_token: !!selected.runtime, ...(selected.runtime && site.expression ? { runtime_token_expression: site.expression.getText() } : {}),
@@ -623,6 +652,19 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   for (const file of model.files) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     if (classOf(call)) continue;
     dispatch(call, call.getAncestors().find(ancestor => configScopes.has(ancestor)) ?? file);
+  }
+  if (redirectedCallKeys.size) {
+    const retainedKeys = new Set<string>();
+    for (const file of model.files) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (redirectedCallSites.has(call)) continue;
+      const target = model.target(call.getExpression());
+      if (!target) continue;
+      const key = callKey(model.owner(call), target);
+      if (redirectedCallKeys.has(key)) retainedKeys.add(key);
+    }
+    const superseded = new Set<PendingEdgeDto>();
+    for (const key of redirectedCallKeys) if (!retainedKeys.has(key)) for (const edge of provisionalCalls.get(key) ?? []) superseded.add(edge);
+    for (let index = edges.length - 1; index >= 0; index--) if (superseded.has(edges[index])) edges.splice(index, 1);
   }
   diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
   return { complete, processedTemplates: [...processedTemplates].sort() };

@@ -59,6 +59,19 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         }
         return model.fileQN(node);
     }
+    // The semantic pass resolves declared types before Angular selects an injector binding.
+    // Keep its edge identities so only superseded call evidence is retracted below.
+    const callKey = (source, target) => JSON.stringify([source, target]);
+    const provisionalCalls = new Map();
+    for (const edge of edges)
+        if (edge.type === 'CALLS' && !edge.properties?.call_kind) {
+            const key = callKey(edge.sourceQN, edge.targetQN);
+            const existing = provisionalCalls.get(key) ?? new Set();
+            existing.add(edge);
+            provisionalCalls.set(key, existing);
+        }
+    const redirectedCallSites = new Set();
+    const redirectedCallKeys = new Set();
     const edgeKeys = new Set();
     function addEdge(sourceQN, targetQN, type, properties = {}) {
         const props = { framework: 'angular', ...properties };
@@ -815,7 +828,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (ts_morph_1.Node.isCallExpression(expression) && injectionCall(expression)) {
             const typed = typeInterface(expression.getTypeArguments()[0]);
             const contract = typed ?? tokenInterface(reference(expression.getArguments()[0]));
-            return { contract, selection: select(expression.getArguments()[0], context, contract) };
+            return { contract, selection: select(expression.getArguments()[0], context, contract), injected: true };
         }
         const declaration = fieldDeclaration(expression);
         if (declaration) {
@@ -829,15 +842,23 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             if (ts_morph_1.Node.isParameterDeclaration(declaration)) {
                 const inject = declaration.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
                 if (inject)
-                    return { contract: typed, selection: select(inject.getArguments()[0], context, typed) };
+                    return { contract: typed, selection: select(inject.getArguments()[0], context, typed), injected: true };
             }
             if (typed)
                 return { contract: typed };
             const declaredType = reference(typeNode(declaration));
-            if (declaredType && ts_morph_1.Node.isClassDeclaration(declaredType))
-                return { selection: resolveBinding(declaredType, scopeForContext(context)) };
+            if (declaredType && ts_morph_1.Node.isClassDeclaration(declaredType)) {
+                const injected = isConstructorInjection(declaration, context);
+                return { selection: injected ? resolveBinding(declaredType, scopeForContext(context)) : { implementations: [declaredType], certain: true }, injected };
+            }
         }
         return {};
+    }
+    function isConstructorInjection(declaration, context) {
+        if (!ts_morph_1.Node.isParameterDeclaration(declaration) || !ts_morph_1.Node.isConstructorDeclaration(declaration.getParent()) || !ts_morph_1.Node.isClassDeclaration(context))
+            return false;
+        const injector = scopes.get(context);
+        return angular.some(item => item.declaration === context) || !!injector && (injector.bindings.size > 0 || injector.parents.length > 0);
     }
     function scopeForContext(context) {
         return configScopes.get(context) ?? makeScope(context);
@@ -851,18 +872,26 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (!member && (evidence.contract || !evidence.selection?.implementations.length))
             return;
         const targets = evidence.selection?.implementations ?? [];
+        const targetQNs = targets.map(target => implementationMethod(target, expression.getName())).filter((target) => !!target);
+        if (evidence.injected && targets.length) {
+            const original = model.target(expression);
+            if (original && !targetQNs.includes(original)) {
+                const key = callKey(model.owner(call), original);
+                if (provisionalCalls.has(key)) {
+                    redirectedCallSites.add(call);
+                    redirectedCallKeys.add(key);
+                }
+            }
+        }
         const properties = {
-            call_kind: evidence.contract ? 'interface_dispatch' : 'injected_dispatch',
+            call_kind: evidence.contract ? 'interface_dispatch' : evidence.injected ? 'injected_dispatch' : 'typed_dispatch',
             ...(evidence.contract ? { interface_qn: qn(evidence.contract) } : {}),
             confidence_band: evidence.selection?.certain ? 'high' : 'medium', candidate: !evidence.selection?.certain,
             ...(evidence.selection?.token ? { token_qn: qn(evidence.selection.token) } : {}),
         };
         if (targets.length) {
-            for (const target of targets) {
-                const targetQN = implementationMethod(target, expression.getName());
-                if (targetQN)
-                    addEdge(model.owner(call), targetQN, 'CALLS', properties);
-            }
+            for (const targetQN of targetQNs)
+                addEdge(model.owner(call), targetQN, 'CALLS', properties);
         }
         else if (member) {
             const owner = member.getFirstAncestorByKind(ts_morph_1.SyntaxKind.InterfaceDeclaration);
@@ -876,6 +905,11 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 const inject = parameter.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
                 if (inject)
                     sites.push({ name: parameter.getName(), expression: inject.getArguments()[0], contract: typeInterface(parameter.getTypeNode()) });
+                else if (isConstructorInjection(parameter, cls)) {
+                    const token = reference(parameter.getTypeNode());
+                    if (token && ts_morph_1.Node.isClassDeclaration(token))
+                        sites.push({ name: parameter.getName(), expression: parameter.getTypeNode() });
+                }
             }
         for (const field of cls.getProperties()) {
             const initial = field.getInitializer();
@@ -887,11 +921,12 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 continue;
             sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
         }
+        const injectionNames = new Set(sites.map(site => site.name));
+        for (let index = edges.length - 1; index >= 0; index--)
+            if (edges[index].type === 'INJECTS' && edges[index].sourceQN === qn(cls) && injectionNames.has(String(edges[index].properties?.parameter_name)))
+                edges.splice(index, 1);
         for (const site of sites) {
             const selected = select(site.expression, cls, site.contract);
-            for (let index = edges.length - 1; index >= 0; index--)
-                if (edges[index].type === 'INJECTS' && edges[index].sourceQN === qn(cls) && edges[index].properties?.parameter_name === site.name)
-                    edges.splice(index, 1);
             for (const target of selected.implementations)
                 addEdge(qn(cls), qn(target), 'INJECTS', {
                     parameter_name: site.name, token_qn: selected.token ? qn(selected.token) : undefined, provider_scope: scopeForClass(cls).qn,
@@ -912,6 +947,28 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 continue;
             dispatch(call, call.getAncestors().find(ancestor => configScopes.has(ancestor)) ?? file);
         }
+    if (redirectedCallKeys.size) {
+        const retainedKeys = new Set();
+        for (const file of model.files)
+            for (const call of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
+                if (redirectedCallSites.has(call))
+                    continue;
+                const target = model.target(call.getExpression());
+                if (!target)
+                    continue;
+                const key = callKey(model.owner(call), target);
+                if (redirectedCallKeys.has(key))
+                    retainedKeys.add(key);
+            }
+        const superseded = new Set();
+        for (const key of redirectedCallKeys)
+            if (!retainedKeys.has(key))
+                for (const edge of provisionalCalls.get(key) ?? [])
+                    superseded.add(edge);
+        for (let index = edges.length - 1; index >= 0; index--)
+            if (superseded.has(edges[index]))
+                edges.splice(index, 1);
+    }
     diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
     return { complete, processedTemplates: [...processedTemplates].sort() };
 }

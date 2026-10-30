@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { Project } from 'ts-morph';
 import { analyzeAngular } from './angularAnalysis';
+import { extractProject } from './extractor';
 import { SemanticModel } from './semanticModel';
 import { analyzeWorkspaceImports } from './workspaceResolver';
 import { DiscoveryScope } from './discoveryScope';
@@ -341,5 +342,91 @@ test('known ModuleWithProviders and importProvidersFrom preserve module provider
     assert.equal(matching(edges,'CALLS','Feature.run','Primary.load').length,1);
     assert.equal(matching(edges,'CALLS','Standalone.run','Secondary.load').length,1);
     assert.equal(matching(edges,'CALLS','Standalone.run','Primary.load').length,0);
+  } finally {f.dispose();}
+});
+
+
+test('constructor class-token selection replaces provisional calls and injections after provider-only retargeting', () => {
+  const f = fixture({
+    'services.ts': `export class Original { load(){} } export class Replacement { load(){} } export class ReplacementTwo { load(){} }`,
+    'providers.ts': `import {Original, Replacement, ReplacementTwo} from './services'; export const PROVIDERS = [{provide:Original,useClass:Replacement}];`,
+    'page.ts': `import {Component} from '@angular/core'; import {Original} from './services'; import {PROVIDERS} from './providers';
+      @Component({selector:'page',template:'',providers:PROVIDERS}) export class Page {constructor(private api:Original){} run(){this.api.load();}}`,
+  });
+  const files = ['services.ts', 'providers.ts', 'page.ts'];
+  const extract = () => extractProject('Fixture', f.root, '', () => {}, files);
+  function selected(result: ReturnType<typeof extract>, implementation: string): void {
+    assert.equal(result.complete, true);
+    for (const type of ['CALLS', 'INJECTS']) {
+      const from = type === 'CALLS' ? 'Page.run' : 'Page';
+      const dependencies = matching(result.edges, type, from);
+      assert.equal(dependencies.length, 1, JSON.stringify(dependencies));
+      assert.ok(dependencies[0].targetQN.endsWith(implementation + (type === 'CALLS' ? '.load' : '')));
+      assert.equal(dependencies[0].properties?.confidence_band, 'high');
+      assert.equal(dependencies[0].properties?.candidate, false);
+    }
+  }
+  try {
+    const page = fs.readFileSync(path.join(f.root, 'page.ts'), 'utf8');
+    selected(extract(), 'Replacement');
+    fs.writeFileSync(path.join(f.root, 'providers.ts'), fs.readFileSync(path.join(f.root, 'providers.ts'), 'utf8').replace('useClass:Replacement}', 'useClass:ReplacementTwo}'));
+    const retargeted = extract(); selected(retargeted, 'ReplacementTwo');
+    assert.deepEqual(extract().edges, retargeted.edges, 'an unchanged rerun has no derived-edge churn');
+    assert.equal(fs.readFileSync(path.join(f.root, 'page.ts'), 'utf8'), page, 'only the imported provider file changed');
+    fs.writeFileSync(path.join(f.root, 'providers.ts'), 'export const PROVIDERS = [];');
+    selected(extract(), 'Original');
+  } finally { f.dispose(); }
+});
+
+test('class-token dispatch preserves real direct and method-argument calls to the original implementation in the same owner', () => {
+  const f = fixture({ 'app.ts': `import {Component} from '@angular/core';
+    class Original {load(){}} class Replacement {load(){}}
+    @Component({selector:'app',template:'',providers:[{provide:Original,useClass:Replacement}]}) class App {
+      constructor(private api:Original){}
+      onlyInjected(){this.api.load();}
+      mixed(other:Original){this.api.load();other.load();}
+      direct(){this.api.load();new Original().load();}
+    }` });
+  try {
+    const result = extractProject('Fixture', f.root, '', () => {}, ['app.ts']);
+    assert.equal(matching(result.edges, 'CALLS', 'App.onlyInjected', 'Original.load').length, 0);
+    assert.equal(matching(result.edges, 'CALLS', 'App.onlyInjected', 'Replacement.load').length, 1);
+    assert.ok(matching(result.edges, 'CALLS', 'App.mixed', 'Original.load').length > 0, 'the method argument still calls Original');
+    assert.equal(matching(result.edges, 'CALLS', 'App.mixed', 'Replacement.load').length, 1);
+    assert.ok(matching(result.edges, 'CALLS', 'App.direct', 'Original.load').length > 0, 'direct construction still calls Original');
+    assert.equal(matching(result.edges, 'CALLS', 'App.direct', 'Replacement.load').length, 1);
+  } finally { f.dispose(); }
+});
+
+test('conditional class-token providers emit only genuine constructor injection alternatives with candidate metadata', () => {
+  const f = fixture({ 'app.ts': `import {Component} from '@angular/core';
+    class Original {load(){}} class One {load(){}} class Two {load(){}}
+    @Component({selector:'app',template:'',providers:[...(flag?[{provide:Original,useClass:One}]:[{provide:Original,useClass:Two}])]}) class App {
+      constructor(private api:Original){} run(){this.api.load();}
+    }` });
+  try {
+    const result = extractProject('Fixture', f.root, '', () => {}, ['app.ts']);
+    for (const type of ['CALLS','INJECTS']) {
+      const dependencies = matching(result.edges, type, type === 'CALLS' ? 'App.run' : 'App');
+      assert.equal(dependencies.length, 2, JSON.stringify(dependencies));
+      assert.ok(dependencies.every(edge => !edge.targetQN.includes('Original') && edge.properties?.candidate === true && edge.properties?.confidence_band === 'medium'));
+    }
+  } finally { f.dispose(); }
+});
+
+
+test('repeated injector.get class-token selections retain one dependency on the selected provider', () => {
+  const f = fixture({'app.ts': `import {Component,Injector} from '@angular/core';
+    class Original {load(){}} class Replacement {load(){}}
+    @Component({selector:'app',template:'',providers:[{provide:Original,useClass:Replacement}]}) class App {
+      constructor(private injector:Injector){}
+      run(){this.injector.get<Original>(Original).load();this.injector.get<Original>(Original).load();}
+    }`});
+  try {
+    const result = extractProject('Fixture', f.root, '', () => {}, ['app.ts']);
+    assert.equal(matching(result.edges, 'INJECTS', 'App', 'Replacement').length, 1);
+    assert.equal(matching(result.edges, 'INJECTS', 'App', 'Original').length, 0);
+    assert.equal(matching(result.edges, 'CALLS', 'App.run', 'Replacement.load').length, 1);
+    assert.equal(matching(result.edges, 'CALLS', 'App.run', 'Original.load').length, 0);
   } finally {f.dispose();}
 });
