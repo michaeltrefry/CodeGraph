@@ -56,7 +56,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             {
                 var request = WorkJson.Parse<KnowledgeVerifyInput>(JsonSerializer.SerializeToElement(input), tool);
                 var entry = await RequireEntryAsync(request.Id, "id", scope.ProjectId.ToString(), null, ct);
-                DreamPolicy.RequireVerification(actor, entry);
+                DreamPolicy.RequireWrite(actor, "verify");
                 result = await RecordAsync(new() { Verify = request }, actor, null, ct);
                 break;
             }

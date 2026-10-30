@@ -177,7 +177,6 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             DreamPolicy.RequireProject(actor, current.ProjectId);
             DreamPolicy.RequireWrite(actor, action);
             if (action == "retracted") DreamPolicy.Refuse(actor, "retract knowledge");
-            if (action == "verified") DreamPolicy.RequireVerification(actor, current);
         }
         var view = await ChangeKnowledgeCoreAsync(entryId, expectedVersion, action, actor, change, ct);
         await AdoptPendingAsync([entryId], ct);
@@ -404,6 +403,11 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 transaction, cancellationToken: ct));
             await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories,
                 paths.Select(path => path.Path).ToList(), nodeRefs, ct);
+            // Validate the dependencies just resolved from the CURRENT scope. A refusal rolls
+            // these tentative baselines back with the whole transaction. Old baselines alone
+            // would let an applies_when location change authorize unread files.
+            if (DreamPolicy.IsDreamer(actor))
+                DreamPolicy.RequireVerification(actor, (await LoadKnowledgeViewAsync(connection, transaction, entryId, false, ct))!);
         }, ct);
 
     // A change of an existing entry: the versioned advance, the entry must be active, the change, a
@@ -461,12 +465,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     {
         var snapshot = await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct);
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO knowledge_revisions (entry_id, revision, action, snapshot_json, author, author_kind, author_session_id, created_at) " +
-            "VALUES (@entryId, @revision, @action, @snapshot, @author, @authorKind, @session, @now)",
+            "INSERT INTO knowledge_revisions (entry_id, revision, action, snapshot_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
+            "VALUES (@entryId, @revision, @action, @snapshot, @author, @authorKind, @session, @harness, @model, @host, @now)",
             new
             {
                 entryId, revision, action, snapshot = JsonSerializer.Serialize(snapshot, WorkJson.Options),
-                author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, now
+                author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
     }

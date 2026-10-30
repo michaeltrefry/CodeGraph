@@ -20,11 +20,10 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         return (key, (await db.Store.ResolveAsync(key))!.Id);
     }
 
-    private async Task<DreamExecutionScope> BeginRunAsync(Guid runId, Guid projectId)
+    private async Task RegisterRunAsync(Guid runId, Guid projectId)
     {
         var store = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
         await store.SaveRunAsync(new DreamRun(runId, projectId, "run_now", new("tester"), "running", DateTime.UtcNow, null, "scripted", "scripted", 0, 0, 0, 1, 0, null, []));
-        return DreamExecutionScope.Begin(runId, projectId, "scripted");
     }
 
     private async Task<KnowledgeView> LessonAsync(string project, string summary, string source = "agent")
@@ -57,7 +56,8 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         var project = await ProjectAsync("DP");
         var prompt = await LessonAsync(project.Key, "Keep explicit requirements before coding", "prompt");
         var run = Guid.NewGuid();
-        using (var scope = await BeginRunAsync(run, project.Id))
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
         {
             await ToolAsync("dream_challenge", new { id = prompt.Id, reason = "Trail evidence calls for narrower applicability" }, prompt.Id);
             var refused = await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_revise", new { id = prompt.Id, expected_version = prompt.Version, applies_when = new { activity = new[] { "testing" } } }, prompt.Id));
@@ -82,12 +82,20 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     {
         var project = await ProjectAsync("DA");
         var lesson = await LessonAsync(project.Key, "Validate release artifacts against declared inputs");
-        using var scope = await BeginRunAsync(Guid.NewGuid(), project.Id);
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, project.Id);
+        using var scope = DreamExecutionScope.Begin(run, project.Id, "scripted");
         await ToolAsync("dream_revise", new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" }, paths = new[] { "src/Tests.cs" }, repositories = new[] { "codegraph" } } }, lesson.Id);
         var changed = (await db.Store.GetKnowledgeAsync(lesson.Id, false))!;
         changed.Summary.ShouldBe(lesson.Summary);
         changed.Paths.ShouldBe(["src/Tests.cs"]);
         changed.Details!.AppliesWhen!.Activity.ShouldBe([LessonActivity.Testing]);
+        scope.MarkSourceRead("codegraph", "src/Old.cs");
+        await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id));
+        (await db.Store.GetKnowledgeAsync(lesson.Id, false))!.Version.ShouldBe(changed.Version);
+        scope.MarkSourceRead("codegraph", "src/Tests.cs");
+        await ToolAsync("dream_verify", new { id = lesson.Id, expected_version = changed.Version }, lesson.Id);
+        changed = (await db.Store.GetKnowledgeAsync(lesson.Id, false))!;
         await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_revise", new { id = lesson.Id, expected_version = changed.Version, summary = "Hijacked" }, lesson.Id));
         foreach (var source in new[] { "prompt", "review", "bot_review", "subagent" })
             await Should.ThrowAsync<WorkException>(() => ToolAsync("dream_record", new { entry = new { kind = "lesson", summary = "Wrong authority " + source, what = "observed", source = new { kind = source }, confidence = "high" } }, lesson.Id));
@@ -97,7 +105,7 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         recorded.GetProperty("entry").GetProperty("details").GetProperty("source").GetProperty("kind").GetString().ShouldBe("agent");
         await using var connection = new MySqlConnection(db.ConnectionString);
         var journal = (await connection.QueryAsync<(string EvidenceJson, string Prevalence)>("SELECT evidence_json,prevalence FROM dream_write_journal WHERE run_id=@run", new { run = scope.RunId })).ToList();
-        journal.Count.ShouldBe(2);
+        journal.Count.ShouldBe(3);
         journal.ShouldAllBe(row => row.EvidenceJson.Contains(lesson.Id.ToString()) && row.Prevalence == "Observed once in one session");
     }
 
@@ -113,7 +121,8 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         var conflict = await FactAsync(project.Key, "A session will edit this after dreaming verifies it", "src/DreamConflict.cs");
         var run = Guid.NewGuid();
         Guid createdId;
-        using (var scope = await BeginRunAsync(run, project.Id))
+        await RegisterRunAsync(run, project.Id);
+        using (var scope = DreamExecutionScope.Begin(run, project.Id, "scripted"))
         {
             await ToolAsync("dream_revise", new { id = a.Id, expected_version = a.Version, applies_when = new { activity = new[] { "testing" } } }, a.Id);
             await ToolAsync("dream_promote", new { id = a.Id, expected_version = a.Version + 1 }, a.Id);
@@ -154,7 +163,9 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         var remote = await ProjectAsync("DO");
         var own = await LessonAsync(local.Key, "Read project-scoped operator state before acting");
         var foreign = await LessonAsync(remote.Key, "A different project's private release constraint");
-        using var scope = await BeginRunAsync(Guid.NewGuid(), local.Id);
+        var run = Guid.NewGuid();
+        await RegisterRunAsync(run, local.Id);
+        using var scope = DreamExecutionScope.Begin(run, local.Id, "scripted");
         var actions = (IKnowledgeDreamActions)db.Service;
         await Should.ThrowAsync<WorkException>(() => actions.ExecuteToolAsync("dream_read", JsonSerializer.SerializeToElement(new { id = foreign.Id }), scope.Actor));
         foreach (var tool in new[] { "dream_read", "dream_lessons", "dream_similar", "dream_review_queue", "dream_work_trail" })

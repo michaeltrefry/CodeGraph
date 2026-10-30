@@ -75,8 +75,9 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
     }));
 
     public Task<IReadOnlyList<DreamRestoreEntry>> RevertDreamWritesAsync(Guid projectId, Guid runId, WorkActor actor, CancellationToken ct = default) =>
-        RunAsync([LessonMergeLockName], async connection =>
+        RunAsync([$"dream:{projectId}", LessonMergeLockName], async connection =>
         {
+            DreamPolicy.Refuse(actor, "revert dreaming runs");
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await HoldProjectAsync(connection, transaction, projectId, ct);
             // Holding the project serializes revert with all direct lesson writers. Each entry is
@@ -91,15 +92,17 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
                 var after = JsonSerializer.Deserialize<DreamSnapshot>(journal.AfterJson)!;
                 await connection.ExecuteAsync(new CommandDefinition("SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE", new { ids = after.EntryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct));
                 var current = await CaptureDreamSnapshotAsync(connection, transaction, after.EntryIds, ct);
-                var versionConflict = current.Tables["knowledge_entries"].Any(row =>
+                var conflictingIds = current.Tables["knowledge_entries"].Where(row =>
                 {
                     var id = Guid.Parse(row["id"].GetString()!);
                     var expected = restoredVersions.TryGetValue(id, out var restored) ? restored : after.Tables["knowledge_entries"].Single(saved => saved["id"].GetString() == row["id"].GetString())["version"].GetInt64();
                     return row["version"].GetInt64() != expected;
-                });
-                if (versionConflict || SnapshotComparable(current) != SnapshotComparable(after))
+                }).Select(row => Guid.Parse(row["id"].GetString()!)).ToArray();
+                if (conflictingIds.Length > 0 || SnapshotComparable(current) != SnapshotComparable(after))
                 {
-                    results.Add(new(journal.Id, journal.EntryId, journal.Action, "conflict", "An affected entry or its lesson evidence changed after this write; nothing was restored.")); continue;
+                    foreach (var conflictId in conflictingIds.Length > 0 ? conflictingIds : [journal.EntryId])
+                        results.Add(new(journal.Id, conflictId, journal.Action, "conflict", "An affected entry or its lesson evidence changed after this write; nothing was restored."));
+                    continue;
                 }
                 if (journal.Action == "same_as")
                 {

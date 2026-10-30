@@ -15,18 +15,28 @@ public sealed partial class MySqlWorkStore
         var events = (await connection.QueryAsync(new CommandDefinition("SELECT correction_id,entry_id,event_hash,counted,rule_at_event,served,created_at FROM lesson_events WHERE project_id=@projectId ORDER BY correction_id", new { projectId }, cancellationToken: ct))).ToArray();
         var reviews = (await connection.QueryAsync(new CommandDefinition("SELECT r.id,r.updated_at FROM work_github_evidence r JOIN work_items i ON i.id=r.item_id WHERE i.project_id=@projectId ORDER BY r.id", new { projectId }, cancellationToken: ct))).ToArray();
         var challenges = (await connection.QueryAsync(new CommandDefinition("SELECT id,entry_id,status,created_at,resolved_at FROM lesson_challenges WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
+        var proposals = (await connection.QueryAsync(new CommandDefinition("SELECT id,target_id,status,version,created_at,reviewed_at FROM dream_proposals WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
+        var trail = (await connection.QueryAsync(new CommandDefinition("SELECT m.id,m.created_at,m.resolved_at,m.state FROM work_messages m WHERE m.project_id=@projectId ORDER BY m.id", new { projectId }, cancellationToken: ct))).ToArray();
+        var activity = (await connection.QueryAsync(new CommandDefinition("""
+            SELECT 'attempt' kind,a.id,COALESCE(a.ended_at,a.started_at) changed_at,a.outcome state FROM work_attempts a JOIN work_items i ON i.id=a.item_id WHERE i.project_id=@projectId
+            UNION ALL SELECT 'handoff',h.id,h.created_at,NULL FROM work_handoffs h JOIN work_items i ON i.id=h.item_id WHERE i.project_id=@projectId
+            UNION ALL SELECT 'thread',c.id,c.created_at,NULL FROM work_item_comments c JOIN work_items i ON i.id=c.item_id WHERE i.project_id=@projectId
+            ORDER BY kind,id
+            """, new { projectId }, cancellationToken: ct))).ToArray();
+        var revisions = (await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.author,r.author_kind,r.created_at,r.snapshot_json FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND (@since IS NULL OR r.created_at>@since) ORDER BY r.created_at DESC,r.entry_id,r.revision DESC LIMIT 101", new { projectId, since }, cancellationToken: ct))).ToArray();
         var freshness = (await connection.QueryAsync(new CommandDefinition("SELECT k.entry_id,k.repository_name,k.path,k.content_hash,h.content_hash AS current_hash FROM knowledge_entry_files k JOIN knowledge_entries e ON e.id=k.entry_id LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE e.project_id=@projectId ORDER BY k.entry_id,k.repository_name,k.path", new { projectId }, cancellationToken: ct))).ToArray();
         // Stable state fingerprint also detects newly stale files, removed graph dependencies and
         // edits of review evidence. The run service compares it to the last completed run.
-        var fingerprint = HashUrl(JsonSerializer.Serialize(new { entries = entries.Select(row => new { row.Id, row.Version, row.Status, row.Stale, row.RuleState }), events, reviews, challenges, freshness }));
+        var fingerprint = HashUrl(JsonSerializer.Serialize(new { entries = entries.Select(row => new { row.Id, row.Version, row.Status, row.Stale, row.RuleState }), events, reviews, challenges, proposals, trail, activity, freshness }));
         var changed = entries.Where(row => since is null || row.UpdatedAt > since).ToList();
         var stale = entries.Where(row => row.PossiblyStale && row.Status == "active").ToList();
-        var hasSignal = changed.Count > 0 || stale.Count > 0 || events.Any(row => since is null || (DateTime)row.created_at > since) || reviews.Any(row => since is null || (DateTime)row.updated_at > since) || challenges.Any(row => since is null || (DateTime)row.created_at > since);
+        var hasSignal = changed.Count > 0 || stale.Count > 0 || events.Any(row => since is null || (DateTime)row.created_at > since) || reviews.Any(row => since is null || (DateTime)row.updated_at > since) || challenges.Any(row => since is null || (DateTime)row.created_at > since) || proposals.Any(row => since is null || (DateTime)row.created_at > since) || trail.Any(row => since is null || (DateTime)row.created_at > since || row.resolved_at is DateTime resolved && resolved > since) || activity.Any(row => since is null || (DateTime)row.changed_at > since);
         var data = JsonSerializer.SerializeToElement(new
         {
             untrusted_data = true, project_id = projectId, since,
             changed_count = changed.Count, changed_entries = changed.Take(100).Select(row => ToRow(row)), changed_more = changed.Count > 100,
             stale_count = stale.Count, possibly_stale = stale.Take(100).Select(row => ToRow(row)), stale_more = stale.Count > 100,
+            changed_revisions = revisions.Take(100), changed_revisions_more = revisions.Length > 100,
             lesson_event_count = events.Length, review_evidence_count = reviews.Length,
             available_reads = new[] { "dream_read", "dream_lessons", "dream_similar", "dream_review_queue", "dream_work_trail", "dream_search_graph", "dream_read_source" }
         }, WorkJson.Options);
@@ -63,7 +73,8 @@ public sealed partial class MySqlWorkStore
         await using var connection = await OpenAsync(ct);
         var rows = (await connection.QueryAsync(new CommandDefinition("""
             SELECT * FROM (
-              SELECT 'attempt' kind,a.id,a.item_id,a.started_at created_at,JSON_OBJECT('branch',a.branch,'outcome',a.outcome,'reason',a.reason,'ended_at',a.ended_at) data
+              SELECT 'revision' kind,CONCAT(r.entry_id,':',r.revision) id,NULL item_id,r.created_at,r.snapshot_json data FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId
+              UNION ALL SELECT 'attempt',a.id,a.item_id,a.started_at,JSON_OBJECT('branch',a.branch,'outcome',a.outcome,'reason',a.reason,'ended_at',a.ended_at) data
                 FROM work_attempts a JOIN work_items i ON i.id=a.item_id WHERE i.project_id=@projectId
               UNION ALL SELECT 'handoff',h.id,h.item_id,h.created_at,JSON_OBJECT('done',h.done,'decisions',h.decisions_json,'open_issues',h.open_issues_json,'corrections',h.corrections_json,'next_action',h.next_action)
                 FROM work_handoffs h JOIN work_items i ON i.id=h.item_id WHERE i.project_id=@projectId
