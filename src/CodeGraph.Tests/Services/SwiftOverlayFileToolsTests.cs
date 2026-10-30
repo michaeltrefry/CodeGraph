@@ -127,8 +127,8 @@ public sealed class SwiftOverlayFileToolsTests : IDisposable
         var mcp = Mcp();
 
         var defaultBranch = (await mcp.AnalyzeImpactFile(Repo, GreeterPath)).StructuredContent!.Value;
-        // The in-memory store does not traverse; MariaDbSwiftFileImpactTests asserts the default-branch callers.
         defaultBranch.GetProperty("found").GetBoolean().ShouldBeTrue();
+        defaultBranch.GetProperty("totalAffected").GetInt32().ShouldBe(1);
 
         await BuildOverlayAsync();
 
@@ -138,6 +138,12 @@ public sealed class SwiftOverlayFileToolsTests : IDisposable
         changedContent.GetProperty("found").GetBoolean().ShouldBeTrue();
         // Both callers of greet: the unchanged Main.swift and the branch-only Farewell.swift.
         changedContent.GetProperty("totalAffected").GetInt32().ShouldBe(2);
+        var scope = await Resolver().ResolveAsync(Repo, _headSha);
+        var report = await new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance)
+            .AnalyzeFileImpactAsync(Repo, GreeterPath, 3, scope.Graph);
+        report.ShouldNotBeNull().AffectedNodes.Select(node => (node.Name, node.Label, node.FilePath))
+            .OrderBy(node => node.Name)
+            .ShouldBe([("farewell", "Function", FarewellPath), ("run", "Function", MainPath)]);
 
         // Farewell.swift exists only on the branch: answered at the head sha, not on the default branch.
         var branchOnly = await mcp.AnalyzeImpactFile(Repo, FarewellPath, sha: _headSha);

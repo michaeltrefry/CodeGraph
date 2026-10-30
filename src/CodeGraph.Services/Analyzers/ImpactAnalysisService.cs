@@ -229,9 +229,9 @@ public class ImpactAnalysisService(
     }
 
     /// <summary>
-    /// DEFINES also represents structural File ownership. Only callable/component owners carry
-    /// dependency impact from nested callbacks to the enclosing function or hook. Applying that
-    /// label condition during BFS avoids walking through unrelated structural owners.
+    /// Both definition edges can represent structural File ownership (including Swift free
+    /// functions). Follow callable/component owners for DEFINES and actual callable/type owners
+    /// for DEFINES_METHOD; structural containers do not inherit their contents' dependency impact.
     /// </summary>
     private static async Task<IReadOnlyList<TraversalEntry>> TraverseDependenciesAsync(
         IGraphReader graph, long startNodeId, int maxDepth)
@@ -249,6 +249,9 @@ public class ImpactAnalysisService(
             {
                 if (!sources.TryGetValue(edge.SourceId, out var source)) continue;
                 if (edge.Type == EdgeType.DEFINES && source.Label is not (NodeLabel.Function or NodeLabel.Method or NodeLabel.Component)) continue;
+                if (edge.Type == EdgeType.DEFINES_METHOD && source.Label is not (
+                    NodeLabel.Function or NodeLabel.Method or NodeLabel.Constructor or NodeLabel.Delegate or NodeLabel.Component
+                    or NodeLabel.Class or NodeLabel.Interface or NodeLabel.Struct or NodeLabel.Record or NodeLabel.Enum)) continue;
                 if (!visited.Add(source.Id)) continue;
                 entries.Add(new TraversalEntry(source, depth, edge.Type, edge.TargetId, null));
                 next.Add(source.Id);

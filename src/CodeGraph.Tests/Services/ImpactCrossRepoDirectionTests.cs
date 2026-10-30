@@ -121,6 +121,58 @@ public sealed class ImpactCrossRepoDirectionTests
             .ShouldBe([("onClick", 1, "CALLS"), ("Widget", 2, "DEFINES_METHOD"), ("Screen", 3, "RENDERS")]);
     }
 
+    [Theory]
+    [InlineData(NodeLabel.File)]
+    [InlineData(NodeLabel.Folder)]
+    [InlineData(NodeLabel.DotnetProject)]
+    [InlineData(NodeLabel.Repository)]
+    [InlineData(NodeLabel.Namespace)]
+    [InlineData(NodeLabel.Module)]
+    [InlineData(NodeLabel.Package)]
+    public async Task MethodDefinitionOwnership_DoesNotPromoteStructuralContainersOrTheirDependents(NodeLabel label)
+    {
+        var helper = Node(App, "helper", "src/helper.swift");
+        var caller = Node(App, "run", "src/main.swift");
+        var owner = _store.AddNode(new GraphNode { Repository = App, Label = label, Name = "container",
+            QualifiedName = "container", FilePath = "src/main.swift" });
+        var unrelated = Node(App, "unrelated", "src/other.swift");
+        await _store.InsertEdgeBatchAsync([
+            new GraphEdge { Repository = App, SourceId = caller, TargetId = helper, Type = EdgeType.CALLS },
+            new GraphEdge { Repository = App, SourceId = owner, TargetId = caller, Type = EdgeType.DEFINES_METHOD },
+            new GraphEdge { Repository = App, SourceId = unrelated, TargetId = owner, Type = EdgeType.USES_TYPE }
+        ]);
+        var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
+        var report = (await impact.AnalyzeImpactAsync($"{App}:src/helper.swift:helper", App, 5))!;
+        report.AffectedNodes.Select(node => node.NodeId).ShouldBe([caller]);
+    }
+
+    [Fact]
+    public async Task InterfaceAndImplementationMethodOwnership_StillReachesProvidersPagesAndRoutes()
+    {
+        long Add(string name, NodeLabel label) => _store.AddNode(new GraphNode { Repository = App, Label = label,
+            Name = name, QualifiedName = name, FilePath = "src/app.ts" });
+        var contract = Add("Repository", NodeLabel.Interface);
+        var contractMethod = Add("Repository.load", NodeLabel.Method);
+        var implementation = Add("Service", NodeLabel.Class);
+        var implementationMethod = Add("Service.load", NodeLabel.Method);
+        var page = Add("Page", NodeLabel.Component);
+        var route = Add("/page", NodeLabel.Route);
+        await _store.InsertEdgeBatchAsync([
+            new GraphEdge { Repository = App, SourceId = contract, TargetId = contractMethod, Type = EdgeType.DEFINES_METHOD },
+            new GraphEdge { Repository = App, SourceId = implementation, TargetId = implementationMethod, Type = EdgeType.DEFINES_METHOD },
+            new GraphEdge { Repository = App, SourceId = page, TargetId = contract, Type = EdgeType.INJECTS },
+            new GraphEdge { Repository = App, SourceId = page, TargetId = implementation, Type = EdgeType.REGISTERS },
+            new GraphEdge { Repository = App, SourceId = route, TargetId = page, Type = EdgeType.HANDLES }
+        ]);
+        var impact = new ImpactAnalysisService(_store, NullLogger<ImpactAnalysisService>.Instance);
+        var contractReport = (await impact.AnalyzeImpactAsync("Repository.load", App, 3))!;
+        contractReport.AffectedNodes.Select(node => (node.Name, node.Depth)).OrderBy(node => node.Depth)
+            .ShouldBe([("Repository", 1), ("Page", 2), ("/page", 3)]);
+        var implementationReport = (await impact.AnalyzeImpactAsync("Service.load", App, 3))!;
+        implementationReport.AffectedNodes.Select(node => (node.Name, node.Depth)).OrderBy(node => node.Depth)
+            .ShouldBe([("Service", 1), ("Page", 2), ("/page", 3)]);
+    }
+
     [Fact]
     public async Task FileThatOnlyCallsAnotherRepository_HasNoCrossRepoDependents()
     {
