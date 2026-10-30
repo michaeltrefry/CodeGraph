@@ -104,8 +104,8 @@ public sealed partial class MySqlWorkStore
         foreach (var moved in snapshot.SourceEvents)
         {
             var restored = await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE lesson_events SET entry_id = @entryId, counted = @Counted WHERE correction_id = @CorrectionId AND entry_id = @targetId",
-                new { entryId, targetId, moved.Counted, moved.CorrectionId }, transaction, cancellationToken: ct));
+                "UPDATE lesson_events SET entry_id = @entryId, counted = @Counted, arrival_revision = @ArrivalRevision WHERE correction_id = @CorrectionId AND entry_id = @targetId",
+                new { entryId, targetId, moved.Counted, moved.ArrivalRevision, moved.CorrectionId }, transaction, cancellationToken: ct));
             if (restored != 1)
                 throw new WorkException(WorkErrorCodes.Conflict, "A transferred correction moved again. Undo the later merge first. Nothing was changed.");
         }
@@ -120,7 +120,7 @@ public sealed partial class MySqlWorkStore
             "SELECT source_id, source_version, target_revision, COALESCE(inverse_json, snapshot_json) AS snapshot_json, created_at FROM lesson_merges " +
             "WHERE target_id = @targetId AND unmerged_at IS NULL AND NOT (source_id = @entryId AND source_version = @version) ORDER BY target_revision",
             new { targetId, entryId, version = journal.SourceVersion }, transaction, cancellationToken: ct))).ToList();
-        var remaining = RecountMergeEvents(snapshot, (await ReadEventsAsync(connection, transaction, [targetId], ct))[targetId]);
+        var remaining = RecountMergeEvents(snapshot, (await ReadEventsAsync(connection, transaction, [targetId], ct))[targetId], plans, target.Revision);
         foreach (var row in remaining)
             await connection.ExecuteAsync(new CommandDefinition("UPDATE lesson_events SET counted = @Counted WHERE correction_id = @CorrectionId",
                 row, transaction, cancellationToken: ct));
@@ -137,7 +137,7 @@ public sealed partial class MySqlWorkStore
         foreach (var plan in plans.Where(p => p.TargetRevision > snapshot.Target.Revision + 1))
         {
             var inverse = JsonSerializer.Deserialize<LessonMergeSnapshot>(plan.SnapshotJson, WorkJson.Options)!;
-            var rebasedEvents = RecountMergeEvents(snapshot, inverse.TargetEvents);
+            var rebasedEvents = RecountMergeEvents(snapshot, inverse.TargetEvents, plans, inverse.Target.Revision);
             var rebasedTarget = await RebuildMergeTargetAsync(connection, transaction, snapshot, inverse.Target, rebasedEvents, plans, plan.CreatedAt, ct);
             inverse = inverse with { Target = rebasedTarget, TargetEvents = rebasedEvents,
                 TargetLinks = RebaseMergeLinks(snapshot, inverse.TargetLinks), SourceLinks = RebaseMergeLinks(snapshot, inverse.SourceLinks) };
@@ -167,13 +167,34 @@ public sealed partial class MySqlWorkStore
         public DateTime CreatedAt { get; init; }
     }
 
-    private static List<EventRow> RecountMergeEvents(LessonMergeSnapshot removed, IEnumerable<EventRow> rows)
+    private static List<EventRow> RecountMergeEvents(LessonMergeSnapshot removed, IEnumerable<EventRow> rows, IReadOnlyList<MergePlanRow> plans, int throughRevision)
     {
         var imported = removed.SourceEvents.Select(e => e.CorrectionId).ToHashSet();
         var baseline = removed.TargetEvents.ToDictionary(e => e.CorrectionId);
-        var remaining = rows.Where(e => !imported.Contains(e.CorrectionId)).OrderBy(e => e.CreatedAt).ThenBy(e => e.CorrectionId).ToList();
-        var seen = remaining.Where(e => baseline.TryGetValue(e.CorrectionId, out var old) && old.Counted).Select(e => e.EventHash).ToHashSet();
-        return remaining.Select(e => e with { Counted = baseline.TryGetValue(e.CorrectionId, out var old) ? old.Counted : seen.Add(e.EventHash) }).ToList();
+        var sourceFlags = plans.Where(p => p.TargetRevision <= throughRevision)
+            .SelectMany(p => JsonSerializer.Deserialize<LessonMergeSnapshot>(p.SnapshotJson, WorkJson.Options)!.SourceEvents)
+            .ToDictionary(e => e.CorrectionId, e => e.Counted);
+        var remaining = rows.Where(e => !imported.Contains(e.CorrectionId)).OrderBy(e => baseline.ContainsKey(e.CorrectionId) ? 0 : 1)
+            .ThenBy(e => e.ArrivalRevision ?? int.MaxValue).ThenBy(e => e.CreatedAt).ThenBy(e => e.CorrectionId).ToList();
+        var hashes = new HashSet<string>();
+        var keys = new HashSet<string>();
+        var result = new List<EventRow>();
+        foreach (var row in remaining)
+        {
+            bool seen = hashes.Contains(row.EventHash);
+            // The native correction path dedupes a session's item:none against any of its items,
+            // in either direction. Merge imports retain their source's own uncounted flags.
+            if (!sourceFlags.ContainsKey(row.CorrectionId) && row.EventKey.StartsWith("session:", StringComparison.Ordinal) && row.EventKey.LastIndexOf(":item:", StringComparison.Ordinal) is var at && at >= 0)
+            {
+                var prefix = row.EventKey[..(at + 6)];
+                seen |= row.EventKey == prefix + "none" ? keys.Any(k => k.StartsWith(prefix, StringComparison.Ordinal)) : keys.Contains(prefix + "none");
+            }
+            var counted = baseline.TryGetValue(row.CorrectionId, out var old) ? old.Counted
+                : sourceFlags.TryGetValue(row.CorrectionId, out var sourceCounted) ? sourceCounted && !hashes.Contains(row.EventHash) : !seen;
+            if (counted) { hashes.Add(row.EventHash); keys.Add(row.EventKey); }
+            result.Add(row with { Counted = counted });
+        }
+        return result;
     }
 
     private static IReadOnlyList<MergeLink> RebaseMergeLinks(LessonMergeSnapshot removed, IReadOnlyList<MergeLink> links)
@@ -224,22 +245,51 @@ public sealed partial class MySqlWorkStore
         if (ruleEdited) return rebuilt;
         rebuilt = rebuilt with { RuleState = removed.Target.RuleState, RuleReason = removed.Target.RuleReason,
             RuleSince = removed.Target.RuleSince, RejectedReason = removed.Target.RejectedReason };
-        if (rebuilt.IsRule) return rebuilt;
-        var inherited = later.FirstOrDefault(p => p.Snapshot.Source.IsRule);
-        if (inherited.Snapshot is not null)
-            return rebuilt with { RuleState = "rule", RuleReason = inherited.Snapshot.Source.RuleReason,
-                RuleSince = inherited.Snapshot.Source.RuleSince ?? inherited.Plan.CreatedAt, RejectedReason = null };
-        var prompt = additions.Where(e => e.Counted && e.SourceKind == "prompt").ToList();
-        if (HasActivity(details) && (prompt.Count > 0 || rebuilt.RuleState != "rejected" && rebuilt.Recurrence >= ruleThreshold))
+        var scopeEdits = (await connection.QueryAsync<(int Revision, DateTime CreatedAt, string? AppliesWhenJson)>(new CommandDefinition(
+            "SELECT r.revision, r.created_at, JSON_EXTRACT(r.snapshot_json, '$.details.applies_when') AS applies_when_json " +
+            "FROM knowledge_revisions r JOIN knowledge_revisions previous ON previous.entry_id = r.entry_id AND previous.revision = r.revision - 1 " +
+            "WHERE r.entry_id = @id AND r.revision > @start AND r.revision <= @end AND r.action = 'revised' " +
+            "AND NOT (JSON_EXTRACT(r.snapshot_json, '$.details.applies_when') <=> JSON_EXTRACT(previous.snapshot_json, '$.details.applies_when'))",
+            new { id = state.Id, start = removed.Target.Revision + 1, end = state.Revision }, transaction, cancellationToken: ct))).ToList();
+        var steps = additions.Where(e => !imports.ContainsKey(e.CorrectionId)).Select(e => new MergeReplayStep(e.ArrivalRevision ?? int.MaxValue, e.CreatedAt, e, null, null))
+            .Concat(later.Select(p => new MergeReplayStep(p.Plan.TargetRevision, p.Plan.CreatedAt, null, p.Snapshot, null)))
+            .Concat(scopeEdits.Select(e => new MergeReplayStep(e.Revision, e.CreatedAt, null, null,
+                e.AppliesWhenJson is null ? new AppliesWhenView() : JsonSerializer.Deserialize<AppliesWhenView>(e.AppliesWhenJson, WorkJson.Options) ?? new AppliesWhenView())))
+            .OrderBy(e => e.Revision).ThenBy(e => e.At).ToList();
+        var appliesNow = MergeDetails(removed.Target.DetailsJson).AppliesWhen;
+        var count = events.Count(e => baselineIds.Contains(e.CorrectionId) && e.Counted);
+        var sourcePrompt = MergeDetails(removed.Target.DetailsJson).Source?.Kind == CorrectionSourceKind.Prompt;
+        void Promote(bool promptEvent, DateTime at)
         {
-            DateTime Arrived(EventRow e) => imports.TryGetValue(e.CorrectionId, out var at) ? at : e.CreatedAt;
-            var arrivals = additions.Where(e => e.Counted).Select(Arrived).Order().ToList();
-            var since = prompt.Count > 0 ? prompt.Min(Arrived) : arrivals.Count > 0
-                ? arrivals[Math.Min(arrivals.Count - 1, Math.Max(0, ruleThreshold - removed.TargetEvents.Count(e => e.Counted) - 1))] : now;
-            return rebuilt with { RuleState = "rule", RuleReason = prompt.Count > 0 ? "human_prompt" : "recurrence", RuleSince = since, RejectedReason = null };
+            if (rebuilt.IsRule || !HasActivity(new KnowledgeDetails(AppliesWhen: appliesNow))) return;
+            var reason = promptEvent || sourcePrompt && rebuilt.RuleState != "rejected" ? "human_prompt"
+                : rebuilt.RuleState != "rejected" && count >= ruleThreshold ? "recurrence" : null;
+            if (reason is not null) rebuilt = rebuilt with { RuleState = "rule", RuleReason = reason, RuleSince = at, RejectedReason = null };
+        }
+        foreach (var step in steps)
+        {
+            if (step.Correction is { } correction)
+            {
+                appliesNow = UnionAppliesWhen(appliesNow, correction.AppliesWhenJson is null ? null : JsonSerializer.Deserialize<AppliesWhenView>(correction.AppliesWhenJson, WorkJson.Options));
+                if (correction.Counted) count++;
+                Promote(correction.Counted && correction.SourceKind == "prompt", step.At);
+            }
+            else if (step.Merge is { } merge)
+            {
+                appliesNow = UnionAppliesWhen(appliesNow, MergeDetails(merge.Source.DetailsJson).AppliesWhen);
+                var ids = merge.SourceEvents.Select(e => e.CorrectionId).ToHashSet();
+                count += events.Count(e => ids.Contains(e.CorrectionId) && e.Counted);
+                if (merge.Source.IsRule && !rebuilt.IsRule)
+                    rebuilt = rebuilt with { RuleState = "rule", RuleReason = merge.Source.RuleReason,
+                        RuleSince = merge.Source.RuleSince ?? step.At, RejectedReason = null };
+                else Promote(false, step.At);
+            }
+            else { appliesNow = step.Scope; Promote(false, step.At); }
         }
         return rebuilt;
     }
+
+    private sealed record MergeReplayStep(int Revision, DateTime At, EventRow? Correction, LessonMergeSnapshot? Merge, AppliesWhenView? Scope);
 
     private static Task RestoreRuleAsync(MySqlConnection connection, MySqlTransaction transaction, KnowledgeEntryRow row, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition("UPDATE knowledge_entries SET rule_state = @RuleState, rule_reason = @RuleReason, rule_since = @RuleSince, rejected_reason = @RejectedReason WHERE id = @Id",

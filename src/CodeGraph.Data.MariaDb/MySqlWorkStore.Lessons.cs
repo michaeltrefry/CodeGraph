@@ -34,6 +34,8 @@ public sealed partial class MySqlWorkStore
         public Guid EntryId { get; init; }
         public string EventHash { get; init; } = "";
         public string? AppliesWhenJson { get; init; }
+        public string EventKey { get; init; } = "";
+        public int? ArrivalRevision { get; init; }
         public bool Counted { get; init; }
         public bool RuleAtEvent { get; init; }
         public bool? Served { get; init; }
@@ -194,8 +196,8 @@ public sealed partial class MySqlWorkStore
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
             "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, " +
-            "summary, summary_hash, what, applies_when_json, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
-            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @appliesWhen, @item, @session, @author, @authorKind, " +
+            "summary, summary_hash, what, applies_when_json, arrival_revision, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
+            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @appliesWhen, (SELECT revision + IF(@correction = @entryId, 0, 1) FROM knowledge_entries WHERE id = @entryId), @item, @session, @author, @authorKind, " +
             "@harness, @model, @host, @now)",
             new
             {
@@ -309,8 +311,8 @@ public sealed partial class MySqlWorkStore
         {
             var counted = moved.Counted && targetEvents.Add(moved.EventHash);
             await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE lesson_events SET entry_id = @to, counted = @counted WHERE correction_id = @correction",
-                new { to, counted, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
+                "UPDATE lesson_events SET entry_id = @to, counted = @counted, arrival_revision = @arrival WHERE correction_id = @correction",
+                new { to, counted, arrival = target.Revision + 1, correction = moved.CorrectionId }, transaction, cancellationToken: ct));
         }
 
         var links = (await ReadContradictionsAsync(connection, transaction, [from.Id], activeOnly: false, ct))[from.Id].Where(link => link.Id != to).ToList();
@@ -394,7 +396,7 @@ public sealed partial class MySqlWorkStore
         entryIds.Count == 0
             ? Array.Empty<EventRow>().ToLookup(row => row.EntryId)
             : (await connection.QueryAsync<EventRow>(new CommandDefinition(
-                "SELECT correction_id, entry_id, event_hash, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
+                "SELECT correction_id, entry_id, event_hash, event_key, arrival_revision, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
                 "FROM lesson_events WHERE entry_id IN @ids ORDER BY created_at, correction_id",
                 new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct))).ToLookup(row => row.EntryId);
 

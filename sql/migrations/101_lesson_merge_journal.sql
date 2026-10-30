@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS lesson_merges (
 -- Corrections after a merge retain their own applicability, so unmerge can remove
 -- the imported applicability while retaining newly learned target corrections.
 ALTER TABLE lesson_events ADD COLUMN IF NOT EXISTS applies_when_json LONGTEXT NULL;
+-- Arrival on the current target, independent of the correction's original source time.
+ALTER TABLE lesson_events ADD COLUMN IF NOT EXISTS arrival_revision INT NULL;
 UPDATE lesson_events le JOIN knowledge_entries e ON e.id = le.entry_id
 SET le.applies_when_json = JSON_EXTRACT(e.details_json, '$.applies_when')
 WHERE le.applies_when_json IS NULL;

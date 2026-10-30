@@ -9,7 +9,7 @@ namespace CodeGraph.Tests.Work;
 
 public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
 {
-    private async Task<JsonElement> Lesson(string project, string summary, string reference, string activity = "implementing", string source = "agent", string? sameAs = null, string? sessionId = null) =>
+    private async Task<JsonElement> Lesson(string project, string summary, string? reference, string activity = "implementing", string source = "agent", string? sameAs = null, string? sessionId = null) =>
         (await db.CallAsync(WorkTools.Record, new { project, session_id = sessionId, entry = new { kind = "lesson", summary, what = "Observed this correction", confidence = "high",
             applies_when = new { activity = new[] { activity } }, source = new { kind = source, @ref = reference }, same_as = sameAs } })).GetProperty("entry");
 
@@ -189,6 +189,48 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         (await connection.QuerySingleAsync<Guid>("SELECT entry_id FROM lesson_events WHERE source_ref = 'second-source'")).ShouldBe(Guid.Parse(secondId));
         (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE entry_id = @targetId OR other_id = @targetId", new { targetId })).ShouldBe(0);
         (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE other_id = @otherId", new { otherId })).ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task Selected_unmerge_preserves_rule_promotion_order_before_a_later_approved_source_merge()
+    {
+        var project = await db.NewProjectAsync("UQ");
+        var first = await Lesson(project, "First rule source", "first-rule-source", "reviewing");
+        var approved = await Lesson(project, "Approved later source", "approved-source", "testing");
+        var target = await Lesson(project, "Rule arrival target", "rule-arrival-target");
+        var firstId = first.GetProperty("id").GetString()!;
+        var approvedId = approved.GetProperty("id").GetString()!;
+        var targetId = target.GetProperty("id").GetString()!;
+        await db.CallAsync(WorkTools.Promote, new { id = approvedId, expected_version = 1, action = "approve" });
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = firstId, expected_version = 1, same_as = targetId } });
+        await Lesson(project, "Own target recurrence before the approved merge", "own-rule-arrival", "merging", sameAs: targetId);
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = approvedId, expected_version = 2, same_as = targetId } });
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = firstId, expected_version = 2 } });
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var rule = await connection.QuerySingleAsync<(string RuleReason, DateTime RuleSince)>("SELECT rule_reason, rule_since FROM knowledge_entries WHERE id = @targetId", new { targetId });
+        rule.RuleReason.ShouldBe("recurrence");
+        rule.RuleSince.ShouldBe(await connection.ExecuteScalarAsync<DateTime>("SELECT created_at FROM lesson_events WHERE source_ref = 'own-rule-arrival'"));
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = approvedId, expected_version = 3 } });
+        (await Entry(targetId)).GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task Unmerge_preserves_same_session_none_vs_item_event_deduplication()
+    {
+        var project = await db.NewProjectAsync("UX");
+        var session = (await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex" })).GetProperty("session").GetProperty("id").GetString();
+        var target = await Lesson(project, "Session target", null, sessionId: session);
+        var source = await Lesson(project, "Other source", "other-session-source");
+        var targetId = target.GetProperty("id").GetString()!;
+        var sourceId = source.GetProperty("id").GetString()!;
+        var item = (await db.NewItemAsync(project, "Correction context")).GetProperty("key").GetString();
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = sourceId, expected_version = 1, same_as = targetId } });
+        await db.CallAsync(WorkTools.Record, new { session_id = session, entry = new { kind = "lesson", summary = "Same session correction", what = "Reported again on an item", item,
+            source = new { kind = "agent" }, applies_when = new { activity = new[] { "testing" } }, same_as = targetId } });
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = sourceId, expected_version = 2 } });
+        (await Entry(targetId)).GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.ExecuteScalarAsync<bool>("SELECT counted FROM lesson_events WHERE summary = 'Same session correction'")).ShouldBeFalse();
     }
 
     [Fact]
