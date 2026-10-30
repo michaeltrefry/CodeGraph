@@ -221,6 +221,11 @@ public partial class BatchAnalysisService(
             var shouldPublish = false;
             try
             {
+                var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
+                // Submission saves the parent before its requests; a concurrent sweep must wait.
+                if (pending.RequestCount > 0 && batchRequests.Count < pending.RequestCount)
+                    continue;
+
                 var provider = providerRegistry.GetProvider(pending.ProviderName);
                 var status = await provider.GetBatchStatusAsync(pending.ProviderBatchId, ct);
                 ct.ThrowIfCancellationRequested();
@@ -234,7 +239,6 @@ public partial class BatchAnalysisService(
                     continue;
                 }
 
-                var batchRequests = await store.GetBatchRequestsAsync(pending.Id);
                 var results = await provider.GetBatchResultsAsync(pending.ProviderBatchId,
                     batchRequests.Select(r => r.CustomId).ToList(), ct);
                 var errors = new List<string>();

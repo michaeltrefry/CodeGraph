@@ -16,10 +16,12 @@ namespace CodeGraph.Tests.Services;
 
 public class BatchAnalysisServiceLmStudioBatchTests
 {
-    [Fact]
-    public async Task SubmitAndProcessBatch_UsesStoredRequestPayloadJson_ForLmStudioProvider()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SubmitAndProcessBatch_UsesStoredRequestPayloadJson_ForLmStudioProvider(bool pollDuringSubmission)
     {
-        var store = new InMemoryGraphStore();
+        var store = new PausingRequestStore(pollDuringSubmission);
         await store.UpsertRepositoryAsync(new RepositoryEntity
         {
             Name = "demo-repo",
@@ -87,7 +89,27 @@ public class BatchAnalysisServiceLmStudioBatchTests
             new LocalFileSystem(),
             NullLogger<BatchAnalysisService>.Instance);
 
-        await service.SubmitAnalysisBatchAsync("demo-repo");
+        var submission = service.SubmitAnalysisBatchAsync("demo-repo");
+        if (pollDuringSubmission)
+        {
+            try
+            {
+                await store.ParentSaved.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                var submitting = (await store.GetLatestBatchAsync("demo-repo"))!;
+                submitting.RequestCount.ShouldBe(1);
+                (await store.GetBatchRequestsAsync(submitting.Id)).ShouldBeEmpty();
+                // Test both the periodic sweep and a direct provider poll in the submission window.
+                await service.ProcessCompletedBatchesAsync("demo-repo");
+                (await provider.GetBatchStatusAsync(submitting.ProviderBatchId)).IsCompleted.ShouldBeFalse();
+                (await store.GetLatestBatchAsync("demo-repo"))!.Status.ShouldBe("submitted");
+                messageBus.PublishedMessages.ShouldBeEmpty();
+            }
+            finally
+            {
+                store.ResumeRequests.TrySetResult();
+            }
+        }
+        await submission;
 
         var batch = await store.GetLatestBatchAsync("demo-repo");
         batch.ShouldNotBeNull();
@@ -108,6 +130,22 @@ public class BatchAnalysisServiceLmStudioBatchTests
         (await store.GetNodeAnalysisAsync(nodeId)).ShouldNotBeNull();
         messageBus.PublishedMessages.OfType<AnalysisBatchSubmitted>().Count().ShouldBe(1);
         messageBus.PublishedMessages.OfType<ProjectAnalysisResultsProcessed>().Count().ShouldBe(1);
+    }
+
+    private sealed class PausingRequestStore(bool pause) : InMemoryGraphStore
+    {
+        public TaskCompletionSource ParentSaved { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ResumeRequests { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests)
+        {
+            if (pause)
+            {
+                ParentSaved.TrySetResult();
+                await ResumeRequests.Task;
+            }
+            await base.CreateBatchRequestsAsync(requests);
+        }
     }
 
     private sealed class StubHttpClientFactory(HttpClient client) : IHttpClientFactory

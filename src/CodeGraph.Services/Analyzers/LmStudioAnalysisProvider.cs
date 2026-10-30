@@ -163,6 +163,9 @@ public class LmStudioAnalysisProvider(
             return new AnalysisBatchStatusResult(batchId, batch.Status, batch.Status == "completed", batch.Error);
 
         var requests = await store.GetBatchRequestsAsync(batch.Id);
+        // Parent and requests are persisted separately; don't run or terminalize a partial submission.
+        if (batch.RequestCount > 0 && requests.Count < batch.RequestCount)
+            return new AnalysisBatchStatusResult(batchId, "submitted", IsCompleted: false);
         if (requests.Count == 0)
             return new AnalysisBatchStatusResult(batchId, "completed", IsCompleted: true);
 
@@ -368,6 +371,8 @@ public class LmStudioAnalysisProvider(
                 return;
 
             var requests = await batchStore.GetBatchRequestsAsync(batch.Id);
+            if (batch.RequestCount > 0 && requests.Count < batch.RequestCount)
+                return;
             if (requests.Count == 0)
             {
                 await batchStore.UpdateBatchStatusAsync(batch.Id, "submitted", 0, completedAt: null);

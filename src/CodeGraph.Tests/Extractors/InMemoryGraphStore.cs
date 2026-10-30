@@ -1177,7 +1177,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
         return Task.FromResult(batch.Id);
     }
 
-    public Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests)
+    public virtual Task CreateBatchRequestsAsync(IEnumerable<AnalysisBatchRequestEntity> requests)
     {
         _batchRequests.AddRange(requests);
         return Task.CompletedTask;

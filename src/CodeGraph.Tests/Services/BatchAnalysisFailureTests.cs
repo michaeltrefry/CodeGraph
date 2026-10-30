@@ -240,8 +240,51 @@ public class BatchAnalysisFailureTests
         System.Text.Encoding.UTF8.GetByteCount(batch.Error).ShouldBeLessThan(65_535);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task IncompleteLocalRequestPersistence_WaitsEvenForCompletedHostedBatch(int persistedCount)
+    {
+        var provider = new StubProvider
+        {
+            Results = [new("request-0", "succeeded", Valid, "model"), new("request-1", "succeeded", Valid, "model")]
+        };
+        var (service, store, bus, id) = await CreateAsync(provider, requestCount: 2, storedRequestCount: persistedCount);
+
+        await service.ProcessCompletedBatchesAsync();
+
+        var waiting = (await store.GetLatestBatchAsync("repo"))!;
+        waiting.Status.ShouldBe("submitted");
+        waiting.Error.ShouldBeNull();
+        provider.StatusCalls.ShouldBe(0);
+        bus.Messages.ShouldBeEmpty();
+
+        await store.CreateBatchRequestsAsync(Enumerable.Range(persistedCount, 2 - persistedCount)
+            .Select(i => new AnalysisBatchRequestEntity
+            {
+                BatchId = id, CustomId = $"request-{i}", NodeLabel = $"Project{i}", Status = "pending"
+            }));
+        await service.ProcessCompletedBatchesAsync();
+
+        var completed = (await store.GetLatestBatchAsync("repo"))!;
+        completed.Status.ShouldBe("completed");
+        completed.CompletedCount.ShouldBe(2);
+        bus.Messages.OfType<ProjectAnalysisResultsProcessed>().Single().CompletedCount.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task ZeroDeclaredRequests_FailsRatherThanWaitingForSubmissionForever()
+    {
+        var (service, store, _, _) = await CreateAsync(new StubProvider(), requestCount: 0);
+        await service.ProcessCompletedBatchesAsync();
+        var batch = (await store.GetLatestBatchAsync("repo"))!;
+        batch.Status.ShouldBe("failed");
+        batch.CompletedCount.ShouldBe(0);
+        batch.Error!.ShouldContain("0 stored requests");
+    }
+
     private static async Task<(BatchAnalysisService Service, InMemoryGraphStore Store, RecordingBus Bus, long Id)> CreateAsync(
-        StubProvider provider, int requestCount = 1)
+        StubProvider provider, int requestCount = 1, int? storedRequestCount = null)
     {
         var store = new InMemoryGraphStore();
         var id = await store.CreateAnalysisBatchAsync(new AnalysisBatchEntity
@@ -249,7 +292,7 @@ public class BatchAnalysisFailureTests
             Repo = "repo", ProviderBatchId = "batch", ProviderName = "stub", Status = "submitted",
             RequestCount = requestCount, SubmittedAt = DateTime.UtcNow
         });
-        await store.CreateBatchRequestsAsync(Enumerable.Range(0, requestCount).Select(i => new AnalysisBatchRequestEntity
+        await store.CreateBatchRequestsAsync(Enumerable.Range(0, storedRequestCount ?? requestCount).Select(i => new AnalysisBatchRequestEntity
         {
             BatchId = id, CustomId = $"request-{i}", NodeLabel = $"Project{i}", Status = "pending", AttemptCount = 3
         }));
