@@ -151,9 +151,9 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
             "session_substitution" => (WorkTools.UpdateWork, new { id = seed.Item.Id, expected_version = seed.Item.Version, session_id = sessionId, title = "Injected title" }),
             _ => throw new InvalidOperationException(operation)
         };
-        var before = await SnapshotAsync();
         var runId = Guid.NewGuid();
         await PersistRunAsync(runId, seed.Project);
+        var before = await SnapshotAsync();
         using var run = DreamExecutionScope.Begin(runId, seed.Project, "scripted-policy");
         using var evidence = run.UseEvidence([new("entry", seed.Lesson.Id.ToString(), "Existing entry")]);
         using var prevalence = DreamWriteMetadata.Begin("one existing project lesson");
@@ -186,7 +186,7 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
     private async Task<string> SnapshotAsync()
     {
         await using var connection = new MySqlConnection(db.ConnectionString);
-        var tables = await connection.QueryAsync<string>("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND (table_name LIKE 'knowledge_%' OR table_name LIKE 'lesson_%' OR table_name LIKE 'work_%') ORDER BY table_name");
+        var tables = await connection.QueryAsync<string>("SELECT table_name FROM information_schema.tables WHERE table_schema=DATABASE() AND (table_name LIKE 'knowledge_%' OR table_name LIKE 'lesson_%' OR table_name LIKE 'work_%' OR table_name LIKE 'dream%') ORDER BY table_name");
         var snapshot = new SortedDictionary<string, string[]>();
         foreach (var table in tables)
         {
