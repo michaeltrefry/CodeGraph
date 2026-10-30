@@ -783,3 +783,60 @@ public sealed class WorkImportUnarchiveMariaDbTests(WorkDatabase db) : IClassFix
         (await StatusAsync("sc-97301")).ShouldBe("complete");
     }
 }
+
+/// <summary>
+/// sc-27928: the table aliases retired repositories to the indexed repository their code moved to. Aliases are checked
+/// when saved (each names an unindexed repository and points at an indexed one), kept with the table, and a story
+/// naming a retired repository imports with the repository it moved to; an owner/name alias matches that owner only.
+/// </summary>
+public sealed class WorkImportRepositoryAliasMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    private Task<JsonElement> GetAsync(string id) => db.CallAsync(WorkTools.GetWork, new { id });
+
+    [Fact]
+    public async Task A_story_naming_a_retired_repository_imports_with_the_repository_its_code_moved_to()
+    {
+        var key = "AL" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
+        var source = ImportFixtures.Empty();
+        source.Stories[98101] = ImportFixtures.Story(98101, "Named in the text", ImportFixtures.SceneWorksTeam) with
+        {
+            Description = "Fixed in https://github.com/SceneWorks/mlx-gen/blob/main/src/vae.rs."
+        };
+        source.Stories[98102] = ImportFixtures.Story(98102, "PR in the retired repository", ImportFixtures.SceneWorksTeam) with
+        {
+            PullRequests = [new ShortcutPullRequest(3, "https://github.com/SceneWorks/candle-gen/pull/3", "z", true, false)]
+        };
+        source.Stories[98103] = ImportFixtures.Story(98103, "Another owner's candle-gen", ImportFixtures.SceneWorksTeam) with
+        {
+            Description = "Upstream: https://github.com/acme/candle-gen/issues/1"
+        };
+        var service = WorkImportMariaDbTests.Service(db, source, null, Path.Combine(Path.GetTempPath(), "cg-import-alias-" + key));
+        List<ImportTeamMapping> table = [new(ImportFixtures.SceneWorksTeam, key, "SceneWorks", Repositories: ["sceneworks", "inference"])];
+        ImportSettings Settings(Dictionary<string, string> aliases) => new(key + "H", table, RepositoryAliases: aliases);
+
+        // ---- Aliases are checked when saved ------------------------------------------------------
+        async Task<WorkException> RefusedAsync(Dictionary<string, string> aliases) =>
+            await Should.ThrowAsync<WorkException>(() => service.SaveSettingsAsync(ImportSources.Shortcut, Settings(aliases), approve: false, "owner", CancellationToken.None));
+        (await RefusedAsync(new() { ["sceneworks"] = "inference" })).Message.ShouldContain("is the repository sceneworks CodeGraph indexes");
+        (await RefusedAsync(new() { ["mlx-gen"] = "not-indexed" })).Message.ShouldContain("'not-indexed'");
+        (await RefusedAsync(new() { ["has space"] = "inference" })).Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+
+        var saved = await service.SaveSettingsAsync(ImportSources.Shortcut,
+            Settings(new() { [" mlx-gen "] = "INFERENCE", ["SceneWorks/candle-gen"] = "inference" }), approve: true, "owner", CancellationToken.None);
+        saved.RepositoryAliases!.ShouldBe(new Dictionary<string, string> { ["mlx-gen"] = "inference", ["SceneWorks/candle-gen"] = "inference" });
+        (await service.GetSettingsAsync(ImportSources.Shortcut, CancellationToken.None)).RepositoryAliases!.Count.ShouldBe(2);
+
+        // ---- The dry run reads the retired names as the repository they moved to ----------------
+        var dry = (await service.RunAsync(ImportSources.Shortcut, "dry_run", null, "owner", CancellationToken.None)).Report!;
+        dry.RepositoryMentions.Single(mention => mention.Name == "SceneWorks/mlx-gen").Repository.ShouldBe("inference");
+        dry.RepositoryMentions.Single(mention => mention.Name == "acme/candle-gen").Repository.ShouldBeNull();
+        dry.NoRepository.ShouldBe(["sc-98103"]);
+
+        // ---- The import writes them -------------------------------------------------------------
+        var run = await service.RunAsync(ImportSources.Shortcut, "import", null, "owner", CancellationToken.None);
+        run.Status.ShouldBe(ImportRunStatuses.Completed, run.Error);
+        (await GetAsync("sc-98101")).GetProperty("repository").GetString().ShouldBe("inference");
+        (await GetAsync("sc-98102")).GetProperty("repository").GetString().ShouldBe("inference");
+        (await GetAsync("sc-98103")).TryGetProperty("repository", out _).ShouldBeFalse(); // the alias names SceneWorks's candle-gen only
+    }
+}
