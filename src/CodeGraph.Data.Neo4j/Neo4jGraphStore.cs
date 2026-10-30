@@ -449,17 +449,18 @@ public partial class Neo4jGraphStore(
         foreach (var ids in edgeIds.Distinct().Chunk(100))
         {
             ct.ThrowIfCancellationRequested();
-            var legacy = ids.Where(_legacyCrossRepoElementIds.ContainsKey)
-                .SelectMany(id => _legacyCrossRepoElementIds[id]).ToArray();
-            if (ids.Any(id => _legacyCrossRepoElementIds.TryGetValue(id, out var elements) && elements.Count > 1))
+            var elements = ids.Where(_crossRepoElementIds.ContainsKey)
+                .SelectMany(id => _crossRepoElementIds[id]).ToArray();
+            var appIds = ids.Where(id => !_crossRepoElementIds.ContainsKey(id)).ToArray();
+            if (ids.Any(id => _crossRepoElementIds.TryGetValue(id, out var mapped) && mapped.Count > 1))
                 throw new InvalidOperationException("Legacy cross-repository edge IDs collide; refusing an ambiguous delete");
             await session.ExecuteWriteAsync(async tx =>
             {
                 await tx.RunAsync("""
                     MATCH (edge:CrossRepoEdge)
-                    WHERE edge.appId IN $ids OR elementId(edge) IN $legacy
+                    WHERE edge.appId IN $appIds OR elementId(edge) IN $elements
                     DELETE edge
-                    """, new { ids, legacy });
+                    """, new { appIds, elements });
             });
         }
     }

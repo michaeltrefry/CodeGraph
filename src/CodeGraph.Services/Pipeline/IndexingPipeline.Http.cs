@@ -7,7 +7,7 @@ namespace CodeGraph.Services.Pipeline;
 public partial class IndexingPipeline
 {
     internal const string HttpBindingSlice = ".codegraph/http-bindings";
-    private const string HttpBindingOwner = "http_binding";
+    internal const string HttpBindingOwner = "http_binding";
 
     internal sealed record HttpRebinding(IReadOnlyList<PendingEdge> ReboundEdges, GraphSliceRetractions Retractions)
     {
@@ -19,8 +19,15 @@ public partial class IndexingPipeline
     /// same-repository endpoints. Rechecks persisted calls on backend-only changes without replacing
     /// caller slices. Only the obsolete derived edges are retracted by the graph transaction.
     /// </summary>
-    internal async Task<HttpRebinding> RebindHttpCallsAsync(string repositoryName, GraphBuffer buffer,
-        bool includePersistedNodes, IReadOnlySet<string> excludedPersistedFiles, CancellationToken ct)
+    internal Task<HttpRebinding> RebindHttpCallsAsync(string repositoryName, GraphBuffer buffer,
+        bool includePersistedNodes, IReadOnlySet<string> excludedPersistedFiles, CancellationToken ct) =>
+        RebindHttpCallsAsync(_store, _logger, repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct);
+
+    // Shared with post-index target-side reconciliation: source indexing and endpoint changes
+    // use the same matching, ambiguity, ownership and meaningful-property comparison rules.
+    internal static async Task<HttpRebinding> RebindHttpCallsAsync(IGraphStore store, ILogger logger,
+        string repositoryName, GraphBuffer buffer, bool includePersistedNodes,
+        IReadOnlySet<string> excludedPersistedFiles, CancellationToken ct, bool preserveBindingsWithoutRawEvidence = false)
     {
         bool Excluded(string? path) => !string.IsNullOrWhiteSpace(path)
             && excludedPersistedFiles.Contains(NormalizeRelativePath(path));
@@ -33,9 +40,9 @@ public partial class IndexingPipeline
         IReadOnlyList<StoredEdge> oldBindings = [];
         if (includePersistedNodes)
         {
-            oldBindings = await _store.FindEdgesByPropertyAsync(repositoryName, [EdgeType.HTTP_CALLS],
+            oldBindings = await store.FindEdgesByPropertyAsync(repositoryName, [EdgeType.HTTP_CALLS],
                 "semantic_owner", [HttpBindingOwner], ct);
-            var persistedRaw = await _store.FindEdgesByPropertyAsync(repositoryName, [EdgeType.HTTP_CALLS],
+            var persistedRaw = await store.FindEdgesByPropertyAsync(repositoryName, [EdgeType.HTTP_CALLS],
                 "http_method", CrossRepoLinker.HttpMethods.SelectMany(method => new[] { method, method.ToLowerInvariant(), method[..1] + method[1..].ToLowerInvariant() }).ToArray(), ct);
             foreach (var edge in persistedRaw)
             {
@@ -51,11 +58,11 @@ public partial class IndexingPipeline
         var routes = buffer.AllNodes.Where(node => node.Label == NodeLabel.Route)
             .DistinctBy(node => node.QualifiedName).ToDictionary(node => node.QualifiedName, StringComparer.Ordinal);
         if (includePersistedNodes)
-            foreach (var route in await _store.FindNodesByLabelAsync(repositoryName, NodeLabel.Route, int.MaxValue))
+            foreach (var route in await store.FindNodesByLabelAsync(repositoryName, NodeLabel.Route, int.MaxValue))
                 if (!Excluded(route.FilePath)) routes.TryAdd(route.QualifiedName, route);
         var projection = new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = CrossRepoLinker.HttpRoutePropertyKeys };
         var localLookup = CrossRepoLinker.BuildHttpRouteLookup(routes.Values.Select(route => CrossRepoLinkProjection.ToRow(route, projection)));
-        var repositoryNames = (await _store.ListRepositoriesAsync()).Select(repository => repository.Name)
+        var repositoryNames = (await store.ListRepositoriesAsync()).Select(repository => repository.Name)
             .Append(repositoryName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         Dictionary<string, List<LinkNodeRow>>? globalLookup = null;
         var next = new Dictionary<string, PendingEdge>(StringComparer.Ordinal);
@@ -85,7 +92,7 @@ public partial class IndexingPipeline
                 if (globalLookup is null)
                 {
                     var global = routes.Values.Select(route => CrossRepoLinkProjection.ToRow(route, projection)).ToList();
-                    await foreach (var streamedRoute in _store.StreamLinkNodesAsync(projection, ct).WithCancellation(ct))
+                    await foreach (var streamedRoute in store.StreamLinkNodesAsync(projection, ct).WithCancellation(ct))
                         if (!streamedRoute.Repository.Equals(repositoryName, StringComparison.OrdinalIgnoreCase)) global.Add(streamedRoute);
                     globalLookup = CrossRepoLinker.BuildHttpRouteLookup(global);
                 }
@@ -98,6 +105,9 @@ public partial class IndexingPipeline
                 continue;
             }
             var route = candidates[0];
+            // A concrete extraction-owned edge already reaches this endpoint. Deriving an edge
+            // with the same graph identity would overwrite the authoritative raw evidence.
+            if (edge.TargetQN == route.QualifiedName) continue;
             // Prevent subsequent stub creation from replacing a proven persisted endpoint's
             // buffered identity with a file-less placeholder.
             if (buffer.FindByQN(route.QualifiedName) is null && routes.TryGetValue(route.QualifiedName, out var endpoint))
@@ -116,6 +126,15 @@ public partial class IndexingPipeline
             var binding = new PendingEdge(edge.SourceQN, route.QualifiedName, EdgeType.HTTP_CALLS, derived);
             next[HttpEdgeKey(binding)] = binding;
         }
+        if (preserveBindingsWithoutRawEvidence)
+        {
+            var rawSources = raw.Values.Select(edge => edge.SourceQN).ToHashSet(StringComparer.Ordinal);
+            foreach (var old in oldBindings.Where(edge => !rawSources.Contains(edge.SourceQN)))
+            {
+                var retained = new PendingEdge(old.SourceQN, old.TargetQN, old.Type, old.Properties);
+                next.TryAdd(HttpEdgeKey(retained), retained);
+            }
+        }
         foreach (var edge in next.Values) buffer.AddEdge(edge);
 
         var previous = oldBindings.Select(edge => new PendingEdge(edge.SourceQN, edge.TargetQN, edge.Type, edge.Properties))
@@ -128,7 +147,7 @@ public partial class IndexingPipeline
                 || Excluded(sourceFiles.GetValueOrDefault(pair.Value.SourceQN))
                 || (routes.TryGetValue(pair.Value.TargetQN, out var route) && Excluded(route.FilePath)))
             .Select(pair => pair.Value).ToList();
-        _logger.LogInformation("HTTP binding for {Repository}: {Calls} raw call(s), {Bound} local binding(s), {Changed} changed, {Retracted} removed; unresolved samples: {Samples}",
+        logger.LogInformation("HTTP binding for {Repository}: {Calls} raw call(s), {Bound} local binding(s), {Changed} changed, {Retracted} removed; unresolved samples: {Samples}",
             repositoryName, raw.Count, next.Count, rebound.Count, retracted.Count, string.Join("; ", unresolved));
         return new HttpRebinding(rebound, new GraphSliceRetractions(retracted, []));
     }
