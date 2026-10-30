@@ -1066,6 +1066,15 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
+    public async Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default)
+    {
+        foreach (var ids in edgeIds.Distinct().Chunk(options.BatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            await db.CrossRepoEdges.Where(edge => ids.Contains(edge.Id)).ExecuteDeleteAsync(ct);
+        }
+    }
+
     public async Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
         // Delete server-side; tracking every cross-repo edge of a large repository just to remove it is wasteful.

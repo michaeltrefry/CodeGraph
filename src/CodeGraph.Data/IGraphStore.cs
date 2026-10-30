@@ -58,6 +58,9 @@ public interface IGraphStore : IGraphReader, IAnalysisStore, IMetricsStore, IRev
         => CrossRepoLinkProjection.StreamEdgesAsync(this, query, ct);
 
     // Cross-repo edges
+    /// <summary>Delete exactly the supplied persisted cross-repository edge IDs. Empty input
+    /// is a no-op; callers use this for owned relation diffs without clearing unrelated links.</summary>
+    Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default);
     Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge);
     Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges, CancellationToken ct = default);
     Task<IReadOnlyList<string>> FindRepositoriesWithNoCrossRepoEdgesAsync();

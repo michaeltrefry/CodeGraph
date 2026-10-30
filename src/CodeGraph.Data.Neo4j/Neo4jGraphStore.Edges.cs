@@ -593,9 +593,19 @@ public partial class Neo4jGraphStore
         _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, null)
     };
 
-    private static CrossRepoEdge MapCrossRepoEdgeNode(INode node)
+    // Older export graphs lack appId. Keep the exact element identity from reads so a
+    // bounded delete can honor the compatibility reader's existing numeric ID contract.
+    private readonly Dictionary<long, HashSet<string>> _legacyCrossRepoElementIds = [];
+
+    private CrossRepoEdge MapCrossRepoEdgeNode(INode node)
     {
         var id = node.Properties.ContainsKey("appId") ? node["appId"].As<long>() : node.ElementId.GetHashCode();
+        if (!node.Properties.ContainsKey("appId"))
+        {
+            if (!_legacyCrossRepoElementIds.TryGetValue(id, out var elements))
+                _legacyCrossRepoElementIds[id] = elements = [];
+            elements.Add(node.ElementId);
+        }
         return new()
         {
             Id = id,

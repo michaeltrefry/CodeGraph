@@ -442,6 +442,28 @@ public partial class Neo4jGraphStore(
         });
     }
 
+    public async Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default)
+    {
+        if (edgeIds.Count == 0) return;
+        await using var session = sessionFactory.GetSession();
+        foreach (var ids in edgeIds.Distinct().Chunk(100))
+        {
+            ct.ThrowIfCancellationRequested();
+            var legacy = ids.Where(_legacyCrossRepoElementIds.ContainsKey)
+                .SelectMany(id => _legacyCrossRepoElementIds[id]).ToArray();
+            if (ids.Any(id => _legacyCrossRepoElementIds.TryGetValue(id, out var elements) && elements.Count > 1))
+                throw new InvalidOperationException("Legacy cross-repository edge IDs collide; refusing an ambiguous delete");
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync("""
+                    MATCH (edge:CrossRepoEdge)
+                    WHERE edge.appId IN $ids OR elementId(edge) IN $legacy
+                    DELETE edge
+                    """, new { ids, legacy });
+            });
+        }
+    }
+
     public async Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
         await using var session = sessionFactory.GetSession();

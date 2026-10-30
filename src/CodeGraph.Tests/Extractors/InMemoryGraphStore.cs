@@ -14,6 +14,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryIndexingLocks =
         new(StringComparer.OrdinalIgnoreCase);
     private long _nextId = 1;
+    private long _nextCrossEdgeId = 1;
     private readonly List<GraphNode> _nodes = new();
     private readonly List<GraphEdge> _edges = new();
     private readonly List<CrossRepoEdge> _crossEdges = new();
@@ -228,7 +229,17 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges, CancellationToken ct = default)
     {
-        _crossEdges.AddRange(edges);
+        ct.ThrowIfCancellationRequested();
+        foreach (var edge in edges)
+        {
+            var index = _crossEdges.FindIndex(old => old.SourceRepository == edge.SourceRepository &&
+                old.TargetRepository == edge.TargetRepository && old.SourceNodeId == edge.SourceNodeId &&
+                old.TargetNodeId == edge.TargetNodeId && old.Type == edge.Type);
+            var stored = edge with { Id = index >= 0 ? _crossEdges[index].Id : edge.Id == 0 ? _nextCrossEdgeId++ : edge.Id };
+            _nextCrossEdgeId = Math.Max(_nextCrossEdgeId, stored.Id + 1);
+            if (index >= 0) _crossEdges[index] = stored;
+            else _crossEdges.Add(stored);
+        }
         return Task.CompletedTask;
     }
 
@@ -658,11 +669,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── Cross-repo edges ────────────────────────────────────────────────
 
-    public Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge)
-    {
-        _crossEdges.Add(edge);
-        return Task.CompletedTask;
-    }
+    public Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge) => InsertCrossRepoEdgeBatchAsync([edge]);
 
     public Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string repository, EdgeType? type = null) =>
         Task.FromResult<IReadOnlyList<CrossRepoEdge>>(
@@ -1609,6 +1616,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             var sourceNode = _nodes.FirstOrDefault(n => n.Id == e.SourceId);
             return sourceNode?.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) == true;
         });
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var ids = edgeIds.ToHashSet();
+        _crossEdges.RemoveAll(edge => ids.Contains(edge.Id));
         return Task.CompletedTask;
     }
 
