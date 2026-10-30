@@ -70,6 +70,32 @@ public sealed class BackendEndpointBoundsTests
         result.Complete.ShouldBeFalse(); result.Succeeded.ShouldBeFalse(); result.FailureReason!.ShouldContain("budget");
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShortAliasesToLongImportedTargetsChargeEveryEmittedScope(bool rust)
+    {
+        var module = new string('m', 3000);
+        string Source(int routes) => rust
+            ? "use axum::{Router,routing::get};use crate::" + module + "::Handle as h;fn build(){let r=Router::new()"
+                + string.Concat(Enumerable.Range(0, routes).Select(i => $".route(\"/{i}\",get(h))")) + ";}"
+            : "package main\nimport (\"github.com/gin-gonic/gin\";h \"example.com/root/" + module
+                + "\")\nfunc build(){r:=gin.New();\n" + string.Join('\n', Enumerable.Range(0, routes).Select(i => $"r.GET(\"/{i}\",h.Handle)")) + "}";
+        ExtractorContext ImportedContext(BackendEndpointWorkBudget work) => new()
+        {
+            RepositoryName = "App", RootPath = "/test", BackendEndpointWork = work,
+            GoModuleManifests = new Dictionary<string, string> { ["go.mod"] = "module example.com/root\n" }
+        };
+        var normal = new BackendEndpointWorkBudget(200_000);
+        var index = new BackendEndpointHandlerIndex([Handler("Handle", rust ? "src/" + module + ".rs" : module + "/handler.go")
+            with { QualifiedName = "App:actualHandle" }], "App", normal);
+        var file = rust ? "/test/src/lib.rs" : "/test/routes.go";
+        var accepted = await _extractor.ExtractBackendEndpointsAsync(file, Source(3), ImportedContext(normal), index);
+        accepted.Complete.ShouldBeTrue(accepted.FailureReason); accepted.Edges.Count.ShouldBe(3);
+        var limited = await _extractor.ExtractBackendEndpointsAsync(file, Source(100), ImportedContext(new(200_000)), index);
+        limited.Complete.ShouldBeFalse(); limited.Succeeded.ShouldBeFalse(); limited.FailureReason!.ShouldContain("budget");
+    }
+
     [Fact]
     public async Task BudgetIsSharedAcrossCalls_AndDepthAndRecursiveEvaluationRefuseIncompleteOutput()
     {

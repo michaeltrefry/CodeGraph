@@ -333,8 +333,11 @@ public partial class TreeSitterExtractor
         private Router NewRouter() { var result = new Router(); _routers.Add(result); return result; }
         private string ExpandPath(string path)
         {
+            work.Charge(path.Length, ct);
             var parts = path.Split("::", 2);
-            return _imports.TryGetValue(parts[0], out var imported) ? imported + (parts.Length > 1 ? "::" + parts[1] : "") : path;
+            if (!_imports.TryGetValue(parts[0], out var imported)) return path;
+            work.Charge(imported.Length + (parts.Length > 1 ? parts[1].Length + 2L : 0), ct);
+            return imported + (parts.Length > 1 ? "::" + parts[1] : "");
         }
         private IEnumerable<(string Verb, Node Handler)> MethodHandlers(Node node)
         {
@@ -365,6 +368,11 @@ public partial class TreeSitterExtractor
             var resolved = path is not null && registration.Verb != "UNKNOWN" && targets.Count == 1;
             work.Charge((path?.Length ?? 0) * 4L + _relative.Length * 3L + handlerText.Length * 5L
                 + context.RepositoryName.Length + (targets.Count == 1 ? targets[0].QualifiedName.Length : 0), ct);
+            var expandedHandler = _rust ? ExpandPath(handlerText) : handlerText;
+            var handlerScope = _rust ? expandedHandler : handlerText.Contains('.')
+                && _imports.TryGetValue(handlerText.Split('.')[0], out var package) ? package : DirectoryOf(_relative);
+            // Scope text is emitted for every route even when handler resolution was cached.
+            work.Charge(handlerScope.Length + expandedHandler.Length, ct);
             var routeIdentity = path ?? $"dynamic:{_relative}:{registration.Origin.StartPosition.Row + 1}:{registration.Origin.StartPosition.Column + 1}";
             var qn = $"route:{context.RepositoryName}:{registration.Verb}:{routeIdentity}";
             var properties = new Dictionary<string, object>
@@ -373,9 +381,9 @@ public partial class TreeSitterExtractor
                 ["framework"] = _rust ? "axum" : "gin", ["source"] = "tree-sitter-registration",
                 ["origin_file"] = _relative, ["handler_expression"] = handlerText,
                 ["handler_name"] = Regex.IsMatch(handlerText, _rust ? @"^\w+(::\w+)*$" : @"^\w+(\.\w+)*$")
-                    ? (_rust ? ExpandPath(handlerText) : handlerText).Split(_rust ? "::" : ".").Last() : "",
+                    ? expandedHandler.Split(_rust ? "::" : ".").Last() : "",
                 ["semantic_owner"] = "http_endpoints",
-                ["handler_scope"] = _rust ? ExpandPath(handlerText) : handlerText.Contains('.') && _imports.TryGetValue(handlerText.Split('.')[0], out var package) ? package : DirectoryOf(_relative),
+                ["handler_scope"] = handlerScope,
                 ["resolution_status"] = resolved ? "resolved" : path is null ? "dynamic_path" : registration.Verb == "UNKNOWN" ? "dynamic_method" : targets.Count > 1 ? "ambiguous_handler" : "unresolved_handler",
                 ["confidence"] = resolved ? "high" : "low"
             };
@@ -420,12 +428,16 @@ public partial class TreeSitterExtractor
             {
                 if (parts.Length == 1)
                 { work.Charge(name.Length + _relative.Length, ct); Candidates(handlers.InDirectory(".go", name, DirectoryOf(_relative))); }
-                else if (parts.Length == 2 && _imports.TryGetValue(parts[0], out var import) && _goModule is not null && _goRoot is not null
-                    && (import == _goModule || import.StartsWith(_goModule + "/", StringComparison.Ordinal)))
+                else if (parts.Length == 2 && _imports.TryGetValue(parts[0], out var import))
                 {
-                    var directory = string.Join('/', new[] { _goRoot == "." ? "" : _goRoot, import[_goModule.Length..].Trim('/') }.Where(x => x.Length > 0));
-                    work.Charge(name.Length + directory.Length, ct);
-                    Candidates(handlers.InDirectory(".go", name, directory));
+                    work.Charge(import.Length + (_goModule?.Length ?? 0) + (_goRoot?.Length ?? 0), ct);
+                    if (_goModule is not null && _goRoot is not null
+                        && (import == _goModule || import.StartsWith(_goModule + "/", StringComparison.Ordinal)))
+                    {
+                        var directory = string.Join('/', new[] { _goRoot == "." ? "" : _goRoot, import[_goModule.Length..].Trim('/') }.Where(x => x.Length > 0));
+                        work.Charge(name.Length + directory.Length, ct);
+                        Candidates(handlers.InDirectory(".go", name, directory));
+                    }
                 }
             }
             else
