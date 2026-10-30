@@ -40,17 +40,42 @@ function addNpmExportMetadata(model, nodes) {
             return undefined;
         seen = new Set(seen);
         seen.add(declaration);
+        if (ts_morph_1.Node.isParenthesizedExpression(declaration) || ts_morph_1.Node.isAsExpression(declaration) || ts_morph_1.Node.isNonNullExpression(declaration))
+            return members(declaration.getExpression(), seen, prefix);
+        if (ts_morph_1.Node.isIdentifier(declaration)) {
+            const bindings = declaration.getSymbol()?.getDeclarations() ?? [];
+            if (bindings.length === 1 && ts_morph_1.Node.isVariableDeclaration(bindings[0]))
+                return members(bindings[0], seen, prefix);
+            if (bindings.length === 1 && (ts_morph_1.Node.isImportSpecifier(bindings[0]) || ts_morph_1.Node.isImportClause(bindings[0]))) {
+                const binding = bindings[0];
+                const imported = binding.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ImportDeclaration);
+                const file = model.module(declaration, imported.getModuleSpecifierValue());
+                const target = file && model.exported(file, ts_morph_1.Node.isImportSpecifier(binding) ? binding.getName() : 'default');
+                return target ? members(target, seen, prefix) : undefined;
+            }
+        }
         if (ts_morph_1.Node.isVariableDeclaration(declaration)) {
             if (declaration.getVariableStatement()?.getDeclarationKind() !== 'const' || model.hasMemberWrites(declaration))
                 return undefined;
             const init = declaration.getInitializer();
             if (!init)
                 return undefined;
-            const value = model.resolve(init) ?? init;
-            return members(value, seen, prefix);
+            return members(init, seen, prefix);
         }
-        if (!ts_morph_1.Node.isObjectLiteralExpression(declaration))
-            return new Map();
+        if (!ts_morph_1.Node.isObjectLiteralExpression(declaration)) {
+            if ((ts_morph_1.Node.isPropertyAccessExpression(declaration) || ts_morph_1.Node.isElementAccessExpression(declaration))
+                && model.hasMemberWrites(declaration.getExpression()))
+                return undefined;
+            const value = model.resolve(declaration);
+            return value && value !== declaration && (ts_morph_1.Node.isObjectLiteralExpression(value) || ts_morph_1.Node.isVariableDeclaration(value))
+                ? members(value, seen, prefix) : new Map();
+        }
+        // Resolution may return an initializer through an import/export alias. Its original
+        // binding and object identity still need write checks before nested members are read.
+        const owner = declaration.getParent();
+        if ((owner && ts_morph_1.Node.isVariableDeclaration(owner) && (owner.getVariableStatement()?.getDeclarationKind() !== 'const'
+            || model.hasMemberWrites(owner))) || model.hasMemberWrites(declaration))
+            return undefined;
         const result = new Map();
         for (const property of declaration.getProperties()) {
             if (!(ts_morph_1.Node.isPropertyAssignment(property) || ts_morph_1.Node.isMethodDeclaration(property) || ts_morph_1.Node.isShorthandPropertyAssignment(property)))
@@ -63,19 +88,14 @@ function addNpmExportMetadata(model, nodes) {
                 : ts_morph_1.Node.isShorthandPropertyAssignment(property) ? property.getValueSymbol()?.getDeclarations()[0] : property;
             if (!expression)
                 return undefined;
-            const resolved = model.resolve(expression) ?? expression;
-            if (ts_morph_1.Node.isObjectLiteralExpression(resolved) || ts_morph_1.Node.isVariableDeclaration(resolved)) {
-                const nested = members(resolved, seen, member);
-                if (!nested)
-                    return undefined;
-                for (const [path, qn] of nested)
-                    result.set(path, qn);
-            }
-            else {
-                const qn = model.target(expression);
-                if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn).label))
-                    result.set(member, qn);
-            }
+            const nested = members(expression, seen, member);
+            if (!nested)
+                return undefined;
+            for (const [path, qn] of nested)
+                result.set(path, qn);
+            const qn = model.target(expression);
+            if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn).label))
+                result.set(member, qn);
         }
         return result;
     };

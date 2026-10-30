@@ -213,3 +213,30 @@ test('written imported members, public object aliases, spreads and computed over
     assert.equal(output.nodes.some(node=>aliases(node)?.some(alias=>(alias as any).member_path==='Model')),false);
   });
 });
+
+test('nested exported object aliases check writes before following their initializers', () => {
+  fixture({
+    'package.json': JSON.stringify({name:'@org/ui',exports:'./index.jsx'}),
+    'index.jsx': `function Good(){return <b/>} function Other(){return <i/>}
+      const icons={Model:Good}; export const Icon={group:icons}; icons.Model=Other;`,
+  },(root,scope)=> {
+    const output=extractProject('UI',root,path.join(root,'tsconfig.json'),()=>{},scope);
+    assert.equal(output.nodes.some(node=>aliases(node)?.some(alias=>(alias as any).member_path==='group.Model')),false);
+    assert.ok(output.diagnostics?.some(message=>message.startsWith('packageExportUnresolved: @org/ui#Icon')));
+  });
+});
+
+test('nested imported object aliases preserve valid members but refuse writes through imported aliases', () => {
+  fixture({
+    'package.json': JSON.stringify({name:'@org/ui',exports:'./index.jsx'}),
+    'icons.jsx': 'function Good(){return <b/>} export const icons={Model:Good};',
+    'index.jsx': "import {icons as shared} from './icons'; const alias=shared; export const Icon={group:alias};",
+  },(root,scope)=> {
+    const extract=()=>extractProject('UI',root,path.join(root,'tsconfig.json'),()=>{},scope);
+    const valid=extract();
+    assert.equal(valid.nodes.some(node=>aliases(node)?.some(alias=>(alias as any).member_path==='group.Model')),true);
+    fs.appendFileSync(path.join(root,'index.jsx'), '\nfunction Other(){return <i/>} alias.Model=Other;');
+    const changed=extract();
+    assert.equal(changed.nodes.some(node=>aliases(node)?.some(alias=>(alias as any).member_path==='group.Model')),false);
+  });
+});

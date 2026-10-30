@@ -264,3 +264,28 @@ const aliases = (node) => node.properties.npm_exports;
             strict_1.default.equal(output.nodes.some(node => aliases(node)?.some(alias => alias.member_path === 'Model')), false);
         });
 });
+(0, node_test_1.default)('nested exported object aliases check writes before following their initializers', () => {
+    fixture({
+        'package.json': JSON.stringify({ name: '@org/ui', exports: './index.jsx' }),
+        'index.jsx': `function Good(){return <b/>} function Other(){return <i/>}
+      const icons={Model:Good}; export const Icon={group:icons}; icons.Model=Other;`,
+    }, (root, scope) => {
+        const output = (0, extractor_1.extractProject)('UI', root, path.join(root, 'tsconfig.json'), () => { }, scope);
+        strict_1.default.equal(output.nodes.some(node => aliases(node)?.some(alias => alias.member_path === 'group.Model')), false);
+        strict_1.default.ok(output.diagnostics?.some(message => message.startsWith('packageExportUnresolved: @org/ui#Icon')));
+    });
+});
+(0, node_test_1.default)('nested imported object aliases preserve valid members but refuse writes through imported aliases', () => {
+    fixture({
+        'package.json': JSON.stringify({ name: '@org/ui', exports: './index.jsx' }),
+        'icons.jsx': 'function Good(){return <b/>} export const icons={Model:Good};',
+        'index.jsx': "import {icons as shared} from './icons'; const alias=shared; export const Icon={group:alias};",
+    }, (root, scope) => {
+        const extract = () => (0, extractor_1.extractProject)('UI', root, path.join(root, 'tsconfig.json'), () => { }, scope);
+        const valid = extract();
+        strict_1.default.equal(valid.nodes.some(node => aliases(node)?.some(alias => alias.member_path === 'group.Model')), true);
+        fs.appendFileSync(path.join(root, 'index.jsx'), '\nfunction Other(){return <i/>} alias.Model=Other;');
+        const changed = extract();
+        strict_1.default.equal(changed.nodes.some(node => aliases(node)?.some(alias => alias.member_path === 'group.Model')), false);
+    });
+});

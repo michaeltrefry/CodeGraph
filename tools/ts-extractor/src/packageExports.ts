@@ -1,4 +1,4 @@
-import { Node, SourceFile } from 'ts-morph';
+import { Node, SourceFile, SyntaxKind } from 'ts-morph';
 import type { GraphNodeDto } from './protocol';
 import type { SemanticModel } from './semanticModel';
 
@@ -28,13 +28,36 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
   const members = (declaration: Node, seen = new Set<Node>(), prefix = ''): Map<string, string> | undefined => {
     if (seen.has(declaration) || seen.size > 12) return undefined;
     seen = new Set(seen); seen.add(declaration);
+    if (Node.isParenthesizedExpression(declaration) || Node.isAsExpression(declaration) || Node.isNonNullExpression(declaration))
+      return members(declaration.getExpression(), seen, prefix);
+    if (Node.isIdentifier(declaration)) {
+      const bindings = declaration.getSymbol()?.getDeclarations() ?? [];
+      if (bindings.length === 1 && Node.isVariableDeclaration(bindings[0])) return members(bindings[0], seen, prefix);
+      if (bindings.length === 1 && (Node.isImportSpecifier(bindings[0]) || Node.isImportClause(bindings[0]))) {
+        const binding = bindings[0];
+        const imported = binding.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+        const file = model.module(declaration, imported.getModuleSpecifierValue());
+        const target = file && model.exported(file, Node.isImportSpecifier(binding) ? binding.getName() : 'default');
+        return target ? members(target, seen, prefix) : undefined;
+      }
+    }
     if (Node.isVariableDeclaration(declaration)) {
       if (declaration.getVariableStatement()?.getDeclarationKind() !== 'const' || model.hasMemberWrites(declaration)) return undefined;
       const init = declaration.getInitializer(); if (!init) return undefined;
-      const value = model.resolve(init) ?? init;
-      return members(value, seen, prefix);
+      return members(init, seen, prefix);
     }
-    if (!Node.isObjectLiteralExpression(declaration)) return new Map();
+    if (!Node.isObjectLiteralExpression(declaration)) {
+      if ((Node.isPropertyAccessExpression(declaration) || Node.isElementAccessExpression(declaration))
+        && model.hasMemberWrites(declaration.getExpression())) return undefined;
+      const value = model.resolve(declaration);
+      return value && value !== declaration && (Node.isObjectLiteralExpression(value) || Node.isVariableDeclaration(value))
+        ? members(value, seen, prefix) : new Map();
+    }
+    // Resolution may return an initializer through an import/export alias. Its original
+    // binding and object identity still need write checks before nested members are read.
+    const owner = declaration.getParent();
+    if ((owner && Node.isVariableDeclaration(owner) && (owner.getVariableStatement()?.getDeclarationKind() !== 'const'
+      || model.hasMemberWrites(owner))) || model.hasMemberWrites(declaration)) return undefined;
     const result = new Map<string, string>();
     for (const property of declaration.getProperties()) {
       if (!(Node.isPropertyAssignment(property) || Node.isMethodDeclaration(property) || Node.isShorthandPropertyAssignment(property))) return undefined;
@@ -44,14 +67,10 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
       const expression = Node.isPropertyAssignment(property) ? property.getInitializer()
         : Node.isShorthandPropertyAssignment(property) ? property.getValueSymbol()?.getDeclarations()[0] : property;
       if (!expression) return undefined;
-      const resolved = model.resolve(expression) ?? expression;
-      if (Node.isObjectLiteralExpression(resolved) || Node.isVariableDeclaration(resolved)) {
-        const nested = members(resolved, seen, member); if (!nested) return undefined;
-        for (const [path, qn] of nested) result.set(path, qn);
-      } else {
-        const qn = model.target(expression);
-        if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn)!.label)) result.set(member, qn);
-      }
+      const nested = members(expression, seen, member); if (!nested) return undefined;
+      for (const [path, qn] of nested) result.set(path, qn);
+      const qn = model.target(expression);
+      if (qn && byQn.has(qn) && ['Component', 'Function', 'Method'].includes(byQn.get(qn)!.label)) result.set(member, qn);
     }
     return result;
   };
