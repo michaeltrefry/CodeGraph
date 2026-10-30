@@ -57,7 +57,7 @@ public static class WorkTools
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
-        "not_found, conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
+        "not_found, forbidden (the dreamer attempted an operation its policy refuses), conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
 
     private const string Sessions =
         " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
@@ -71,7 +71,7 @@ public static class WorkTools
     [
         new(DreamRun,"Run Dreaming",typeof(DreamRunRequest),"Run a budgeted knowledge-curation pass for one project. No signal skips without a model call; an active run returns busy.",false,false),
         new(DreamRuns,"Dreaming Runs",typeof(DreamRunsRequest),"List project runs newest first, with before (last run id) for older pages; id reads one full report.",true,true),
-        new(DreamSettings,"Dreaming Settings",typeof(DreamSettingsRequest),"Read settings, or replace settings: tool-use provider/model, budget, interval, nightly schedule and token costs.",false,true),
+        new(DreamSettings,"Dreaming Settings",typeof(DreamSettingsRequest),"Read settings and their version, or replace settings with expected_version from the last read. The version includes the authoritative job schedule revision; stale writes conflict. Settings cover tool-use provider/model, budget, interval, schedule and costs.",false,true),
         new(DreamInstructions,"Dreaming Instructions",typeof(DreamInstructionsRequest),"Read the base and project conventions-wiki instruction pages with revision history, or edit content using scope and expected_revision.",false,true),
         new(DreamRevert,"Revert Dreaming Run",typeof(DreamRevertRequest),"Revert direct writes newest first as new revisions, reporting conflicts with later edits.",false,true),
         new(CreateWork, "Create Work", typeof(CreateWorkRequest),

@@ -41,10 +41,11 @@ public sealed class DreamExecutionScope : IDisposable
     public IDisposable UseEvidence(IReadOnlyList<DreamEvidence> evidence)
     { var old = Evidence; Evidence = evidence; return new Restore(() => Evidence = old); }
     public void MarkSourceRead(string repository, string path, long? nodeId = null, string? contentHash = null, string? indexHash = null)
-    { sourceReads.Add($"file:{repository}:{path}"); sourceHashes[$"file:{repository}:{path}"]=(contentHash,indexHash); if (nodeId is { } id) sourceReads.Add($"node:{id}"); }
-    public string? ReadFileHash(string repository,string path)=>sourceHashes.TryGetValue($"file:{repository}:{path}",out var proof)
+    { sourceReads.Add(FileKey(repository,path)); sourceHashes[FileKey(repository,path)]=(contentHash,indexHash); if (nodeId is { } id) sourceReads.Add($"node:{id}"); }
+    public string? ReadFileHash(string repository,string path)=>sourceHashes.TryGetValue(FileKey(repository,path),out var proof)
         &&proof.Content is not null&&string.Equals(proof.Content,proof.Index,StringComparison.OrdinalIgnoreCase)?proof.Index:null;
-    public bool ReadFile(string repository, string path) => sourceReads.Contains($"file:{repository}:{path}");
+    private static string FileKey(string repository,string path)=>$"file:{repository.ToLowerInvariant()}:{path.Replace('\\','/')}";
+    public bool ReadFile(string repository, string path) => sourceReads.Contains(FileKey(repository,path));
     public bool ReadNode(long id) => sourceReads.Contains($"node:{id}");
     public void MarkGraphRead(long id,string fingerprint) {sourceReads.Add($"node:{id}");graphReads[id]=fingerprint;}
     public string? ReadNodeHash(long id)=>graphReads.GetValueOrDefault(id);
