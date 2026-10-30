@@ -29,6 +29,7 @@ public class StandaloneIndexerOperationsServiceTests
         var run = await runs.GetIndexerRunAsync(accepted.RunId!.Value);
         run.ShouldNotBeNull();
         run.Operation.ShouldBe(IndexerRunOperations.DreamProjects);
+        run.RetrySafe.ShouldBeTrue();
         run.Target.ShouldBe("all");
         run.RequestedByUsername.ShouldBe("codegraph-jobs");
         run.SubmissionKey.ShouldBe("dream-submission");

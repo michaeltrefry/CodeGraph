@@ -422,7 +422,8 @@ public static class IndexerRunOperations
     public const string ProcessRepository = "process_repository";
 
     public static bool IsRetrySafe(string operation)
-        => operation is ReAnalyze
+        => operation is DreamProjects
+            or ReAnalyze
             or SyncSchema
             or SyncAllSchemas
             or Link

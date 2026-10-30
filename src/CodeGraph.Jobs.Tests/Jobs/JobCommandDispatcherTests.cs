@@ -12,6 +12,20 @@ namespace CodeGraph.Jobs.Tests.Jobs;
 public class JobCommandDispatcherTests
 {
     [Fact]
+    public async Task DreamProjects_DispatchesWithDurableExecutionKey()
+    {
+        var client = new RecordingIndexerClient();
+        var dispatcher = CreateDispatcher(indexerClient: client);
+        dispatcher.GetSupportedJobTypes().ShouldContain(JobTypes.DreamProjects);
+        dispatcher.NormalizeArgsJson(JobTypes.DreamProjects, null).ShouldBe("{}");
+        await dispatcher.ExecuteAsync(JobTypes.DreamProjects, "{}", "job:dream-stable");
+        await dispatcher.ExecuteAsync(JobTypes.DreamProjects, "{}", "job:dream-stable");
+        client.DreamProjectsCalls.ShouldBe(2);
+        client.SubmissionKeys.ShouldBe(["job:dream-stable", "job:dream-stable"]);
+        client.PublicationCount.ShouldBe(1);
+    }
+
+    [Fact]
     public void NormalizeArgsJson_UsesTypedDefaults()
     {
         var dispatcher = CreateDispatcher();
