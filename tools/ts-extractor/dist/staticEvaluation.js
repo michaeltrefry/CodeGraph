@@ -24,6 +24,7 @@ class StaticEvaluator {
     constructor(model, diagnostic) {
         this.model = model;
         this.diagnostic = diagnostic;
+        this.mutations = new Map();
     }
     evaluate(node, env = new Map(), seen = new Set()) {
         if (!node)
@@ -115,11 +116,14 @@ class StaticEvaluator {
                     const key = ts_morph_1.Node.isComputedPropertyName(name) ? ev(name.getExpression()) : prop.getName().replace(/^['"]|['"]$/g, '');
                     if (typeof key === 'string')
                         result.properties.set(key, ev(prop.getInitializer()));
-                    else
+                    else {
+                        for (const key of result.properties.keys())
+                            result.properties.set(key, (0, exports.unknown)());
                         result.unknownKeys = true;
+                    }
                 }
                 else if (ts_morph_1.Node.isShorthandPropertyAssignment(prop))
-                    result.properties.set(prop.getName(), ev(prop.getNameNode()));
+                    result.properties.set(prop.getName(), ev(prop.getValueSymbol()?.getDeclarations().find(d => this.admitted(d))));
             }
             return result;
         }
@@ -128,15 +132,23 @@ class StaticEvaluator {
             const receiver = ev(node.getExpression());
             if (typeof key === 'string' && (0, exports.isObject)(receiver))
                 return receiver.properties.has(key) ? receiver.properties.get(key) : receiver.unknownKeys ? (0, exports.unknown)(key) : undefined;
-            // Static class properties / enum members / namespace imports use declaration ownership.
-            const declaration = node.getSymbol()?.getDeclarations().find(d => this.admitted(d));
-            if (declaration)
-                return ev(declaration);
-            if (key === 'href' && ts_morph_1.Node.isNewExpression(node.getExpression()))
-                return ev(node.getExpression());
-            const resolved = this.model.resolve(node);
-            if (resolved && resolved !== node)
-                return ev(resolved);
+            if (key === 'href' && typeof receiver === 'string' && this.urlExpression(node.getExpression()))
+                return receiver;
+            // A default object's inferred type does not prove a parameter's runtime property.
+            // Follow declaration properties only for static class/enum/namespace ownership or this.
+            const expression = node.getExpression();
+            const owner = this.model.resolve(expression);
+            const staticOwner = expression.getKind() === ts_morph_1.SyntaxKind.ThisKeyword ||
+                !!owner && (ts_morph_1.Node.isClassDeclaration(owner) || ts_morph_1.Node.isEnumDeclaration(owner)) ||
+                (expression.getSymbol()?.getDeclarations() ?? []).some(ts_morph_1.Node.isNamespaceImport);
+            if (staticOwner) {
+                const declaration = node.getSymbol()?.getDeclarations().find(d => this.admitted(d));
+                if (declaration)
+                    return ev(declaration);
+                const resolved = this.model.resolve(node);
+                if (resolved && resolved !== node)
+                    return ev(resolved);
+            }
             return (0, exports.unknown)(typeof key === 'string' ? key : 'param');
         }
         if (ts_morph_1.Node.isNewExpression(node) && this.builtin(node.getExpression(), 'URL')) {
@@ -158,8 +170,9 @@ class StaticEvaluator {
             const expression = node.getExpression();
             if (ts_morph_1.Node.isPropertyAccessExpression(expression) && expression.getName() === 'toString' && node.getArguments().length === 0) {
                 const receiver = expression.getExpression();
-                if (ts_morph_1.Node.isNewExpression(receiver) && this.builtin(receiver.getExpression(), 'URL'))
-                    return ev(receiver);
+                const value = ev(receiver);
+                if (typeof value === 'string')
+                    return value;
             }
             // Encode known segments without executing arbitrary user code.
             if (this.builtin(expression, 'encodeURIComponent')) {
@@ -190,7 +203,7 @@ class StaticEvaluator {
             if (env.has(node))
                 return env.get(node);
             // A reassigned binding is not a constant. Avoid using a stale initializer as proof.
-            if (ts_morph_1.Node.isVariableDeclaration(node) && this.mutated(node))
+            if ((ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node)) && this.mutated(node))
                 return (0, exports.unknown)(node.getName());
             return node.getInitializer() ? ev(node.getInitializer()) : (0, exports.unknown)('getName' in node ? node.getName() : 'param');
         }
@@ -225,11 +238,31 @@ class StaticEvaluator {
         return ts_morph_1.Node.isIdentifier(node) && node.getText() === name && !(node.getSymbol()?.getDeclarations() ?? []).some(d => this.admitted(d));
     }
     admitted(node) { return this.model.byPath.has(this.model.relative(node)); }
-    text(value) { return (0, exports.isUnknown)(value) || (0, exports.isObject)(value) ? '{param}' : String(value ?? ''); }
+    text(value) { return (0, exports.isUnknown)(value) || (0, exports.isObject)(value) ? '{param}' : String(value); }
+    urlExpression(node, seen = new Set()) {
+        if (seen.has(node) || seen.size > 30)
+            return false;
+        seen.add(node);
+        if (ts_morph_1.Node.isNewExpression(node))
+            return this.builtin(node.getExpression(), 'URL');
+        if (ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node)) {
+            const init = node.getInitializer();
+            return !!init && this.urlExpression(init, seen);
+        }
+        const declarations = node.getSymbol()?.getDeclarations().filter(d => this.admitted(d)) ?? [];
+        return declarations.length === 1 && this.urlExpression(declarations[0], seen);
+    }
+    assignmentTargets(node) {
+        return ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
+    }
     mutated(node) {
+        if (this.mutations.has(node))
+            return this.mutations.get(node);
         const symbol = node.getSymbol()?.compilerSymbol;
-        return !!symbol && node.getSourceFile().getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression).some(binary => binary.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && binary.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment &&
-            binary.getLeft().getSymbol()?.compilerSymbol === symbol);
+        const mutated = !!symbol && node.getSourceFile().getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression).some(binary => binary.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && binary.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment &&
+            this.assignmentTargets(binary.getLeft()).some(target => target.getSymbol()?.compilerSymbol === symbol));
+        this.mutations.set(node, mutated);
+        return mutated;
     }
 }
 exports.StaticEvaluator = StaticEvaluator;

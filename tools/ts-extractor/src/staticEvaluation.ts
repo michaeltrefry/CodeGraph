@@ -18,6 +18,7 @@ export function staticKey(value: StaticValue): string {
 /** Bounded, non-executing evaluation over admitted ASTs only. Environments are keyed by
  * declarations, never identifier text; no process-global caches survive extraction. */
 export class StaticEvaluator {
+  private readonly mutations = new Map<Node, boolean>();
   constructor(readonly model: SemanticModel, readonly diagnostic: (message: string) => void) {}
 
   evaluate(node: Node | undefined, env: StaticEnvironment = new Map(), seen = new Set<Node>()): StaticValue {
@@ -76,8 +77,9 @@ export class StaticEvaluator {
           }
         } else if (Node.isPropertyAssignment(prop)) {
           const name = prop.getNameNode(); const key = Node.isComputedPropertyName(name) ? ev(name.getExpression()) : prop.getName().replace(/^['"]|['"]$/g, '');
-          if (typeof key === 'string') result.properties.set(key, ev(prop.getInitializer())); else result.unknownKeys = true;
-        } else if (Node.isShorthandPropertyAssignment(prop)) result.properties.set(prop.getName(), ev(prop.getNameNode()));
+          if (typeof key === 'string') result.properties.set(key, ev(prop.getInitializer()));
+          else { for (const key of result.properties.keys()) result.properties.set(key, unknown()); result.unknownKeys = true; }
+        } else if (Node.isShorthandPropertyAssignment(prop)) result.properties.set(prop.getName(), ev(prop.getValueSymbol()?.getDeclarations().find(d => this.admitted(d))));
       }
       return result;
     }
@@ -85,12 +87,20 @@ export class StaticEvaluator {
       const key = Node.isPropertyAccessExpression(node) ? node.getName() : ev(node.getArgumentExpression());
       const receiver = ev(node.getExpression());
       if (typeof key === 'string' && isObject(receiver)) return receiver.properties.has(key) ? receiver.properties.get(key) : receiver.unknownKeys ? unknown(key) : undefined;
-      // Static class properties / enum members / namespace imports use declaration ownership.
-      const declaration = node.getSymbol()?.getDeclarations().find(d => this.admitted(d));
-      if (declaration) return ev(declaration);
-      if (key === 'href' && Node.isNewExpression(node.getExpression())) return ev(node.getExpression());
-      const resolved = this.model.resolve(node);
-      if (resolved && resolved !== node) return ev(resolved);
+      if (key === 'href' && typeof receiver === 'string' && this.urlExpression(node.getExpression())) return receiver;
+      // A default object's inferred type does not prove a parameter's runtime property.
+      // Follow declaration properties only for static class/enum/namespace ownership or this.
+      const expression = node.getExpression();
+      const owner = this.model.resolve(expression);
+      const staticOwner = expression.getKind() === SyntaxKind.ThisKeyword ||
+        !!owner && (Node.isClassDeclaration(owner) || Node.isEnumDeclaration(owner)) ||
+        (expression.getSymbol()?.getDeclarations() ?? []).some(Node.isNamespaceImport);
+      if (staticOwner) {
+        const declaration = node.getSymbol()?.getDeclarations().find(d => this.admitted(d));
+        if (declaration) return ev(declaration);
+        const resolved = this.model.resolve(node);
+        if (resolved && resolved !== node) return ev(resolved);
+      }
       return unknown(typeof key === 'string' ? key : 'param');
     }
     if (Node.isNewExpression(node) && this.builtin(node.getExpression(), 'URL')) {
@@ -104,7 +114,8 @@ export class StaticEvaluator {
       const expression = node.getExpression();
       if (Node.isPropertyAccessExpression(expression) && expression.getName() === 'toString' && node.getArguments().length === 0) {
         const receiver = expression.getExpression();
-        if (Node.isNewExpression(receiver) && this.builtin(receiver.getExpression(), 'URL')) return ev(receiver);
+        const value = ev(receiver);
+        if (typeof value === 'string') return value;
       }
       // Encode known segments without executing arbitrary user code.
       if (this.builtin(expression, 'encodeURIComponent')) { const value = ev(node.getArguments()[0]); return isUnknown(value) ? unknown() : typeof value === 'string' ? encodeURIComponent(value) : unknown(); }
@@ -128,7 +139,7 @@ export class StaticEvaluator {
     if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node) || Node.isPropertyAssignment(node) || Node.isParameterDeclaration(node) || Node.isEnumMember(node) || Node.isBindingElement(node)) {
       if (env.has(node)) return env.get(node);
       // A reassigned binding is not a constant. Avoid using a stale initializer as proof.
-      if (Node.isVariableDeclaration(node) && this.mutated(node)) return unknown(node.getName());
+      if ((Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) && this.mutated(node)) return unknown(node.getName());
       return node.getInitializer() ? ev(node.getInitializer()) : unknown('getName' in node ? node.getName() : 'param');
     }
     if (Node.isImportSpecifier(node) || Node.isImportClause(node)) {
@@ -160,11 +171,23 @@ export class StaticEvaluator {
     return Node.isIdentifier(node) && node.getText() === name && !(node.getSymbol()?.getDeclarations() ?? []).some(d => this.admitted(d));
   }
   private admitted(node: Node): boolean { return this.model.byPath.has(this.model.relative(node)); }
-  private text(value: StaticValue): string { return isUnknown(value) || isObject(value) ? '{param}' : String(value ?? ''); }
+  private text(value: StaticValue): string { return isUnknown(value) || isObject(value) ? '{param}' : String(value); }
+  private urlExpression(node: Node, seen = new Set<Node>()): boolean {
+    if (seen.has(node) || seen.size > 30) return false; seen.add(node);
+    if (Node.isNewExpression(node)) return this.builtin(node.getExpression(), 'URL');
+    if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) { const init=node.getInitializer(); return !!init && this.urlExpression(init, seen); }
+    const declarations=node.getSymbol()?.getDeclarations().filter(d => this.admitted(d)) ?? [];
+    return declarations.length === 1 && this.urlExpression(declarations[0], seen);
+  }
+  private assignmentTargets(node: Node): Node[] {
+    return Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node) ? [node, ...this.assignmentTargets(node.getExpression())] : [node];
+  }
   private mutated(node: Node): boolean {
+    if (this.mutations.has(node)) return this.mutations.get(node)!;
     const symbol = node.getSymbol()?.compilerSymbol;
-    return !!symbol && node.getSourceFile().getDescendantsOfKind(SyntaxKind.BinaryExpression).some(binary =>
+    const mutated = !!symbol && node.getSourceFile().getDescendantsOfKind(SyntaxKind.BinaryExpression).some(binary =>
       binary.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && binary.getOperatorToken().getKind() <= SyntaxKind.LastAssignment &&
-      binary.getLeft().getSymbol()?.compilerSymbol === symbol);
+      this.assignmentTargets(binary.getLeft()).some(target => target.getSymbol()?.compilerSymbol === symbol));
+    this.mutations.set(node, mutated); return mutated;
   }
 }
