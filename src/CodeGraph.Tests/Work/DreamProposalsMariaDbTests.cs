@@ -223,16 +223,16 @@ public sealed class DreamProposalsMariaDbTests(WorkDatabase db) : IClassFixture<
     [Fact]
     public async Task Rejection_uses_graph_highwater_to_distinguish_new_nodes_from_old_uncited_nodes()
     {
-        var (key, project) = await Project("DPG", "codegraph"); var target = await Fact(key, "Node-backed retirement candidate");
+        var (key, project) = await Project("DPG", "inference"); var target = await Fact(key, "Node-backed retirement candidate");
         await using var c = new MySqlConnection(db.ConnectionString);
-        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('codegraph','Method','Prior','DreamEvidence.Prior')");
+        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('inference','Method','Prior','DreamEvidence.Prior')");
         var oldNode = await c.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE qualified_name='DreamEvidence.Prior'");
         var run = await RunId(project); DreamProposalResult proposal;
         using (var scope = DreamExecutionScope.Begin(run, project, "scripted")) proposal = await db.Store.CreateDreamProposalAsync(project, run, Retire(target), scope.Actor);
         await db.Store.ReviewDreamProposalAsync(project, proposal.Proposal!.Id, 1, DreamReviewAction.Reject, "Need new source evidence", new WorkActor("reviewer"));
         using (var scope = DreamExecutionScope.Begin(run, project, "scripted"))
             (await db.Store.CreateDreamProposalAsync(project, run, Retire(target, new DreamEvidenceInput(DreamEvidenceKind.GraphNode, oldNode.ToString())), scope.Actor)).Suppressed.ShouldBeTrue();
-        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('codegraph','Method','New','DreamEvidence.New')");
+        await c.ExecuteAsync("INSERT INTO nodes(repository,label,name,qualified_name) VALUES('inference','Method','New','DreamEvidence.New')");
         var newNode = await c.ExecuteScalarAsync<long>("SELECT id FROM nodes WHERE qualified_name='DreamEvidence.New'");
         using (var scope = DreamExecutionScope.Begin(run, project, "scripted"))
             (await db.Store.CreateDreamProposalAsync(project, run, Retire(target, new DreamEvidenceInput(DreamEvidenceKind.GraphNode, newNode.ToString())), scope.Actor)).Created.ShouldBeTrue();
