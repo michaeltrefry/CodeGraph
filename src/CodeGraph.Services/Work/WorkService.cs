@@ -957,7 +957,8 @@ public sealed partial class WorkService(
             if (WorkKeys.TryParse(item.Ref, out _, out var kind, out _) && kind == WorkEntityKind.Item)
             {
                 var named = await Store.ResolveAsync(item.Ref, ct);
-                if (named is null || named.ProjectId != feature.ProjectId)
+                // An item key names an item: sc-N of an imported epic resolves to a feature (sc-27930), which is not one.
+                if (named is not { Kind: WorkEntityKind.Item } || named.ProjectId != feature.ProjectId)
                     throw WorkException.Invalid($"{where}: ref '{item.Ref}' is an item key, but there is no such item in the feature's project. Use another ref for a new item. Nothing was changed.");
                 keyMatch = named.Id;
             }

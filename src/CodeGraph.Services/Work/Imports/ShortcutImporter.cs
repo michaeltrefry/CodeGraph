@@ -24,6 +24,8 @@ public sealed class ShortcutImporter(
 {
     public const string DefaultHoldingProject = "SCIMPORT";
     public const string NoTeam = "none";
+    /// <summary>The sc-N alias prefix, never proposed as a project key.</summary>
+    public const string ReservedKey = "SC";
     private const int ListedLimit = 500;
 
     private readonly ILogger log = logger ?? (ILogger)NullLogger.Instance;
@@ -39,6 +41,8 @@ public sealed class ShortcutImporter(
         public IReadOnlyList<string> Owned { get; set; } = [];
         /// <summary>The table's repositories the project does not own yet: attached before any item is written (sc-27928).</summary>
         public List<string> Attach { get; } = [];
+        /// <summary>The table's repositories the project owns, or got now, not yet recorded as applied to it.</summary>
+        public List<string> Applied { get; } = [];
     }
 
     /// <summary>A repository the stories name, tallied for the report (sc-27928).</summary>
@@ -60,7 +64,8 @@ public sealed class ShortcutImporter(
         var projects = await ListProjectsAsync(ct);
         // A proposed key is new: not an existing project's (unless the team is named like it), not the holding
         // project's, not another proposal's (sc-27931: names cut to ten characters can collide).
-        var used = projects.Select(project => project.Key).Append(DefaultHoldingProject).ToHashSet(StringComparer.Ordinal);
+        // SC is the prefix of the sc-N aliases: a project keyed SC would make SC-N item keys and aliases ambiguous.
+        var used = projects.Select(project => project.Key).Append(DefaultHoldingProject).Append(ReservedKey).ToHashSet(StringComparer.Ordinal);
         var mappings = teams.OrderBy(team => team.Name, StringComparer.OrdinalIgnoreCase).Select(team =>
         {
             var existing = projects.FirstOrDefault(project => project.Name.Equals(team.Name, StringComparison.OrdinalIgnoreCase));
@@ -163,23 +168,33 @@ public sealed class ShortcutImporter(
 
         // ---- The table's repositories (sc-27928) ------------------------------------------------
         // Only repositories CodeGraph indexes, and none another project owns (a repository has one owner): the
-        // table was checked when it was saved, and is checked again here against what is true now.
+        // table was checked when it was saved, and is checked again here against what is true now. A repository
+        // is applied to a project once: one the project owned, or the import attached, is recorded, so a
+        // repository the owner later takes away from the project is not attached again by the next sync.
         var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
         foreach (var group in settings.Teams.Where(row => row.Repositories is { Count: > 0 } && targets.ContainsKey(row.ProjectKey)).GroupBy(row => row.ProjectKey))
         {
             var target = targets[group.Key];
+            var applied = target.Id is { } projectId ? await imports.ListAppliedRepositoriesAsync(ImportSources.Shortcut, projectId, ct) : new HashSet<string>();
             foreach (var name in group.SelectMany(row => row.Repositories!).Distinct(StringComparer.OrdinalIgnoreCase))
             {
                 if (index.Named(name) is not { } repository)
                     report.AddWarning($"The table gives {group.Key} the repository '{name}', but CodeGraph indexes no repository by that name: it is not attached.");
+                else if (target.Owned.Contains(repository.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (!applied.Contains(repository.Name))
+                        target.Applied.Add(repository.Name);
+                }
+                else if (applied.Contains(repository.Name))
+                    report.AddWarning($"The table gives {group.Key} the repository {repository.Name}, which the import attached before and the project no longer owns: it is not attached again.");
                 else if (repository.OwnedBy is { } owner && owner != target.Key)
                     report.AddWarning($"The table gives {group.Key} the repository {repository.Name}, but {owner} owns it (a repository is owned by one project): it is not attached.");
-                else if (!target.Owned.Contains(repository.Name, StringComparer.OrdinalIgnoreCase) && !target.Attach.Contains(repository.Name, StringComparer.OrdinalIgnoreCase))
+                else if (!target.Attach.Contains(repository.Name, StringComparer.OrdinalIgnoreCase))
                     target.Attach.Add(repository.Name);
             }
         }
 
-        foreach (var target in targets.Values.Where(target => target.Attach.Count > 0))
+        foreach (var target in targets.Values.Where(target => target.Attach.Count > 0 || target.Applied.Count > 0))
         {
             // A dry run reports against the repositories the import will attach, and a project the import creates
             // is created with them.
@@ -190,19 +205,26 @@ public sealed class ShortcutImporter(
             }
 
             // An existing project gets them now, before any item is written.
-            if (await work.GetProjectAsync(target.Id.Value, ct) is not { } project)
-                continue;
-            try
+            if (target.Attach.Count > 0 && await work.GetProjectAsync(target.Id.Value, ct) is { } project)
             {
-                var updated = await work.UpdateProjectAsync(project.Id, project.Version, new ProjectPatchSpec(Repositories:
-                    [.. project.Repositories, .. target.Attach.Select(name => new RepositoryMemberView(name, RepositoryRole.Owned))]), Actor, ct);
-                report.Written.RepositoriesAttached += target.Attach.Count;
-                target.Owned = OwnedOf(updated);
+                try
+                {
+                    var updated = await work.UpdateProjectAsync(project.Id, project.Version, new ProjectPatchSpec(Repositories:
+                        [.. project.Repositories, .. target.Attach.Select(name => new RepositoryMemberView(name, RepositoryRole.Owned))]), Actor, ct);
+                    report.Written.RepositoriesAttached += target.Attach.Count;
+                    target.Owned = OwnedOf(updated);
+                    target.Applied.AddRange(target.Attach);
+                }
+                catch (WorkException exception)
+                {
+                    // The report says what the project owns: what it owned before, not the table's.
+                    report.AddWarning($"{target.Key}: the table's repositories {string.Join(", ", target.Attach)} were not attached: {exception.Message}");
+                }
+
+                target.Attach.Clear();
             }
-            catch (WorkException exception)
-            {
-                report.AddWarning($"{target.Key}: the table's repositories {string.Join(", ", target.Attach)} were not attached: {exception.Message}");
-            }
+
+            await imports.RecordAppliedRepositoriesAsync(ImportSources.Shortcut, target.Id.Value, target.Applied, ct);
         }
 
         // A project of the table that does not exist yet is created (with the table's repositories) when the first
@@ -229,6 +251,8 @@ public sealed class ShortcutImporter(
             report.Written.ProjectsCreated += created.Created ? 1 : 0;
             target.Id = created.Value.Id;
             target.Owned = OwnedOf(created.Value);
+            target.Attach.Clear();
+            await imports.RecordAppliedRepositoriesAsync(ImportSources.Shortcut, created.Value.Id, target.Owned, ct);
             return created.Value.Id;
         }
 
@@ -290,17 +314,28 @@ public sealed class ShortcutImporter(
                 var spec = new ImportedFeatureSpec(ImportSources.Shortcut, Id(epic.Id), await EnsureProjectAsync(target), epic.Name.Trim().Length == 0 ? $"Epic {epic.Id}" : epic.Name.Trim(),
                     epic.Description, ShortcutMapper.EpicDocuments(epic, documents, members), !epic.Done, archived ? imported with { Archived = true } : imported,
                     epic.CreatedAt, epic.UpdatedAt, "");
+                // Whether the feature was flagged archived before this write: only a change of that moves its reconcile task.
+                var wasArchived = known is not null && (await work.GetFeatureAsync(known.EntityId, ct))?.Imported?.Archived == true;
                 var written = await imports.UpsertImportedFeatureAsync(spec with { ContentHash = ShortcutMapper.Hash(spec) }, Actor, ct);
                 featureIds[epic.Id] = written.Id;
                 Count(report, written.Outcome, feature: true);
+                var reconcile = reconcileRecords.GetValueOrDefault(Id(epic.Id));
                 if (archived)
                 {
-                    await CloseReconcileTaskAsync(reconcileRecords.GetValueOrDefault(Id(epic.Id)), epic.Id, ct);
+                    // Closed when the epic becomes archived; one a person reopens after that stays open.
+                    if (!wasArchived)
+                        await MoveReconcileTaskAsync(reconcile, WorkStatus.Closed,
+                            $"Shortcut epic {epic.Id} was archived, so its requirements are not reconciled: closed by the import.", ct);
                     continue;
                 }
 
+                // Unarchived in Shortcut: the flag went with this write; the reconcile task the archive closed is open again.
+                if (wasArchived && !epic.Done && reconcile is not null)
+                    await MoveReconcileTaskAsync(reconcile, WorkStatus.Ready,
+                        $"Shortcut epic {epic.Id} was unarchived, so its requirements are to be reconciled again: reopened by the import.", ct);
+
                 // Open features get a reconcile task, once: it is the agent's to finish, and a re-run never resets it.
-                if (!epic.Done && !reconcileRecords.ContainsKey(Id(epic.Id)))
+                if (!epic.Done && reconcile is null)
                 {
                     var task = new ImportedItemSpec(ImportSources.Shortcut, "reconcile", Id(epic.Id), target.Id!.Value, written.Id,
                         $"Reconcile the requirements of {written.Key} (imported from Shortcut epic {epic.Id})", WorkItemType.Task, WorkStatus.Ready,
@@ -579,13 +614,17 @@ public sealed class ShortcutImporter(
         await StoreFilesAsync(source, story, written.Id, report, ct);
     }
 
-    /// <summary>The reconcile task of an archived epic's feature, when still open, is closed: there is nothing left to reconcile.</summary>
-    private async Task CloseReconcileTaskAsync(ImportRecord? record, long epicId, CancellationToken ct)
+    /// <summary>
+    /// The reconcile task of a feature whose epic was archived (closed, when open) or unarchived (ready again, when the
+    /// archive closed it): a finished task is never reopened but a closed one, and a complete one is left alone.
+    /// </summary>
+    private async Task MoveReconcileTaskAsync(ImportRecord? record, WorkStatus status, string comment, CancellationToken ct)
     {
-        if (record is null || await work.GetItemAsync(record.EntityId, false, ct) is not { } task || task.Status is WorkStatus.Complete or WorkStatus.Closed)
+        if (record is null || await work.GetItemAsync(record.EntityId, false, ct) is not { } task)
             return;
-        await work.UpdateItemAsync(task.Id, task.Version, new ItemPatchSpec(Status: WorkStatus.Closed,
-            Comment: $"Shortcut epic {epicId} was archived, so its requirements are not reconciled: closed by the import."), Actor, ct);
+        var moves = status == WorkStatus.Closed ? !WorkStatuses.IsFinished(task.Status) : task.Status == WorkStatus.Closed;
+        if (moves)
+            await work.UpdateItemAsync(task.Id, task.Version, new ItemPatchSpec(Status: status, Comment: comment), Actor, ct);
     }
 
     /// <summary>
@@ -600,7 +639,8 @@ public sealed class ShortcutImporter(
             if (!targets.TryGetValue(key, out var target))
                 continue;
             counts.Exists = target.Existed;
-            counts.Repositories = target.Owned.Union(target.Attach, StringComparer.OrdinalIgnoreCase).ToList();
+            // What the project owns after this run's writes (on a dry run: would own).
+            counts.Repositories = target.Owned.ToList();
         }
 
         // Which project a repository is proposed for: none when a project owns it already; else the one the table gives
@@ -636,7 +676,7 @@ public sealed class ShortcutImporter(
             var target = targets.GetValueOrDefault(row.ProjectKey);
             row.ProposedRepositories = proposedFor.Where(pair => pair.Value == row.ProjectKey)
                 .Select(pair => pair.Key)
-                .Where(name => target is null || !target.Owned.Union(target.Attach, StringComparer.OrdinalIgnoreCase).Contains(name, StringComparer.OrdinalIgnoreCase))
+                .Where(name => target is null || !target.Owned.Contains(name, StringComparer.OrdinalIgnoreCase))
                 .OrderByDescending(name => namedMost.GetValueOrDefault(name)).ThenBy(name => name, StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }

@@ -411,7 +411,8 @@ public sealed class WorkImportMappingTests
         var story = Recorded.Stories[27866] with
         {
             Description = "Started in https://github.com/SceneWorks/mlx-rs/blob/main/src/lib.rs, see also https://github.com/SceneWorks/mlx-rs/pull/3. " +
-                          "Not a repository: https://github.com/orgs/SceneWorks/people. Old home: https://github.com/michaeltrefry/codegraph.git."
+                          "Not a repository: https://github.com/orgs/SceneWorks/people, https://github.com/user-attachments/assets/1234. " +
+                          "Old home: https://github.com/michaeltrefry/codegraph.git."
         };
 
         ShortcutMapper.RepositoryCandidates(story).ShouldBe(["michaeltrefry/CodeGraph", "SceneWorks/mlx-rs"]);
@@ -427,7 +428,8 @@ public sealed class WorkImportMappingTests
             new IndexedRepository("Renamed", "https://github.com/michaeltrefry/OldName.git", null),
             new IndexedRepository("viassh", "git@github.com:acme/over-ssh.git", null),
             new IndexedRepository("sceneworks", null, "SW"),
-            new IndexedRepository("OldName", null, null)
+            new IndexedRepository("OldName", null, null),
+            new IndexedRepository("candle", "https://github.com/michaeltrefry/candle.git", null)
         ]);
 
         index.Resolve("michaeltrefry/OldName")!.Name.ShouldBe("Renamed"); // the remote wins over a repository named like it
@@ -435,6 +437,9 @@ public sealed class WorkImportMappingTests
         index.Resolve("SceneWorks/SceneWorks")!.OwnedBy.ShouldBe("SW");
         index.Resolve("michaeltrefry/sceneworks")!.Name.ShouldBe("sceneworks"); // moved to another owner: the same repository
         index.Resolve("acme/not-indexed").ShouldBeNull();
+        // A repository with a GitHub remote is not another owner's repository of the same name (an upstream of a fork).
+        index.Resolve("huggingface/candle").ShouldBeNull();
+        index.Resolve("michaeltrefry/candle")!.Name.ShouldBe("candle");
         index.Named("SCENEWORKS")!.Name.ShouldBe("sceneworks");
         index.Named("acme/over-ssh").ShouldBeNull();
     }

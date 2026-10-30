@@ -133,7 +133,7 @@ public static partial class ShortcutMapper
     private static readonly HashSet<string> NotOwners = new(StringComparer.OrdinalIgnoreCase)
     {
         "about", "apps", "collections", "enterprise", "enterprises", "explore", "features", "login", "marketplace", "notifications",
-        "orgs", "organizations", "pricing", "search", "settings", "sponsors", "topics", "users"
+        "orgs", "organizations", "pricing", "search", "settings", "sponsors", "topics", "user-attachments", "users"
     };
 
     private static string RepositoryName(string owner, string repo)
@@ -366,12 +366,14 @@ public static partial class ShortcutMapper
 /// <summary>
 /// The repositories CodeGraph indexes, looked up by what a story names (sc-27928): <c>owner/repo</c> matches the
 /// repository whose remote is that GitHub repository, else the one named <c>owner/repo</c>, else the one named
-/// <c>repo</c> (ignoring case: a repository moved to another owner is still the one CodeGraph indexes).
+/// <c>repo</c> (ignoring case) unless that one's remote is a GitHub repository of another owner: upstream
+/// huggingface/candle is not CodeGraph's fork of it. A repository without a known GitHub remote matches by name.
 /// </summary>
 public sealed partial class RepositoryIndex
 {
     private readonly Dictionary<string, IndexedRepository> byName;
     private readonly Dictionary<string, IndexedRepository> byRemote = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> remoteOwner = new(StringComparer.OrdinalIgnoreCase);
 
     public RepositoryIndex(IEnumerable<IndexedRepository> repositories)
     {
@@ -379,7 +381,10 @@ public sealed partial class RepositoryIndex
         byName = list.GroupBy(repository => repository.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         foreach (var repository in list)
             if (repository.RepoUrl is { } url && Remote().Match(url) is { Success: true } match)
+            {
                 byRemote.TryAdd($"{match.Groups["owner"].Value}/{match.Groups["repo"].Value}", repository);
+                remoteOwner.TryAdd(repository.Name, match.Groups["owner"].Value);
+            }
     }
 
     [GeneratedRegex(@"github\.com[/:](?<owner>[^/\s:]+)/(?<repo>[^/\s#?]+?)(?:\.git)?/?$", RegexOptions.IgnoreCase)]
@@ -398,6 +403,8 @@ public sealed partial class RepositoryIndex
         if (byName.TryGetValue(candidate, out var named))
             return named;
         var slash = candidate.LastIndexOf('/');
-        return slash >= 0 ? byName.GetValueOrDefault(candidate[(slash + 1)..]) : null;
+        if (slash < 0 || byName.GetValueOrDefault(candidate[(slash + 1)..]) is not { } bare)
+            return null;
+        return remoteOwner.TryGetValue(bare.Name, out var owner) && !owner.Equals(candidate[..slash], StringComparison.OrdinalIgnoreCase) ? null : bare;
     }
 }

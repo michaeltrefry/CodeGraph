@@ -41,6 +41,9 @@ public sealed partial class WorkImportService(
     ILogger<WorkImportService>? logger = null) : IWorkImportRunner
 {
     public static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(10);
+
+    /// <summary>How far before the last completed import's start a delta sync reads from (search-index lag, clock skew).</summary>
+    public static readonly TimeSpan DeltaOverlap = TimeSpan.FromMinutes(30);
     private readonly ILogger log = logger ?? (ILogger)NullLogger.Instance;
 
     [GeneratedRegex("^[A-Z][A-Z0-9]{1,9}$")]
@@ -95,6 +98,8 @@ public sealed partial class WorkImportService(
     /// </summary>
     private async Task<List<ImportTeamMapping>> CheckRepositoriesAsync(IReadOnlyList<ImportTeamMapping> teams, CancellationToken ct)
     {
+        if (teams.FirstOrDefault(team => team.Repositories?.Any(string.IsNullOrWhiteSpace) == true) is { } blank)
+            throw WorkException.Invalid($"The repositories of team {blank.TeamName ?? blank.TeamKey} hold an empty name: each is a repository CodeGraph indexes. Nothing was saved.");
         var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
         var unknown = teams.SelectMany(team => team.Repositories ?? []).Where(name => index.Named(name) is null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (unknown.Count > 0)
@@ -134,7 +139,10 @@ public sealed partial class WorkImportService(
         if (delta)
         {
             var last = await imports.LastCompletedImportAsync(source, ct);
-            updatedSince ??= last?.StartedAt
+            // From the last run's start less an overlap: Shortcut's search index lags its writes and its clock is
+            // not CodeGraph's, so a story updated just before that start may not have been listed by it (sc-27929).
+            // Reading it again is harmless: an unchanged story is skipped by its content hash.
+            updatedSince ??= last?.StartedAt - DeltaOverlap
                 ?? throw WorkException.Invalid("A delta sync needs updated_since, or a completed import to continue from. Run a full import first.");
             retry = last?.Report?.FailedIds ?? [];
         }

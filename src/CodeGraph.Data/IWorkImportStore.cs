@@ -58,6 +58,15 @@ public interface IWorkImportStore
 
     /// <summary>Every repository CodeGraph indexes, with its remote URL and the project that owns it (sc-27928).</summary>
     Task<IReadOnlyList<IndexedRepository>> ListIndexedRepositoriesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// The repositories an import's table has applied to a project (sc-27928): attached by it, or owned already when
+    /// the table named them. A repository is applied once, so one the owner takes away later is not attached again.
+    /// </summary>
+    Task<IReadOnlySet<string>> ListAppliedRepositoriesAsync(string source, Guid projectId, CancellationToken ct = default);
+
+    /// <summary>Records repositories as applied to the project (a repeat changes nothing).</summary>
+    Task RecordAppliedRepositoriesAsync(string source, Guid projectId, IReadOnlyCollection<string> repositories, CancellationToken ct = default);
 }
 
 /// <param name="Name">The repository as CodeGraph names it (repositories.name).</param>
