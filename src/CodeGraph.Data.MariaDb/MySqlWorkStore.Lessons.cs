@@ -371,9 +371,9 @@ public sealed partial class MySqlWorkStore
 
     private static Task LinkContradictionAsync(MySqlConnection connection, MySqlTransaction transaction, Guid a, Guid b, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
-            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) VALUES " +
-            "(@a, @b, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now), (@b, @a, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now)",
-            new { a, b, author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now },
+            "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at, assertion_id) VALUES " +
+            "(@a, @b, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now, @assertion), (@b, @a, 'contradicts', @author, @authorKind, @session, @harness, @model, @host, @now, @assertion) ON DUPLICATE KEY UPDATE assertion_id = @assertion",
+            new { a, b, assertion = Guid.NewGuid(), author = actor.Name, authorKind = actor.Kind, session = actor.SessionId, harness = actor.Harness, model = actor.Model, host = actor.Host, now },
             transaction, cancellationToken: ct));
 
     // ---- Lesson views ---------------------------------------------------------------------------
@@ -795,6 +795,8 @@ public sealed partial class MySqlWorkStore
         var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
             "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
             ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+        DreamPolicy.RequireProject(actor, projectId);
+        DreamPolicy.RequireWrite(actor, sameAs is not null ? "same_as" : "contradicts");
         var project = await HoldProjectAsync(connection, transaction, projectId, ct);
         // Both rows, in id order.
         await connection.ExecuteAsync(new CommandDefinition(
@@ -805,6 +807,9 @@ public sealed partial class MySqlWorkStore
         if (before.Kind != "lesson")
             throw WorkException.Invalid($"Entry {entryId} is a {before.Kind}; relate takes lessons. Nothing was changed.");
         var target = await RequireLessonAsync(connection, transaction, project.Id, other, sameAs is not null ? "relate.same_as" : "relate.contradicts", ct);
+
+        if (sameAs is not null && DreamPolicy.IsDreamer(actor) && (before.Priority == "highest" || target.Priority == "highest"))
+            throw new WorkException("forbidden", "The dreamer may not merge a prompt-sourced lesson; propose the merge or open a challenge. Nothing was changed.");
 
         if (contradicts is not null)
         {
@@ -834,6 +839,7 @@ public sealed partial class MySqlWorkStore
     public Task<KnowledgeView> AcknowledgeKnowledgeAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default) =>
         ChangeKnowledgeAsync(entryId, expectedVersion, "acknowledged", actor, async (connection, transaction, before, now) =>
         {
+            DreamPolicy.Refuse(actor, "acknowledge decisions");
             if (before.Kind != "decision" || before.MadeAutonomously != true)
                 throw WorkException.Invalid($"Entry {entryId} is not a decision made autonomously; only those are in the review queue to acknowledge. Nothing was changed.");
             var reviewed = await connection.ExecuteScalarAsync<DateTime?>(new CommandDefinition(

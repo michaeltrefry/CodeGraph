@@ -19,11 +19,13 @@ public sealed partial class MySqlWorkStore
         public string? AuthorModel { get; init; }
         public string? AuthorHost { get; init; }
         public DateTime CreatedAt { get; init; }
+        public Guid? AssertionId { get; init; }
     }
 
     private sealed record LessonMergeSnapshot(KnowledgeEntryRow Source, KnowledgeEntryRow Target,
         IReadOnlyList<EventRow> SourceEvents, IReadOnlyList<EventRow> TargetEvents,
-        IReadOnlyList<MergeLink> SourceLinks, IReadOnlyList<MergeLink> TargetLinks, IReadOnlyList<Guid> Challenges);
+        IReadOnlyList<MergeLink> SourceLinks, IReadOnlyList<MergeLink> TargetLinks, IReadOnlyList<Guid> Challenges,
+        IReadOnlyList<MergeLink>? ImportedLinks = null);
 
     private static KnowledgeDetails MergeDetails(string? json) => json is null ? new()
         : JsonSerializer.Deserialize<KnowledgeDetails>(json, WorkJson.Options) ?? new();
@@ -43,14 +45,21 @@ public sealed partial class MySqlWorkStore
             links.Where(l => l.EntryId == target.Id || l.OtherId == target.Id).ToList(), challenges);
     }
 
-    private static Task SaveLessonMergeAsync(MySqlConnection connection, MySqlTransaction transaction,
-        LessonMergeSnapshot snapshot, long version, WorkActor actor, DateTime now, CancellationToken ct) =>
-        connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO lesson_merges (source_id, source_version, target_id, project_id, snapshot_json, author, author_kind, author_session_id, created_at) " +
-            "VALUES (@source, @version, @target, @project, @snapshot, @author, @kind, @session, @now)",
-            new { source = snapshot.Source.Id, version, target = snapshot.Target.Id, project = snapshot.Source.ProjectId,
+    private static async Task SaveLessonMergeAsync(MySqlConnection connection, MySqlTransaction transaction,
+        LessonMergeSnapshot snapshot, long version, WorkActor actor, DateTime now, CancellationToken ct)
+    {
+        var prior = snapshot.TargetLinks.ToDictionary(l => (l.EntryId, l.OtherId, l.Relation));
+        var after = (await connection.QueryAsync<MergeLink>(new CommandDefinition(
+            "SELECT * FROM lesson_links WHERE entry_id = @id OR other_id = @id",
+            new { id = snapshot.Target.Id }, transaction, cancellationToken: ct))).ToList();
+        snapshot = snapshot with { ImportedLinks = after.Where(l => !prior.TryGetValue((l.EntryId, l.OtherId, l.Relation), out var old) || old.AssertionId != l.AssertionId).ToList() };
+        await connection.ExecuteAsync(new CommandDefinition(
+            "INSERT INTO lesson_merges (source_id, source_version, target_id, target_revision, project_id, snapshot_json, author, author_kind, author_session_id, created_at) " +
+            "VALUES (@source, @version, @target, @targetRevision, @project, @snapshot, @author, @kind, @session, @now)",
+            new { source = snapshot.Source.Id, version, target = snapshot.Target.Id, targetRevision = snapshot.Target.Revision + 1, project = snapshot.Source.ProjectId,
                 snapshot = JsonSerializer.Serialize(snapshot, WorkJson.Options), author = actor.Name, kind = actor.Kind, session = actor.SessionId, now },
             transaction, cancellationToken: ct));
+    }
 
     public Task<KnowledgeView> UnmergeLessonAsync(Guid entryId, long expectedVersion, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([LessonMergeLockName], async connection =>
@@ -68,12 +77,18 @@ public sealed partial class MySqlWorkStore
         var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
             "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
             ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+        DreamPolicy.RequireProject(actor, projectId);
+        DreamPolicy.RequireWrite(actor, "unmerge");
         await HoldProjectAsync(connection, transaction, projectId, ct);
         var journal = await connection.QuerySingleOrDefaultAsync<(long SourceVersion, Guid TargetId, string SnapshotJson)?>(new CommandDefinition(
             "SELECT source_version, target_id, snapshot_json FROM lesson_merges WHERE source_id = @entryId AND unmerged_at IS NULL ORDER BY source_version DESC LIMIT 1 FOR UPDATE",
             new { entryId }, transaction, cancellationToken: ct))
             ?? throw WorkException.Invalid("This lesson has no reversible same_as merge. Legacy merges without a transfer journal cannot be unmerged. Nothing was changed.");
         var snapshot = JsonSerializer.Deserialize<LessonMergeSnapshot>(journal.SnapshotJson, WorkJson.Options)!;
+        if (await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS (SELECT 1 FROM lesson_merges WHERE target_id = @target AND unmerged_at IS NULL AND target_revision > @revision)",
+            new { target = journal.TargetId, revision = snapshot.Target.Revision + 1 }, transaction, cancellationToken: ct)))
+            throw new WorkException(WorkErrorCodes.Conflict, "Undo the target's later merges first. Nothing was changed.");
         var targetId = journal.TargetId;
         await connection.ExecuteAsync(new CommandDefinition(
             "SELECT id FROM knowledge_entries WHERE id IN @ids ORDER BY id FOR UPDATE",
@@ -98,7 +113,7 @@ public sealed partial class MySqlWorkStore
                 "UPDATE lesson_challenges SET entry_id = @entryId WHERE id = @id AND entry_id = @targetId",
                 new { entryId, targetId, id }, transaction, cancellationToken: ct));
 
-        await RestoreMergeLinksAsync(connection, transaction, snapshot, journal.SourceVersion, ct);
+        await RestoreMergeLinksAsync(connection, transaction, snapshot, ct);
 
         var remaining = (await ReadEventsAsync(connection, transaction, [targetId], ct))[targetId].ToList();
         var original = snapshot.TargetEvents.ToDictionary(e => e.CorrectionId);
@@ -122,7 +137,12 @@ public sealed partial class MySqlWorkStore
         var edits = (await connection.QueryAsync<string>(new CommandDefinition(
             "SELECT action FROM knowledge_revisions WHERE entry_id = @targetId AND revision > @revision",
             new { targetId, revision = snapshot.Target.Revision + 1 }, transaction, cancellationToken: ct))).ToHashSet();
-        if (!edits.Contains("revised"))
+        var applicabilityEdited = await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT EXISTS (SELECT 1 FROM knowledge_revisions r JOIN knowledge_revisions previous ON previous.entry_id = r.entry_id AND previous.revision = r.revision - 1 " +
+            "WHERE r.entry_id = @targetId AND r.revision > @revision AND r.action IN ('revised', 'amended') " +
+            "AND NOT (JSON_EXTRACT(r.snapshot_json, '$.details.applies_when') <=> JSON_EXTRACT(previous.snapshot_json, '$.details.applies_when')))",
+            new { targetId, revision = snapshot.Target.Revision + 1 }, transaction, cancellationToken: ct));
+        if (!applicabilityEdited)
         {
             details = details with { AppliesWhen = appliesWhen };
             await connection.ExecuteAsync(new CommandDefinition("UPDATE knowledge_entries SET details_json = @details, activities = @activities WHERE id = @targetId",
@@ -155,23 +175,25 @@ public sealed partial class MySqlWorkStore
         connection.ExecuteAsync(new CommandDefinition("UPDATE knowledge_entries SET rule_state = @RuleState, rule_reason = @RuleReason, rule_since = @RuleSince, rejected_reason = @RejectedReason WHERE id = @Id",
             row, transaction, cancellationToken: ct));
 
-    private static async Task RestoreMergeLinksAsync(MySqlConnection connection, MySqlTransaction transaction, LessonMergeSnapshot snapshot, long version, CancellationToken ct)
+    private static async Task RestoreMergeLinksAsync(MySqlConnection connection, MySqlTransaction transaction, LessonMergeSnapshot snapshot, CancellationToken ct)
     {
-        var journal = await connection.QuerySingleAsync<(DateTime CreatedAt, string Author)>(new CommandDefinition(
-            "SELECT created_at, author FROM lesson_merges WHERE source_id = @id AND source_version = @version",
-            new { id = snapshot.Source.Id, version }, transaction, cancellationToken: ct));
-        var existing = snapshot.TargetLinks.Select(l => (l.EntryId, l.OtherId, l.Relation)).ToHashSet();
+        var prior = snapshot.TargetLinks.ToDictionary(l => (l.EntryId, l.OtherId, l.Relation));
+        foreach (var link in snapshot.ImportedLinks ?? [])
+        {
+            if (prior.TryGetValue((link.EntryId, link.OtherId, link.Relation), out var original))
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE lesson_links SET assertion_id = @original WHERE entry_id = @EntryId AND other_id = @OtherId AND relation = @Relation AND assertion_id = @AssertionId",
+                    new { original = original.AssertionId, link.EntryId, link.OtherId, link.Relation, link.AssertionId }, transaction, cancellationToken: ct));
+            else
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "DELETE FROM lesson_links WHERE entry_id = @EntryId AND other_id = @OtherId AND relation = @Relation AND assertion_id = @AssertionId",
+                    link, transaction, cancellationToken: ct));
+        }
         foreach (var link in snapshot.SourceLinks)
         {
-            var a = link.EntryId == snapshot.Source.Id ? snapshot.Target.Id : link.EntryId;
-            var b = link.OtherId == snapshot.Source.Id ? snapshot.Target.Id : link.OtherId;
-            if (a != b && !existing.Contains((a, b, link.Relation)))
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "DELETE FROM lesson_links WHERE entry_id = @a AND other_id = @b AND relation = @Relation AND created_at = @CreatedAt AND author = @Author",
-                    new { a, b, link.Relation, journal.CreatedAt, journal.Author }, transaction, cancellationToken: ct));
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
-                "VALUES (@EntryId, @OtherId, @Relation, @Author, @AuthorKind, @AuthorSessionId, @AuthorHarness, @AuthorModel, @AuthorHost, @CreatedAt)",
+                "INSERT IGNORE INTO lesson_links (entry_id, other_id, relation, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at, assertion_id) " +
+                "VALUES (@EntryId, @OtherId, @Relation, @Author, @AuthorKind, @AuthorSessionId, @AuthorHarness, @AuthorModel, @AuthorHost, @CreatedAt, @AssertionId)",
                 link, transaction, cancellationToken: ct));
         }
     }

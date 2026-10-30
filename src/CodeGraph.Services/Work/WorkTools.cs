@@ -188,8 +188,8 @@ public static class WorkTools
             "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. relate: after reading " +
             "similar, merge a stored lesson into another (same_as) or link the two (contradicts). acknowledge: an autonomous decision was reviewed (it leaves the " +
             "review queue). A lesson entry takes same_as and contradicts like a correction, and its answer lists similar lessons. Entries are never edited " +
-            "in place; every write adds a revision. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
-            "unmerge {id, expected_version} reverses a same_as merge using the superseded source id, restoring its transferred evidence and state while retaining new target corrections. " +
+            "in place; every write adds a revision. unmerge {id, expected_version} reverses a same_as merge using the superseded source id, " +
+            "restoring its transferred evidence and state while retaining new target corrections. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
             "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
             "(entry, supersede, revise, retract, verify) writes no changes entry: the change feed covers projects, features and items; save points stored by " +
             "update_work on one of those appear in its entry as a knowledge change." + Sessions + Errors,

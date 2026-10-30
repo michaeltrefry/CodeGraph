@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS lesson_merges (
     source_id CHAR(36) NOT NULL,
     source_version BIGINT NOT NULL,
     target_id CHAR(36) NOT NULL,
+    target_revision INT NOT NULL,
     project_id CHAR(36) NOT NULL,
     snapshot_json LONGTEXT NOT NULL,
     author VARCHAR(255) NOT NULL,
@@ -23,3 +24,6 @@ ALTER TABLE lesson_events ADD COLUMN IF NOT EXISTS applies_when_json LONGTEXT NU
 UPDATE lesson_events le JOIN knowledge_entries e ON e.id = le.entry_id
 SET le.applies_when_json = JSON_EXTRACT(e.details_json, '$.applies_when')
 WHERE le.applies_when_json IS NULL;
+
+-- Assertion identity protects a target contradiction re-asserted after an import.
+ALTER TABLE lesson_links ADD COLUMN IF NOT EXISTS assertion_id CHAR(36) NULL;
