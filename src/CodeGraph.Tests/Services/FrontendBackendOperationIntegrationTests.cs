@@ -21,6 +21,52 @@ namespace CodeGraph.Tests.Services;
 public sealed class FrontendBackendOperationIntegrationTests
 {
     [Fact]
+    public async Task TwoLazyFactoriesRenderingOneExport_PersistOneStableRenderFact()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-lazy-render-refresh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "package.json"), """{"name":"lazy-fixture"}""");
+            File.WriteAllText(Path.Combine(root, "target.jsx"), "export function Shared(){return <main/>}");
+            File.WriteAllText(Path.Combine(root, "lazy.jsx"), """
+                import {lazy} from 'react';
+                function helper(loader,name){return lazy(async()=>{const module=await loader();return {default:module[name]};});}
+                export function buildA(loader){const create=()=>helper(loader,'Shared');return create();}
+                export function buildB(loader){const create=()=>helper(loader,'Shared');return create();}
+                """);
+            File.WriteAllText(Path.Combine(root, "App.jsx"), """
+                import {buildA,buildB} from './lazy.jsx';
+                const load=()=>import('./target.jsx');
+                const A=buildA(load),B=buildB(load);
+                export function App(){return <><A/><B/></>}
+                """);
+            var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var store = new InMemoryGraphStore();
+            IndexingPipeline Pipeline(InMemoryGraphStore graph) => new(graph, [], Options.Create(new IndexingOptions()),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            Task Index() => Pipeline(store).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            await Index();
+            var app = store.Nodes.Single(node => node.Name == "App" && node.FilePath == "App.jsx");
+            var shared = store.Nodes.Single(node => node.Name == "Shared" && node.FilePath == "target.jsx");
+            store.Edges.Count(edge => edge.SourceId == app.Id && edge.TargetId == shared.Id && edge.Type == EdgeType.RENDERS).ShouldBe(1);
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            var baseline = ExtractionSnapshot(store);
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+            ExtractionSnapshot(store).ShouldBe(baseline);
+            var fresh = new InMemoryGraphStore();
+            await Pipeline(fresh).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            ExtractionSnapshot(store).ShouldBe(ExtractionSnapshot(fresh));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task AngularProviderOnlyRetarget_ReplacesProvisionalCalls_AndMatchesFreshGraph()
     {
         var root = Path.Combine(Path.GetTempPath(), $"codegraph-provider-refresh-{Guid.NewGuid():N}");
