@@ -1,4 +1,11 @@
-export interface ExtractProjectRequest {
+/** Budgets count decoded UTF-16 code units (KiB * 1024), matching the owning C# reader. */
+export interface SourceReadLimits {
+  maxFileSizeKb?: number;
+  maxFileSizeKbByExtension?: Record<string, number>;
+  maxAnalysisTextKb?: number;
+}
+
+export interface ExtractProjectRequest extends SourceReadLimits {
   repositoryName: string;
   rootPath: string;
   tsconfigPath: string;

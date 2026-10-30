@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { finished } from 'stream/promises';
 import { extractProject } from './extractor';
+import { BoundedTextReader, validateSourceScope, SourceAdmissionError } from './boundedTextReader';
 import { lintProject } from './linter';
 import type { ExtractProjectRequest, ExtractProjectResponse } from './protocol';
 import type { LintProjectRequest, LintProjectResponse } from './linter';
@@ -32,19 +33,26 @@ function openLogFile(logsDir: string, repositoryName: string): fs.WriteStream {
 /** The discovery scope of a request: the file named by `includedFilesPath`, else the inline list. */
 export function readIncludedFiles(request: ExtractProjectRequest): string[] | undefined {
   if (request.includedFilesPath) {
-    const parsed: unknown = JSON.parse(fs.readFileSync(request.includedFilesPath, 'utf-8'));
+    const absolute = path.resolve(request.includedFilesPath);
+    const reader = new BoundedTextReader(path.dirname(absolute), file => file === absolute, { maxFileSizeKb: 65536, maxAnalysisTextKb: 65536 });
+    const text = reader.read(absolute, true);
+    if (text === undefined) throw new SourceAdmissionError('includedFilesPath could not be read within the regular-file scope budget');
+    let parsed: unknown;
+    try { parsed = JSON.parse(text); } catch { throw new SourceAdmissionError('includedFilesPath is not valid JSON'); }
     if (!Array.isArray(parsed) || parsed.some(entry => typeof entry !== 'string')) {
-      throw new Error(`includedFilesPath ${request.includedFilesPath} does not hold a JSON array of strings`);
+      throw new SourceAdmissionError('includedFilesPath must hold a JSON array of path strings');
     }
+    validateSourceScope(parsed as string[]);
     return parsed as string[];
   }
+  validateSourceScope(request.includedFiles);
   return request.includedFiles;
 }
 
 export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: BODY_LIMIT_BYTES });
 
-  app.get('/health', async () => ({ status: 'ok' }));
+  app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 1 }));
 
   app.post<{ Body: ExtractProjectRequest; Reply: ExtractProjectResponse }>(
     '/extract-project',
@@ -62,7 +70,7 @@ export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
         log(`Starting extraction: ${repositoryName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
 
         const t0 = Date.now();
-        const result = extractProject(repositoryName, rootPath, tsconfigPath, log, includedFiles);
+        const result = extractProject(repositoryName, rootPath, tsconfigPath, log, includedFiles, request.body);
         const elapsed = Date.now() - t0;
 
         // Log diagnostics
@@ -83,8 +91,9 @@ export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
 
         return result;
       } catch (err) {
-        log(`ERROR: ${String(err)}`);
-        reply.status(500).send({ error: String(err) } as never);
+        const message = err instanceof SourceAdmissionError ? err.message : 'invalid or unreadable extraction request';
+        log(`ERROR: ${message}`);
+        reply.status(500).send({ error: message } as never);
       } finally {
         // Complete the request only after its log has closed. Callers may immediately remove
         // an ephemeral log directory or inspect diagnostics once extraction has returned.

@@ -486,9 +486,9 @@ import { Component, inject } from '@angular/core'; import { Router } from '@angu
         writeFile(root, 'broken.tsx', 'export const Broken = () => <div>');
         const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, ['valid.jsx', 'broken.tsx', 'missing.js']);
         assert_1.strict.equal(result.complete, false);
-        assert_1.strict.deepEqual(result.processedFiles, ['valid.jsx']);
+        assert_1.strict.deepEqual(result.processedFiles, []);
         assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('sourceParse: broken.tsx')));
-        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('sourceRead: missing.js')));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('sourceAdmission: missing.js')));
         assert_1.strict.ok(!result.nodes.some(node => node.filePath === 'broken.tsx'));
     }
     finally {
@@ -913,7 +913,7 @@ const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-admitted-browser-tests-'));
     const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-outside-browser-tests-'));
     const nodeFs = require('fs');
-    const originalRead = nodeFs.readFileSync;
+    const originalOpen = nodeFs.openSync;
     try {
         const sources = ['src/app.jsx', 'cypress/e2e/login.cy.ts', 'e2e/app.e2e-spec.ts', 'src/UPPER.TS', 'src/UpperPanel.JSX'];
         writeFile(root, sources[0], "import {login} from '../cypress/e2e/login.cy';import {upper} from './UPPER.TS';import {UpperPanel} from './UpperPanel.JSX';export function App(){login();upper();return <UpperPanel/>;}");
@@ -933,10 +933,10 @@ const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
                 throw error;
         }
         const reads = [];
-        nodeFs.readFileSync = ((file, ...args) => {
+        nodeFs.openSync = ((file, ...args) => {
             if (typeof file === 'string')
                 reads.push(path.resolve(file));
-            return originalRead(file, ...args);
+            return originalOpen(file, ...args);
         });
         const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, sources);
         assert_1.strict.equal(result.complete, true);
@@ -954,12 +954,12 @@ const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
         const coverage = JSON.parse(result.diagnostics.find(message => message.startsWith('Link coverage: ')).slice('Link coverage: '.length));
         assert_1.strict.equal(coverage.admitted_by_extension['.ts'], 3);
         assert_1.strict.equal(coverage.processed_by_extension['.jsx'], 2);
-        nodeFs.readFileSync = originalRead;
+        nodeFs.openSync = originalOpen;
         const standalone = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
         assert_1.strict.ok(!standalone.processedFiles.some(file => file.startsWith('cypress/') || file.startsWith('e2e/')));
     }
     finally {
-        nodeFs.readFileSync = originalRead;
+        nodeFs.openSync = originalOpen;
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync(outside, { recursive: true, force: true });
     }

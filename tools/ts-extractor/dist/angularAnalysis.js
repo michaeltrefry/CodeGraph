@@ -35,13 +35,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeAngular = analyzeAngular;
 const ts_morph_1 = require("ts-morph");
-const fs = __importStar(require("fs"));
+const boundedTextReader_1 = require("./boundedTextReader");
 const path = __importStar(require("path"));
 const semanticModel_1 = require("./semanticModel");
 /** Derive Angular links exclusively from admitted declarations and imported framework APIs.
  * Provider tables remain scoped: overrides never leak into a sibling application's injector.
  */
-function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnostic) {
+function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnostic, reader = new boundedTextReader_1.BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)) {
     let complete = true;
     const processedTemplates = new Set();
     const classes = model.files.flatMap(file => file.getClasses());
@@ -698,24 +698,17 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             const absolute = path.resolve(path.dirname(item.declaration.getSourceFile().getFilePath()), templateUrl);
             templatePath = path.relative(model.root, absolute).replace(/\\/g, '/');
             if (templatePath.startsWith('../') || path.isAbsolute(templatePath) || (scope && !scope.includesFile(absolute))) {
-                diagnostic(`angularTemplateScope: refused ${templatePath}`);
-                continue;
-            }
-            try {
-                const real = fs.realpathSync(absolute);
-                const realRelative = path.relative(fs.realpathSync(model.root), real);
-                if (realRelative.startsWith('..') || path.isAbsolute(realRelative) || (scope && !scope.includesFile(path.join(model.root, realRelative)))) {
-                    diagnostic(`angularTemplateScope: refused symlink ${templatePath}`);
-                    continue;
-                }
-                html = fs.readFileSync(real, 'utf8');
-                processedTemplates.add(templatePath);
-            }
-            catch (error) {
                 complete = false;
-                diagnostic(`angularTemplateRead: ${templatePath}: ${String(error)}`);
+                diagnostic(`angularTemplateScope: refused ${templatePath.slice(0, 240)}`);
                 continue;
             }
+            html = reader.read(absolute, true);
+            if (html === undefined) {
+                complete = false;
+                diagnostic(`angularTemplateRead: refused ${templatePath}`);
+                continue;
+            }
+            processedTemplates.add(templatePath);
         }
         if (html === undefined)
             continue;
@@ -970,7 +963,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                 edges.splice(index, 1);
     }
     diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
-    return { complete, processedTemplates: [...processedTemplates].sort() };
+    return { complete: complete && reader.complete, processedTemplates: [...processedTemplates].sort() };
 }
 function matchesSelector(selector, tag, attributes) {
     const negatives = [];

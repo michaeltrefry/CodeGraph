@@ -1,5 +1,5 @@
 import { Node, SyntaxKind, ClassDeclaration, InterfaceDeclaration, ObjectLiteralExpression } from 'ts-morph';
-import * as fs from 'fs';
+import { BoundedTextReader } from './boundedTextReader';
 import * as path from 'path';
 import { SemanticModel, sameSymbol } from './semanticModel';
 import { DiscoveryScope } from './discoveryScope';
@@ -14,7 +14,8 @@ type Receiver = { contract?: InterfaceDeclaration; selection?: Selection; inject
  * Provider tables remain scoped: overrides never leak into a sibling application's injector.
  */
 export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edges: PendingEdgeDto[],
-  scope?: DiscoveryScope, diagnostic: (message: string) => void = model.diagnostic): { complete: boolean; processedTemplates: string[] } {
+  scope?: DiscoveryScope, diagnostic: (message: string) => void = model.diagnostic,
+  reader = new BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)): { complete: boolean; processedTemplates: string[] } {
   let complete = true;
   const processedTemplates = new Set<string>();
   const classes = model.files.flatMap(file => file.getClasses());
@@ -467,13 +468,10 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (templateUrl !== undefined) {
       const absolute = path.resolve(path.dirname(item.declaration.getSourceFile().getFilePath()), templateUrl);
       templatePath = path.relative(model.root, absolute).replace(/\\/g, '/');
-      if (templatePath.startsWith('../') || path.isAbsolute(templatePath) || (scope && !scope.includesFile(absolute))) { diagnostic(`angularTemplateScope: refused ${templatePath}`); continue; }
-      try {
-        const real = fs.realpathSync(absolute);
-        const realRelative = path.relative(fs.realpathSync(model.root), real);
-        if (realRelative.startsWith('..') || path.isAbsolute(realRelative) || (scope && !scope.includesFile(path.join(model.root, realRelative)))) { diagnostic(`angularTemplateScope: refused symlink ${templatePath}`); continue; }
-        html = fs.readFileSync(real, 'utf8'); processedTemplates.add(templatePath);
-      } catch (error) { complete = false; diagnostic(`angularTemplateRead: ${templatePath}: ${String(error)}`); continue; }
+      if (templatePath.startsWith('../') || path.isAbsolute(templatePath) || (scope && !scope.includesFile(absolute))) { complete = false; diagnostic(`angularTemplateScope: refused ${templatePath.slice(0, 240)}`); continue; }
+      html = reader.read(absolute, true);
+      if (html === undefined) { complete = false; diagnostic(`angularTemplateRead: refused ${templatePath}`); continue; }
+      processedTemplates.add(templatePath);
     }
     if (html === undefined) continue;
     const clean = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
@@ -667,7 +665,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     for (let index = edges.length - 1; index >= 0; index--) if (superseded.has(edges[index])) edges.splice(index, 1);
   }
   diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
-  return { complete, processedTemplates: [...processedTemplates].sort() };
+  return { complete: complete && reader.complete, processedTemplates: [...processedTemplates].sort() };
 }
 
 function matchesSelector(selector: string, tag: string, attributes: Map<string, string>): boolean {

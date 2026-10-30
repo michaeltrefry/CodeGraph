@@ -1,6 +1,6 @@
 import { Node, SourceFile, SyntaxKind, Project } from 'ts-morph';
 import * as path from 'path';
-import * as fs from 'fs';
+import { BoundedTextReader } from './boundedTextReader';
 import { SemanticModel, sameSymbol } from './semanticModel';
 import { DiscoveryScope } from './discoveryScope';
 import type { GraphNodeDto, PendingEdgeDto } from './protocol';
@@ -8,8 +8,9 @@ import type { GraphNodeDto, PendingEdgeDto } from './protocol';
 /** Browser routes are distinct from backend endpoints. Resolve modules through the admitted model,
  * parse configuration as source, and give every synthetic fact a stable source slice owner. */
 export function analyzeRoutes(model: SemanticModel, nodes: GraphNodeDto[], edges: PendingEdgeDto[],
-  scope?: DiscoveryScope, diagnostic: (message: string) => void = model.diagnostic): { complete: boolean } {
-  return new RouteAnalysis(model, nodes, edges, scope, diagnostic).run();
+  scope?: DiscoveryScope, diagnostic: (message: string) => void = model.diagnostic,
+  reader = new BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)): { complete: boolean } {
+  return new RouteAnalysis(model, nodes, edges, scope, diagnostic, reader).run();
 }
 class RouteAnalysis {
   private complete = true;
@@ -20,14 +21,14 @@ class RouteAnalysis {
   private readonly parsedConfigs = new Project({ useInMemoryFileSystem: true });
   constructor(private readonly model: SemanticModel, private readonly nodes: GraphNodeDto[],
     private readonly edges: PendingEdgeDto[], private readonly scope: DiscoveryScope | undefined,
-    private readonly diagnostic: (message: string) => void) {
+    private readonly diagnostic: (message: string) => void, private readonly reader: BoundedTextReader) {
     this.inputs = scope ? scope.absoluteFiles().map(file => path.relative(model.root, file).replace(/\\/g, '/')) : model.files.map(file => model.relative(file));
     if (!scope) for (const file of model.files) {
       let directory = path.posix.dirname(model.relative(file));
       while (true) {
         for (const name of ['package.json', 'angular.json', 'tsconfig.json', 'next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs']) {
           const input = directory === '.' ? name : `${directory}/${name}`;
-          if (!this.inputs.includes(input) && fs.existsSync(path.join(model.root, input))) this.inputs.push(input);
+          if (!this.inputs.includes(input) && reader.exists(path.join(model.root, input))) this.inputs.push(input);
         }
         if (directory === '.') break;
         directory = path.posix.dirname(directory);
@@ -35,7 +36,7 @@ class RouteAnalysis {
     }
     for (const node of nodes) if (node.properties.route_kind === 'ui') this.emitted.set(node.qualifiedName, node);
   }
-  run(): { complete: boolean } { this.angular(); this.react(); this.next(); return { complete: this.complete }; }
+  run(): { complete: boolean } { this.angular(); this.react(); this.next(); return { complete: this.complete && this.reader.complete }; }
   private relative(node: Node): string { return this.model.relative(node); }
   private report(node: Node, reason: string, incomplete = false): void { if (incomplete) this.complete = false; this.diagnostic(`routeUnresolved: ${this.relative(node)}:${node.getStartLineNumber()} ${reason}`); }
   private appRoot(file: string): string {
@@ -53,7 +54,7 @@ class RouteAnalysis {
     if (this.scope && !this.scope.includesFile(absolute)) return undefined;
     const source = this.model.byPath.get(file);
     if (source) return source.getFullText();
-    try { return fs.readFileSync(absolute, 'utf8'); } catch { return undefined; }
+    return this.reader.read(absolute, true);
   }
   private value(node: Node | undefined, seen = new Set<Node>()): Node | undefined {
     if (!node || seen.has(node) || seen.size > 80) return undefined;

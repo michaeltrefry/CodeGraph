@@ -36,20 +36,21 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeRoutes = analyzeRoutes;
 const ts_morph_1 = require("ts-morph");
 const path = __importStar(require("path"));
-const fs = __importStar(require("fs"));
+const boundedTextReader_1 = require("./boundedTextReader");
 const semanticModel_1 = require("./semanticModel");
 /** Browser routes are distinct from backend endpoints. Resolve modules through the admitted model,
  * parse configuration as source, and give every synthetic fact a stable source slice owner. */
-function analyzeRoutes(model, nodes, edges, scope, diagnostic = model.diagnostic) {
-    return new RouteAnalysis(model, nodes, edges, scope, diagnostic).run();
+function analyzeRoutes(model, nodes, edges, scope, diagnostic = model.diagnostic, reader = new boundedTextReader_1.BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)) {
+    return new RouteAnalysis(model, nodes, edges, scope, diagnostic, reader).run();
 }
 class RouteAnalysis {
-    constructor(model, nodes, edges, scope, diagnostic) {
+    constructor(model, nodes, edges, scope, diagnostic, reader) {
         this.model = model;
         this.nodes = nodes;
         this.edges = edges;
         this.scope = scope;
         this.diagnostic = diagnostic;
+        this.reader = reader;
         this.complete = true;
         this.emitted = new Map();
         this.edgeKeys = new Set();
@@ -62,7 +63,7 @@ class RouteAnalysis {
                 while (true) {
                     for (const name of ['package.json', 'angular.json', 'tsconfig.json', 'next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs']) {
                         const input = directory === '.' ? name : `${directory}/${name}`;
-                        if (!this.inputs.includes(input) && fs.existsSync(path.join(model.root, input)))
+                        if (!this.inputs.includes(input) && reader.exists(path.join(model.root, input)))
                             this.inputs.push(input);
                     }
                     if (directory === '.')
@@ -74,7 +75,7 @@ class RouteAnalysis {
             if (node.properties.route_kind === 'ui')
                 this.emitted.set(node.qualifiedName, node);
     }
-    run() { this.angular(); this.react(); this.next(); return { complete: this.complete }; }
+    run() { this.angular(); this.react(); this.next(); return { complete: this.complete && this.reader.complete }; }
     relative(node) { return this.model.relative(node); }
     report(node, reason, incomplete = false) { if (incomplete)
         this.complete = false; this.diagnostic(`routeUnresolved: ${this.relative(node)}:${node.getStartLineNumber()} ${reason}`); }
@@ -100,12 +101,7 @@ class RouteAnalysis {
         const source = this.model.byPath.get(file);
         if (source)
             return source.getFullText();
-        try {
-            return fs.readFileSync(absolute, 'utf8');
-        }
-        catch {
-            return undefined;
-        }
+        return this.reader.read(absolute, true);
     }
     value(node, seen = new Set()) {
         if (!node || seen.has(node) || seen.size > 80)

@@ -40,6 +40,7 @@ const path = __importStar(require("path"));
 const fs = __importStar(require("fs"));
 const workspaceResolver_1 = require("./workspaceResolver");
 const discoveryScope_1 = require("./discoveryScope");
+const boundedTextReader_1 = require("./boundedTextReader");
 const extractionEdges_1 = require("./extractionEdges");
 const semanticModel_1 = require("./semanticModel");
 const reactAnalysis_1 = require("./reactAnalysis");
@@ -58,7 +59,20 @@ const PRIMITIVE_TYPES = new Set([
     'string', 'number', 'boolean', 'any', 'void',
     'null', 'undefined', 'never', 'unknown', 'object',
 ]);
-function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { }, includedFiles) {
+function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { }, includedFiles, limits = {}) {
+    try {
+        (0, boundedTextReader_1.validateSourceScope)(includedFiles);
+        return extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits);
+    }
+    catch (error) {
+        const refusal = error;
+        const reason = error instanceof boundedTextReader_1.SourceAdmissionError ? error.message : refusal.code === 'vite_library_analysis_incomplete' ? 'Vite library analysis work limit or cancellation' : `analysis failure (${refusal.code ?? refusal.name ?? 'unknown'})`;
+        const message = `sourceAdmission: extraction refused: ${reason.slice(0, 240)}`;
+        log(message);
+        return { complete: false, nodes: [], edges: [], workspacePackages: [], resolvedImports: [], unresolvedImports: [], unresolvedCalls: [], processedFiles: [], diagnostics: [message] };
+    }
+}
+function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, includedFiles, limits) {
     const nodes = [];
     const edges = [];
     const workspacePackages = [];
@@ -66,12 +80,16 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     const unresolvedImports = [];
     const unresolvedCalls = [];
     const diagnostics = [];
+    const refused = () => ({ complete: false, nodes: [], edges: [], workspacePackages: [],
+        resolvedImports: [], unresolvedImports: [], unresolvedCalls: [], processedFiles: [], diagnostics });
     // Create project with minimal compiler options and discover files manually.
     // ts-morph with moduleResolution:"bundler" and no include/files can hang, so we
     // scan the filesystem directly instead of relying on tsconfig file resolution.
     // noResolve: true prevents the compiler from pulling in referenced files
     // (e.g. node_modules/@tc/*) which can stall for minutes on large repos.
     const project = new ts_morph_1.Project({
+        useInMemoryFileSystem: true,
+        skipFileDependencyResolution: true,
         compilerOptions: {
             allowJs: true,
             jsx: 1 /* Preserve */,
@@ -100,19 +118,27 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     };
     // CodeGraph passes the files its discovery admits; the sidecar then never reads outside them.
     const scope = includedFiles ? new discoveryScope_1.DiscoveryScope(rootPath, includedFiles) : undefined;
+    const reader = new boundedTextReader_1.BoundedTextReader(rootPath, scope ? file => scope.includesFile(file) : undefined, limits, diag);
+    if (!reader.complete)
+        throw new boundedTextReader_1.SourceAdmissionError('source reader initialization was refused');
     const typeRoots = checkoutRoots(rootPath);
     let t0 = Date.now();
     // Explicit discovery has already applied repository safety/exclusion policy. Standalone
     // walk defaults must not silently remove an admitted source before processed-file accounting.
     const tsFiles = scope
         ? scope.absoluteFiles(file => /\.[jt]sx?$/i.test(file))
-        : findTsFiles(rootPath);
+        : findTsFiles(rootPath, reader);
     diag(`findTsFiles: ${tsFiles.length} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
     let complete = true;
     for (const f of tsFiles) {
         try {
-            project.addSourceFileAtPath(f);
+            const text = reader.read(f, true);
+            if (text === undefined) {
+                complete = false;
+                continue;
+            }
+            project.createSourceFile(f, text);
         }
         catch (error) {
             complete = false;
@@ -122,14 +148,18 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     if (scope)
         for (const file of scope.absoluteFiles(relative => /(?:^|\/)(?:package|[tj]sconfig[^/]*)\.json$/.test(relative))) {
             try {
-                const text = fs.readFileSync(file, 'utf8');
+                const text = reader.read(file, true);
+                if (text === undefined) {
+                    complete = false;
+                    continue;
+                }
                 if (path.basename(file) === 'package.json')
                     JSON.parse(text);
                 // TypeScript config errors (including extends) are surfaced by workspace resolution below.
             }
             catch (error) {
                 complete = false;
-                diag(`configRead: ${path.relative(rootPath, file)}: ${String(error)}`);
+                diag(`configRead: ${path.relative(rootPath, file).slice(0, 240)}: invalid configuration`);
             }
         }
     const invalidFiles = new Set();
@@ -143,14 +173,18 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
         }
     }
     diag(`addSourceFiles: ${Date.now() - t0}ms`);
-    const serviceName = !scope || scope.includesFile(path.join(rootPath, 'package.json')) ? readBackendServiceName(rootPath) : null;
+    if (!reader.complete)
+        return refused();
+    const serviceName = !scope || scope.includesFile(path.join(rootPath, 'package.json')) ? readBackendServiceName(rootPath, reader) : null;
     diag(`serviceName: ${serviceName ?? '(none)'}`);
     t0 = Date.now();
     const parsedFiles = project.getSourceFiles().filter(source => !invalidFiles.has(source.getFilePath()));
     const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !/\.generated\./i.test(source.getFilePath()));
     diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
-    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope);
+    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope, reader);
+    if (!reader.complete)
+        return refused();
     nodes.push(...workspaceResolution.nodes);
     edges.push(...workspaceResolution.edges);
     workspacePackages.push(...workspaceResolution.workspacePackages);
@@ -188,10 +222,14 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     (0, reactAnalysis_1.analyzeReact)(semantic, nodes, edges, diag);
     // Reconcile legacy Angular targets using declaration identities, never rendered type strings.
     semantic.reconcileAngular(nodes, edges);
-    const angularCoverage = (0, angularAnalysis_1.analyzeAngular)(semantic, nodes, edges, scope, diag);
+    const angularCoverage = (0, angularAnalysis_1.analyzeAngular)(semantic, nodes, edges, scope, diag, reader);
     complete && (complete = angularCoverage.complete);
-    const routeCoverage = (0, routeAnalysis_1.analyzeRoutes)(semantic, nodes, edges, scope, diag);
+    if (!reader.complete)
+        return refused();
+    const routeCoverage = (0, routeAnalysis_1.analyzeRoutes)(semantic, nodes, edges, scope, diag, reader);
     complete && (complete = routeCoverage.complete);
+    if (!reader.complete)
+        return refused();
     const httpCoverage = (0, httpAnalysis_1.analyzeHttp)(semantic, nodes, edges, diag, serviceName);
     complete && (complete = httpCoverage.complete);
     (0, tauriAnalysis_1.analyzeTauri)(semantic, nodes, edges, diag);
@@ -228,7 +266,9 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     for (const e of edges)
         edgeTypes[e.type] = (edgeTypes[e.type] || 0) + 1;
     diagnostics.push(`Edge types: ${JSON.stringify(edgeTypes)}`);
-    return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, processedFiles, diagnostics, complete };
+    complete && (complete = reader.complete);
+    return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls,
+        processedFiles: reader.complete ? processedFiles : [], diagnostics, complete };
 }
 // ── Imports ───────────────────────────────────────────────────────────────────
 function extractImports(sourceFile, fileQN, unresolvedImports) {
@@ -436,10 +476,11 @@ function extractEnums(sourceFile, filePath, nodes) {
 // ── Angular Routes ────────────────────────────────────────────────────────────
 // ── HTTP calls ────────────────────────────────────────────────────────────────
 // ── @ApiContract / HttpService.send() detection ──────────────────────────────
-function readBackendServiceName(rootPath) {
+function readBackendServiceName(rootPath, reader) {
     try {
         const pkgPath = path.join(rootPath, 'package.json');
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        const text = reader.read(pkgPath);
+        const pkg = text === undefined ? null : JSON.parse(text);
         // Support both tc.api.name and tc.environments.bff.name
         return pkg?.tc?.api?.name ?? pkg?.tc?.environments?.bff?.name ?? null;
     }
@@ -521,10 +562,10 @@ function toCheckoutIndependentModulePath(modulePath, roots) {
         return path.posix.basename(normalized);
     return candidates.reduce((best, relative) => relative.split('/').length < best.split('/').length ? relative : best);
 }
-function findTsFiles(dir) {
+function findTsFiles(dir, reader) {
     const results = [];
     const walk = (d) => {
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        for (const entry of reader.entries(d)) {
             if (entry.isDirectory()) {
                 if (!SKIP_DIRS.has(entry.name))
                     walk(path.join(d, entry.name));

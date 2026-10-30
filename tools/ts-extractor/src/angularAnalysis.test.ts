@@ -63,12 +63,12 @@ test('Angular template selectors, defer blocks and static outlets use actual com
     assert.ok(result.edges.filter(edge => edge.type === 'RENDERS').every(edge => edge.properties?.template_path === 'src/app.html'));
     assert.equal(result.nodes.find(node => node.name === 'Pretender')?.label, 'Class');
     const excluded = f.extract(['src/app.ts', 'src/children.ts']);
-    assert.equal(excluded.complete, true);
+    assert.equal(excluded.complete, false);
     assert.equal(matching(excluded.edges, 'RENDERS', 'App').length, 0);
     assert.ok(excluded.diagnostics.some(message => message.startsWith('angularTemplateScope:')));
     fs.unlinkSync(path.join(f.root, 'src/app.html'));
     assert.equal(f.extract().complete, false, 'an unreadable admitted template is incomplete');
-    assert.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, true, 'a removed/excluded template permits recomputation');
+    assert.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, false, 'a declaration still requiring a removed/excluded template is incomplete');
   } finally { f.dispose(); }
 });
 
@@ -278,10 +278,10 @@ test('template scope rejects outside-root and symlink escapes before reading con
     fs.writeFileSync(path.join(outside,'secret.html'),'<child/>');
     fs.symlinkSync(path.join(outside,'secret.html'),path.join(f.root,'escape.html'));
     const result=f.extract(['app.ts','escape.html']);
-    assert.equal(result.complete,true);
+    assert.equal(result.complete,false);
     assert.equal(matching(result.edges,'RENDERS','App').length,0);
     assert.deepEqual(result.processedTemplates,[]);
-    assert.ok(result.diagnostics.some(message=>message.startsWith('angularTemplateScope:')));
+    assert.ok(result.diagnostics.some(message=>message.startsWith('sourceAdmission:')));
   } finally {f.dispose();fs.rmSync(outside,{recursive:true,force:true});}
 });
 

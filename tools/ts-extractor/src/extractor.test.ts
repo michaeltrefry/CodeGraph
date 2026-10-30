@@ -513,9 +513,9 @@ test('syntax and missing admitted sources report incomplete and never advance pr
     writeFile(root, 'broken.tsx', 'export const Broken = () => <div>');
     const result = extractProject('Demo', root, path.join(root, 'tsconfig.json'), () => {}, ['valid.jsx', 'broken.tsx', 'missing.js']);
     assert.equal(result.complete, false);
-    assert.deepEqual(result.processedFiles, ['valid.jsx']);
+    assert.deepEqual(result.processedFiles, []);
     assert.ok(result.diagnostics?.some(message => message.startsWith('sourceParse: broken.tsx')));
-    assert.ok(result.diagnostics?.some(message => message.startsWith('sourceRead: missing.js')));
+    assert.ok(result.diagnostics?.some(message => message.startsWith('sourceAdmission: missing.js')));
     assert.ok(!result.nodes.some(node => node.filePath === 'broken.tsx'));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -889,7 +889,7 @@ test('an explicit discovery scope admits Cypress and e2e sources without reading
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-admitted-browser-tests-'));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-outside-browser-tests-'));
   const nodeFs = require('fs') as typeof fs;
-  const originalRead = nodeFs.readFileSync;
+  const originalOpen = nodeFs.openSync;
   try {
     const sources = ['src/app.jsx', 'cypress/e2e/login.cy.ts', 'e2e/app.e2e-spec.ts', 'src/UPPER.TS', 'src/UpperPanel.JSX'];
     writeFile(root, sources[0], "import {login} from '../cypress/e2e/login.cy';import {upper} from './UPPER.TS';import {UpperPanel} from './UpperPanel.JSX';export function App(){login();upper();return <UpperPanel/>;}");
@@ -903,10 +903,10 @@ test('an explicit discovery scope admits Cypress and e2e sources without reading
     try { fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(root, 'e2e/outside-link.ts')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error; }
     const reads: string[] = [];
-    nodeFs.readFileSync = ((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    nodeFs.openSync = ((file: fs.PathLike, ...args: unknown[]) => {
       if (typeof file === 'string') reads.push(path.resolve(file));
-      return (originalRead as (...args: unknown[]) => unknown)(file, ...args);
-    }) as typeof fs.readFileSync;
+      return (originalOpen as (...args: unknown[]) => unknown)(file, ...args);
+    }) as typeof fs.openSync;
     const result = extractProject('Demo', root, path.join(root, 'tsconfig.json'), () => {}, sources);
     assert.equal(result.complete, true);
     assert.deepEqual(result.processedFiles.sort(), [...sources].sort());
@@ -921,10 +921,10 @@ test('an explicit discovery scope admits Cypress and e2e sources without reading
     const coverage = JSON.parse(result.diagnostics!.find(message => message.startsWith('Link coverage: '))!.slice('Link coverage: '.length));
     assert.equal(coverage.admitted_by_extension['.ts'], 3);
     assert.equal(coverage.processed_by_extension['.jsx'], 2);
-    nodeFs.readFileSync = originalRead;
+    nodeFs.openSync = originalOpen;
     const standalone = extractProject('Demo', root, path.join(root, 'tsconfig.json'));
     assert.ok(!standalone.processedFiles.some(file => file.startsWith('cypress/') || file.startsWith('e2e/')));
-  } finally { nodeFs.readFileSync = originalRead; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+  } finally { nodeFs.openSync = originalOpen; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
 });
 
 test('the final extraction boundary stores one edge identity with all callable and injection evidence', () => {
