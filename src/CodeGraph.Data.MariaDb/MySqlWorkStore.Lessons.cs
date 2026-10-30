@@ -861,8 +861,15 @@ public sealed partial class MySqlWorkStore
             var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
                 "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
                 ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+            DreamPolicy.RequireProject(actor, projectId);
+            DreamPolicy.RequireWrite(actor, "promote propose");
+            if (DreamPolicy.IsDreamer(actor) && (action != PromoteAction.Propose || addressedBy is not null))
+                throw WorkException.Invalid("The dreamer may only propose rule status.");
             await HoldProjectAsync(connection, transaction, projectId, ct);
             var row = await RequireLessonAsync(connection, transaction, projectId, entryId, "id", ct);
+            if (DreamPolicy.IsDreamer(actor) && row.DetailsJson is { } details && JsonSerializer.Deserialize<KnowledgeDetails>(details, WorkJson.Options)?.Source?.Kind == CorrectionSourceKind.Prompt)
+                throw WorkException.Invalid("A prompt lesson can only be challenged by the dreamer.");
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var state = row.RuleState is { } stored ? ParseName<LessonRuleState>(stored) : LessonRuleState.Candidate;
 
             // A call that would change nothing answers the lesson (a retry is safe), whatever version it read.
@@ -944,6 +951,7 @@ public sealed partial class MySqlWorkStore
                 _ => "addressed_by"
             }, actor, now, ct);
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "propose", ct);
             await transaction.CommitAsync(ct);
             return new PromoteResult(view, true);
         }, ct);
@@ -958,6 +966,8 @@ public sealed partial class MySqlWorkStore
             var projectId = await connection.ExecuteScalarAsync<Guid?>(new CommandDefinition(
                 "SELECT project_id FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct))
                 ?? throw WorkException.NotFound($"There is no knowledge entry {entryId}.");
+            DreamPolicy.RequireProject(actor, projectId);
+            DreamPolicy.RequireWrite(actor, "open challenge");
             await HoldProjectAsync(connection, transaction, projectId, ct);
             if (keyHash is not null && await FindKeyAsync(connection, transaction, projectId, ChallengeOperation, keyHash, ct) is { EntityId: { } existing })
             {
@@ -971,6 +981,7 @@ public sealed partial class MySqlWorkStore
             if (!row.IsRule)
                 throw WorkException.Invalid($"Lesson {entryId} is not a rule ({row.RuleState}): challenge disputes an active rule. A lesson that is not a rule is not served; retract or revise it instead. Nothing was changed.");
 
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO lesson_challenges (id, entry_id, project_id, status, reason, evidence_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
@@ -986,6 +997,7 @@ public sealed partial class MySqlWorkStore
             // The rule stays active and unchanged: the challenge is shown with it.
             var challenge = (await ReadChallengeRowAsync(connection, transaction, id, ct))!;
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "challenge", ct);
             await transaction.CommitAsync(ct);
             return new ChallengeResult(true, ToView(challenge), view);
         }, ct);
@@ -993,6 +1005,7 @@ public sealed partial class MySqlWorkStore
     public Task<ChallengeResult> ResolveChallengeAsync(Guid challengeId, long expectedVersion, ChallengeOutcome outcome, string reason, KnowledgeSpec? amended, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "resolve challenges");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var found = await ReadChallengeRowAsync(connection, transaction, challengeId, ct)

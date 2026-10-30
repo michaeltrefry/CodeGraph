@@ -210,6 +210,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 return new RecordResult(false, earlier);
             }
 
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [spec.Id], ct);
             var outcome = await InsertKnowledgeAsync(connection, transaction, project, [spec], null, null, null, actor, now, ct);
             // A lesson merged into an existing one (same_as, or an exact normalized match) stores no new entry.
             var effective = outcome.EntryOf(spec.Id);
@@ -220,6 +221,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             KnowledgeRow? superseded = null;
             if (outcome.Superseded is { } old)
                 superseded = ToRow((await ReadKnowledgeRowAsync(connection, transaction, old, ct))!);
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, "record", ct);
             await transaction.CommitAsync(ct);
             var merged = outcome.Merged.Contains(spec.Id);
             return new RecordResult(!merged, view, superseded, merged ? true : null);
@@ -255,6 +257,8 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             if (spec.Kind == KnowledgeKind.Lesson && spec.Supersedes is null &&
                 await LessonMergeTargetAsync(connection, transaction, project, spec, ct) is { } target)
             {
+                if (actor.Kind == WorkActor.SystemKind && actor.Name == "dreamer")
+                    throw WorkException.Invalid("This lesson already exists. Read it and use a reversible relation instead of implicit capture merging.");
                 await AddLessonEventAsync(connection, transaction, project, target, spec, linkedItem, actor, now, ct);
                 merged[spec.Id] = target;
                 continue;
@@ -410,9 +414,12 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         {
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
+            await connection.ExecuteAsync(new CommandDefinition("SELECT id FROM knowledge_entries WHERE id=@entryId FOR UPDATE", new { entryId }, transaction, cancellationToken: ct));
+            var dreamBefore = await CaptureDreamBeforeAsync(connection, transaction, actor, [entryId], ct);
             var before = await AdvanceKnowledgeAsync(connection, transaction, entryId, expectedVersion, now, ct);
             await change(connection, transaction, before, now);
             await InsertRevisionAsync(connection, transaction, entryId, before.Revision, action, actor, now, ct);
+            await JournalDreamAfterAsync(connection, transaction, actor, dreamBefore, action, ct);
             var view = (await LoadKnowledgeViewAsync(connection, transaction, entryId, withRevisions: false, ct))!;
             await transaction.CommitAsync(ct);
             return view;
