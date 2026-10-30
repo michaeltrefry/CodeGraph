@@ -163,8 +163,9 @@ public partial class IndexingPipeline
         // Prior paths keep owner cleanup active when the last participating source is removed.
         // Repositories containing only other languages need no HTTP/Tauri store probes.
         var sourcePaths = files.Concat(existingHashes.Keys).ToList();
-        var hasHttpSources = sourcePaths.Any(path => IsTypeScriptPath(path)
-            || path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase));
+        var hasTypeScriptSources = sourcePaths.Any(IsTypeScriptPath);
+        var hasHttpSources = hasTypeScriptSources
+            || sourcePaths.Any(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase));
         var hasRustSources = sourcePaths.Any(path => path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase));
         var hasBackendEndpointSources = hasRustSources
             || sourcePaths.Any(path => path.EndsWith(".go", StringComparison.OrdinalIgnoreCase));
@@ -734,7 +735,7 @@ public partial class IndexingPipeline
                 successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, ct)
             : [];
         typeScriptReplacementPaths.AddRange(endpointSlices);
-        IReadOnlyList<string> tauriSlices = hasRustSources || typeScriptScope.Any(IsTauriConfiguration)
+        IReadOnlyList<string> tauriSlices = hasRustSources || hasTypeScriptSources || typeScriptScope.Any(IsTauriConfiguration)
             ? await PrepareTauriBindingsAsync(repositoryName, rootPath, typeScriptScope, buffer,
                 successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
                 deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, ct)

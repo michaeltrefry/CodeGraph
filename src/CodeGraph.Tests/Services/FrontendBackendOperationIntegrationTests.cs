@@ -21,6 +21,47 @@ namespace CodeGraph.Tests.Services;
 public sealed class FrontendBackendOperationIntegrationTests
 {
     [Fact]
+    public async Task FrontendOnlyTauriEvents_ConfigDeletionRemovesBindings_AndMatchesFreshGraph()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-tauri-event-config-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(root, "src-tauri"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "package.json"), """{"name":"event-fixture"}""");
+            File.WriteAllText(Path.Combine(root, "src-tauri", "Cargo.toml"), "[package]\nname=\"event-fixture\"\nversion=\"0.1.0\"\n");
+            var configuration = Path.Combine(root, "src-tauri", "tauri.conf.json");
+            File.WriteAllText(configuration, """{"identifier":"test.events","build":{"frontendDist":"../dist"}}""");
+            File.WriteAllText(Path.Combine(root, "App.jsx"), """
+                import {emit,listen} from '@tauri-apps/api/event';
+                export function App(){listen('progress',()=>{});emit('progress',{});return <main/>;}
+                """);
+            var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var store = new InMemoryGraphStore();
+            IndexingPipeline Pipeline(InMemoryGraphStore graph) => new(graph, [], Options.Create(new IndexingOptions()),
+                new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            Task Index() => Pipeline(store).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            await Index();
+            store.Nodes.ShouldContain(node => node.Label == NodeLabel.Event
+                && Convert.ToString(node.Properties.GetValueOrDefault("extraction_owner")) == "tauri");
+            File.Delete(configuration);
+            await Index();
+            store.Nodes.ShouldNotContain(node => Convert.ToString(node.Properties.GetValueOrDefault("extraction_owner")) == "tauri");
+            store.Edges.ShouldNotContain(edge => Convert.ToString(edge.Properties.GetValueOrDefault("extraction_owner")) == "tauri");
+            var fresh = new InMemoryGraphStore();
+            await Pipeline(fresh).IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            ExtractionSnapshot(store).ShouldBe(ExtractionSnapshot(fresh));
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task TwoLazyFactoriesRenderingOneExport_PersistOneStableRenderFact()
     {
         var root = Path.Combine(Path.GetTempPath(), $"codegraph-lazy-render-refresh-{Guid.NewGuid():N}");
