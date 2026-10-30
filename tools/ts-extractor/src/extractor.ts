@@ -6,6 +6,7 @@ import {
   SyntaxKind,
   ObjectLiteralExpression,
   Type,
+  ts,
 } from 'ts-morph';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -121,9 +122,13 @@ function extractProjectCore(repositoryName: string, rootPath: string, tsconfigPa
     try {
       const text = reader.read(f, true);
       if (text === undefined) { complete = false; continue; }
-      project.createSourceFile(f, text);
+      // Reserve parse/source retention before the compiler allocates the next file. Count raw
+      // compiler nodes immediately afterwards, before another file or ts-morph wrappers accumulate.
+      work.reserveSource(text.length);
+      const source=project.createSourceFile(f, text); const pending: ts.Node[]=[source.compilerNode];
+      while (pending.length) { const node=pending.pop()!; work.retainAstNode(); ts.forEachChild(node,child=>{pending.push(child);}); }
     }
-    catch (error) { complete = false; diag(`sourceRead: ${path.relative(rootPath, f)}: ${String(error)}`); }
+    catch (error) { if ((error as {code?:string}).code === 'extraction_work_incomplete') throw error; complete = false; diag(`sourceRead: ${path.relative(rootPath, f)}: ${String(error)}`); }
   }
   if (scope) for (const file of scope.absoluteFiles(relative => /(?:^|\/)(?:package|[tj]sconfig[^/]*)\.json$/.test(relative))) {
     try {
@@ -164,12 +169,12 @@ function extractProjectCore(repositoryName: string, rootPath: string, tsconfigPa
     reader,
   );
   if (!reader.complete) return refused();
-  nodes.push(...workspaceResolution.nodes);
-  edges.push(...workspaceResolution.edges);
-  workspacePackages.push(...workspaceResolution.workspacePackages);
-  resolvedImports.push(...workspaceResolution.resolvedImports);
-  unresolvedImports.push(...workspaceResolution.unresolvedImports);
-  diagnostics.push(...workspaceResolution.diagnostics);
+  for (const node of workspaceResolution.nodes) { work.reserveOutput('node',node.qualifiedName.length+node.name.length+node.filePath.length); nodes.push(node); }
+  for (const edge of workspaceResolution.edges) { work.reserveOutput('edge',edge.sourceQN.length+edge.targetQN.length); edges.push(edge); }
+  for (const item of workspaceResolution.workspacePackages) { work.reserveOutput('metadata',item.name.length+item.qualifiedName.length+item.rootPath.length); workspacePackages.push(item); }
+  for (const item of workspaceResolution.resolvedImports) { work.reserveOutput('metadata',item.fileQN.length+item.importedNamespace.length); resolvedImports.push(item); }
+  for (const item of workspaceResolution.unresolvedImports) { work.reserveOutput('metadata',item.fileQN.length+item.importedNamespace.length); unresolvedImports.push(item); }
+  for (const message of workspaceResolution.diagnostics) { work.text(message); diagnostics.push(message); }
   diag(`workspaceResolution: ${workspaceResolution.resolvedImports.length} imports in ${Date.now() - t0}ms`);
 
 
@@ -192,10 +197,10 @@ function extractProjectCore(repositoryName: string, rootPath: string, tsconfigPa
     const fileT0 = Date.now();
     const fileQN = `${repositoryName}:${filePath}`;
 
-    extractImports(sourceFile, fileQN, unresolvedImports);
-    extractClasses(sourceFile, repositoryName, filePath, nodes, edges, typeRoots);
-    extractInterfaces(sourceFile, filePath, nodes);
-    extractEnums(sourceFile, filePath, nodes);
+    extractImports(sourceFile, fileQN, unresolvedImports, work);
+    extractClasses(sourceFile, repositoryName, filePath, nodes, edges, typeRoots, work);
+    extractInterfaces(sourceFile, filePath, nodes, work);
+    extractEnums(sourceFile, filePath, nodes, work);
 
     const fileMs = Date.now() - fileT0;
     filesProcessed++;
@@ -218,10 +223,30 @@ function extractProjectCore(repositoryName: string, rootPath: string, tsconfigPa
   complete &&= httpCoverage.complete;
   analyzeTauri(semantic, nodes, edges, diag);
   semantic.reconcilePackageExports(nodes);
+  // Reserve grouping/key/evidence copies before canonicalization, including singleton facts.
+  // This also bounds recursive canonical metadata depth before its implementation is invoked.
+  const reserveProperties = (properties: unknown): void => {
+    const pending: Array<{value:unknown;depth:number}>=[{value:properties,depth:0}];
+    while(pending.length) {
+      const {value,depth}=pending.pop()!; work.checkDepth(depth,64);
+      if(typeof value==='string') { work.charge(value.length*6+2); continue; }
+      if(Array.isArray(value)) { work.charge(value.length+1); for(const item of value) pending.push({value:item,depth:depth+1}); continue; }
+      if(value!==null && typeof value==='object') {
+        const keys=Object.keys(value); work.charge(keys.length+1);
+        for(const key of keys) { work.charge(key.length*6+4); pending.push({value:(value as Record<string,unknown>)[key],depth:depth+1}); }
+      } else work.charge(16);
+    }
+  };
+  const quotedUnits = (value:string):number => {
+    work.charge(value.length+1); let units=2;
+    for(let index=0;index<value.length;index++) { const code=value.charCodeAt(index); units+=code<32?6:code===34||code===92?2:1; }
+    return units;
+  };
+  for(const edge of edges) { work.reserveOutput('metadata',quotedUnits(edge.sourceQN)+quotedUnits(edge.targetQN)+quotedUnits(edge.type)+4); reserveProperties(edge.properties); }
   const canonicalEdges = canonicalExtractionEdges(edges);
-  edges.splice(0, edges.length, ...canonicalEdges);
-  for (const node of nodes) node.properties.extraction_owner = 'typescript';
-  for (const edge of edges) edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
+  work.charge(canonicalEdges.length+1); for(let index=0;index<canonicalEdges.length;index++) edges[index]=canonicalEdges[index]; edges.length=canonicalEdges.length;
+  for (const node of nodes) { work.reserveOutput('metadata',32); node.properties.extraction_owner = 'typescript'; }
+  for (const edge of edges) { work.reserveOutput('metadata',32); const keys=Object.keys(edge.properties??{}); work.charge(keys.length*8+1); edge.properties = { ...edge.properties, extraction_owner: 'typescript' }; }
 
   const screenSelections = edges.filter(edge => edge.type === 'RENDERS').flatMap(edge =>
     Array.isArray(edge.properties?.screen_selections) ? edge.properties!.screen_selections as Record<string, unknown>[] :
@@ -264,8 +289,11 @@ function extractImports(
   sourceFile: SourceFile,
   fileQN: string,
   unresolvedImports: UnresolvedImportDto[],
+  work: ExtractionWorkBudget,
 ): void {
+  work.charge(sourceFile.compilerNode.statements.length + 1);
   for (const importDecl of sourceFile.getImportDeclarations()) {
+    work.reserveOutput('metadata',fileQN.length+importDecl.getModuleSpecifier().getFullWidth());
     unresolvedImports.push({
       fileQN,
       importedNamespace: importDecl.getModuleSpecifierValue(),
@@ -282,9 +310,11 @@ function extractClasses(
   nodes: GraphNodeDto[],
   edges: PendingEdgeDto[],
   typeRoots: string[],
+  work: ExtractionWorkBudget,
 ): void {
+  work.charge(sourceFile.compilerNode.statements.length + 1);
   for (const cls of sourceFile.getClasses()) {
-    extractClass(cls, repositoryName, filePath, nodes, edges, typeRoots);
+    extractClass(cls, repositoryName, filePath, nodes, edges, typeRoots, work);
   }
 }
 
@@ -295,12 +325,16 @@ function extractClass(
   nodes: GraphNodeDto[],
   edges: PendingEdgeDto[],
   typeRoots: string[],
+  work: ExtractionWorkBudget,
 ): void {
+  work.reserveOutput('node',filePath.length+(cls.getNameNode()?.getFullWidth()??16));
+  work.charge(cls.compilerNode.members.length + cls.getFullWidth() + 1);
   const name = cls.getName() ?? (cls.isDefaultExport() ? 'default' : undefined);
   if (!name) return;
 
   const qn = buildQN(filePath, name);
-  const decoratorNames = cls.getDecorators().map(d => d.getName());
+  work.charge((cls.compilerNode.modifiers?.length??0)+1);
+  const decoratorNames = cls.getDecorators().map(d => {work.charge(d.getFullWidth()+1); return d.getName();});
   const isComponent = decoratorNames.includes('Component');
   const isInjectable = decoratorNames.includes('Injectable');
   const isNgModule = decoratorNames.includes('NgModule');
@@ -320,7 +354,7 @@ function extractClass(
     properties.framework = 'angular';
     const dec = cls.getDecorator('Component');
     if (dec) {
-      const args = dec.getArguments();
+      work.charge(dec.getFullWidth()+1); const args = dec.getArguments();
       if (args.length > 0 && Node.isObjectLiteralExpression(args[0])) {
         const obj = args[0] as ObjectLiteralExpression;
         const selector = getStringProperty(obj, 'selector');
@@ -343,18 +377,22 @@ function extractClass(
 
   // INHERITS
   const base = cls.getExtends();
-  if (base) edges.push({ sourceQN: qn, targetQN: base.getExpression().getText(), type: 'INHERITS' });
+  if (base) { work.reserveOutput('edge', qn.length + base.getFullWidth()); edges.push({ sourceQN: qn, targetQN: base.getExpression().getText(), type: 'INHERITS' }); }
 
   // IMPLEMENTS
+  work.charge((cls.compilerNode.heritageClauses?.length??0)+1);
   for (const iface of cls.getImplements()) {
+    work.reserveOutput('edge', qn.length + iface.getFullWidth());
     const ifaceName = iface.getExpression().getText();
     edges.push({ sourceQN: qn, targetQN: ifaceName, type: 'IMPLEMENTS' });
   }
 
   // Constructor INJECTS
   for (const ctor of cls.getConstructors()) {
+    work.charge(ctor.compilerNode.parameters.length + 1);
     for (const param of ctor.getParameters()) {
-      const typeName = renderTypeText(param.getType(), typeRoots);
+      work.reserveOutput('edge',qn.length+param.getFullWidth());
+      const typeName = renderTypeText(param.getType(), typeRoots, work);
       if (isFrameworkType(typeName) || PRIMITIVE_TYPES.has(typeName)) continue;
       edges.push({
         sourceQN: qn,
@@ -366,12 +404,15 @@ function extractClass(
   }
 
   // inject() function INJECTS (modern Angular pattern)
+  work.charge(cls.compilerNode.members.length+1);
   for (const prop of cls.getProperties()) {
     const init = prop.getInitializer();
     if (!init || !Node.isCallExpression(init)) continue;
+    work.charge(init.getExpression().getFullWidth()+1);
     if (init.getExpression().getText() !== 'inject') continue;
     const args = init.getArguments();
     if (args.length === 0) continue;
+    work.reserveOutput('edge', qn.length+args[0].getFullWidth()+prop.getNameNode().getFullWidth());
     const typeName = args[0].getText();
     if (isFrameworkType(typeName) || PRIMITIVE_TYPES.has(typeName)) continue;
     edges.push({
@@ -384,6 +425,9 @@ function extractClass(
 
   // Methods
   for (const method of cls.getMethods()) {
+    work.reserveOutput('node',filePath.length+qn.length+method.getNameNode().getFullWidth());
+    work.reserveOutput('edge',qn.length*2+method.getNameNode().getFullWidth());
+    work.charge(method.getFullWidth()+method.compilerNode.parameters.length+1);
     const methodName = method.getName();
     const methodQN = `${qn}.${methodName}`;
 
@@ -396,7 +440,7 @@ function extractClass(
       endLine: method.getEndLineNumber(),
       properties: {
         is_async: method.isAsync(),
-        return_type: renderTypeText(method.getReturnType(), typeRoots),
+        return_type: renderTypeText(method.getReturnType(), typeRoots, work),
         parameter_count: method.getParameters().length,
         is_static: method.isStatic(),
       },
@@ -408,16 +452,22 @@ function extractClass(
   }
 
   // Arrow function properties (e.g. searchDomains$ = () => this.httpService.send(...))
+  work.charge(cls.compilerNode.members.length+1);
   for (const prop of cls.getProperties()) {
     const init = prop.getInitializer();
     if (!init) continue;
     // Skip inject() calls — already handled above
+    if(Node.isCallExpression(init)) work.charge(init.getExpression().getFullWidth()+1);
     if (Node.isCallExpression(init) && init.getExpression().getText() === 'inject') continue;
 
     // Check if this property initializer contains any call expressions worth scanning
-    const hasCalls = init.getDescendantsOfKind(SyntaxKind.CallExpression).length > 0;
+    work.charge(init.getFullWidth()+1);
+    let hasCalls=false; const pending: ts.Node[]=[init.compilerNode];
+    while(pending.length) { work.charge(); const node=pending.pop()!; if(node!==init.compilerNode&&ts.isCallExpression(node)){hasCalls=true;break;} ts.forEachChild(node,child=>{pending.push(child);}); }
     if (!hasCalls) continue;
 
+    work.reserveOutput('node',filePath.length+qn.length+prop.getNameNode().getFullWidth());
+    work.reserveOutput('edge',qn.length*2+prop.getNameNode().getFullWidth());
     const propName = prop.getName();
     const propQN = `${qn}.${propName}`;
 
@@ -441,11 +491,14 @@ function extractClass(
   }
 
   // @Input / @Output properties
+  work.charge(cls.compilerNode.members.length+1);
   for (const prop of cls.getProperties()) {
+    work.charge(prop.getFullWidth()+1);
     const hasInput = !!prop.getDecorator('Input');
     const hasOutput = !!prop.getDecorator('Output');
     if (!hasInput && !hasOutput) continue;
-
+    work.reserveOutput('node',filePath.length+qn.length+prop.getNameNode().getFullWidth());
+    work.charge(prop.getFullWidth()+1);
     nodes.push({
       label: 'Property',
       name: prop.getName(),
@@ -456,7 +509,7 @@ function extractClass(
       properties: {
         is_input: hasInput,
         is_output: hasOutput,
-        type: renderTypeText(prop.getType(), typeRoots),
+        type: renderTypeText(prop.getType(), typeRoots, work),
       },
     });
   }
@@ -468,8 +521,12 @@ function extractInterfaces(
   sourceFile: SourceFile,
   filePath: string,
   nodes: GraphNodeDto[],
+  work: ExtractionWorkBudget,
 ): void {
+  work.charge(sourceFile.compilerNode.statements.length+1);
   for (const iface of sourceFile.getInterfaces()) {
+    work.reserveOutput('node',filePath.length+iface.getNameNode().getFullWidth());
+    work.charge(iface.compilerNode.typeParameters?.length??0);
     const name = iface.getName();
     nodes.push({
       label: 'Interface',
@@ -489,8 +546,11 @@ function extractEnums(
   sourceFile: SourceFile,
   filePath: string,
   nodes: GraphNodeDto[],
+  work: ExtractionWorkBudget,
 ): void {
+  work.charge(sourceFile.compilerNode.statements.length+1);
   for (const enumDecl of sourceFile.getEnums()) {
+    work.reserveOutput('node',filePath.length+enumDecl.getNameNode().getFullWidth());
     const name = enumDecl.getName();
     nodes.push({
       label: 'Enum',
@@ -580,8 +640,9 @@ function normalizeAbsolutePath(filePath: string): string {
  * (`../shared/src/index` for a sibling outside it). The text becomes INJECTS targets (stub
  * qualified names) and node properties, which must be identical for every checkout.
  */
-function renderTypeText(type: Type, roots: string[]): string {
-  return relativizeImportPaths(type.getText(), roots);
+function renderTypeText(type: Type, roots: string[], work: ExtractionWorkBudget): string {
+  work.charge(256); const text=type.getText(); work.charge(text.length*6+1);
+  return relativizeImportPaths(text, roots);
 }
 
 export function relativizeImportPaths(text: string, roots: readonly string[]): string {

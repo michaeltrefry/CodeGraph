@@ -52,7 +52,7 @@ export function readIncludedFiles(request: ExtractProjectRequest): string[] | un
 export function buildApp(logsDir: string = defaultLogsDir): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: BODY_LIMIT_BYTES });
 
-  app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 3 }));
+  app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 4 }));
 
   app.post<{ Body: ExtractProjectRequest; Reply: ExtractProjectResponse }>(
     '/extract-project',
