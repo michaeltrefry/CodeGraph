@@ -22,11 +22,41 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   const processedTemplates = new Set<string>();
   const classes: ClassDeclaration[] = [];
   const interfaces: InterfaceDeclaration[] = [];
-  const importsByFile = new Map<import('ts-morph').SourceFile, import('ts-morph').ImportDeclaration[]>();
+  type SourceFile = import('ts-morph').SourceFile;
+  type ImportDeclaration = import('ts-morph').ImportDeclaration;
+  const importsByFile = new Map<SourceFile, ImportDeclaration[]>();
+  const importsByPackage = new Map<SourceFile, Map<string, ImportDeclaration[]>>();
+  const angularFiles = new Set<SourceFile>();
   for (const file of model.files) {
     charge(file.getFullWidth() + 1);
-    classes.push(...file.getClasses()); interfaces.push(...file.getInterfaces()); importsByFile.set(file, file.getImportDeclarations());
+    classes.push(...file.getClasses()); interfaces.push(...file.getInterfaces());
+    const imports = file.getImportDeclarations(); importsByFile.set(file, imports);
+    const packages = new Map<string, ImportDeclaration[]>();
+    for (const imp of imports) {
+      charge(imp.getFullWidth() + 1);
+      const name = imp.getModuleSpecifierValue();
+      const bucket = packages.get(name) ?? []; bucket.push(imp); packages.set(name, bucket);
+      if (name.startsWith('@angular/')) angularFiles.add(file);
+    }
+    importsByPackage.set(file, packages);
   }
+  // Local barrels, provider/config imports and inherited framework types retain
+  // Angular evidence. A React file with no such path never needs framework API scans.
+  const importers = new Map<SourceFile, Set<SourceFile>>();
+  for (const imported of model.imports) {
+    charge(imported.filePath.length + imported.importedNamespace.length + (imported.resolvedFilePath?.length ?? 0) + 1);
+    const file = model.byPath.get(imported.filePath); if (!file) continue;
+    if (imported.importedNamespace.startsWith('@angular/')) angularFiles.add(file);
+    const target = imported.resolvedFilePath ? model.byPath.get(imported.resolvedFilePath) : undefined;
+    if (target) { const parents = importers.get(target) ?? new Set<SourceFile>(); parents.add(file); importers.set(target, parents); }
+  }
+  const angularQueue = [...angularFiles];
+  for (let index = 0; index < angularQueue.length; index++) for (const importer of importers.get(angularQueue[index]) ?? []) {
+    charge();
+    if (!angularFiles.has(importer)) { angularFiles.add(importer); angularQueue.push(importer); }
+  }
+  const apiIdentities = new Map<Node, Map<string, string | undefined>>();
+  const externalIdentities = new Map<Node, ReturnType<SemanticModel['externalReference']>>();
   charge(nodes.length + 1);
   const graphNodes = new Map(nodes.map(node => [node.qualifiedName, node]));
   const tokenQNs = new Map<Node, string>();
@@ -86,20 +116,32 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     nodes.push(value); graphNodes.set(qualifiedName, value);
   }
   function imported(node: Node | undefined, packageName: string): string | undefined {
+    charge();
+    if (!node || packageName.startsWith('@angular/') && !angularFiles.has(node.getSourceFile())) return undefined;
+    const cached = apiIdentities.get(node);
+    if (cached?.has(packageName)) return cached.get(packageName);
     charge(packageName.length + 1);
-    if (!node) return undefined;
-    for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
+    let name: string | undefined;
+    for (const imp of importsByPackage.get(node.getSourceFile())?.get(packageName) ?? []) {
       charge(imp.getFullWidth() + 1);
-      if (imp.getModuleSpecifierValue() !== packageName) continue;
       if (Node.isIdentifier(node)) {
         const item = imp.getNamedImports().find(item => sameSymbol(node, item.getAliasNode() ?? item.getNameNode()));
-        if (item) return item.getName();
+        if (item) { name = item.getName(); break; }
       }
-      if (Node.isPropertyAccessExpression(node) && sameSymbol(node.getExpression(), imp.getNamespaceImport())) return node.getName();
-      if (Node.isQualifiedName(node) && sameSymbol(node.getLeft(), imp.getNamespaceImport())) return node.getRight().getText();
+      if (Node.isPropertyAccessExpression(node) && sameSymbol(node.getExpression(), imp.getNamespaceImport())) { name = node.getName(); break; }
+      if (Node.isQualifiedName(node) && sameSymbol(node.getLeft(), imp.getNamespaceImport())) { name = node.getRight().getText(); break; }
     }
-    return undefined;
+    if (!name && angularFiles.has(node.getSourceFile())) {
+      // Reuse admitted package provenance for named/namespace barrels and const
+      // aliases; spelling alone cannot identify a framework API.
+      if (!externalIdentities.has(node)) externalIdentities.set(node, model.externalReference(node));
+      const external = externalIdentities.get(node)?.properties;
+      if (external?.import_path === packageName && !external.member_path && typeof external.export_name === 'string') name = external.export_name;
+    }
+    const identities = cached ?? new Map<string, string | undefined>(); identities.set(packageName, name); apiIdentities.set(node, identities);
+    return name;
   }
+
   function decorator(node: ClassDeclaration, name: string): ObjectLiteralExpression | undefined {
     const dec = node.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === name);
     const value = reference(dec?.getArguments()[0]);
@@ -177,8 +219,14 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (value && value !== node && (Node.isVariableDeclaration(value) || Node.isPropertyDeclaration(value))) return string(value.getInitializer(), seen);
     return undefined;
   }
+  const interfaceTypes = new Map<Node, InterfaceDeclaration | undefined>();
   function typeInterface(node: Node | undefined): InterfaceDeclaration | undefined {
+    charge();
     if (!node) return undefined;
+    if (interfaceTypes.has(node)) return interfaceTypes.get(node);
+    const value = resolveInterfaceType(node); interfaceTypes.set(node, value); return value;
+  }
+  function resolveInterfaceType(node: Node): InterfaceDeclaration | undefined {
     const value = reference(node);
     if (value && Node.isInterfaceDeclaration(value)) return value;
     if (Node.isTypeReference(node) && ['InjectionToken', 'ProviderToken', 'Type'].includes(imported(node.getTypeName(), '@angular/core') ?? '')) return typeInterface(node.getTypeArguments()[0]);
@@ -362,28 +410,29 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   // Each top-level provider configuration gets its own injector table, even when two
   // bootstraps share a source file. REGISTERS remains owned by the source file slice.
   const configScopes = new Map<Node, ProviderScope>();
-  function configScope(owner: Node): ProviderScope {
+  const configuredScopes = new Set<Node>();
+  function configScope(owner: Node, providers?: Node): ProviderScope {
     let value = configScopes.get(owner);
     if (!value) { value = makeScope(owner); value.qn = model.fileQN(owner); configScopes.set(owner, value); }
+    if (providers && !configuredScopes.has(owner)) { configuredScopes.add(owner); collectProviders(providers, value); }
     return value;
   }
-  for (const file of model.files) for (const declaration of file.getVariableDeclarations()) {
+  for (const file of model.files) if (angularFiles.has(file)) for (const declaration of file.getVariableDeclarations()) {
     const initial = declaration.getInitializer();
     if (!initial || declaration.getFirstAncestorByKind(SyntaxKind.ClassDeclaration)) continue;
-    if (Node.isObjectLiteralExpression(initial) && property(initial, 'providers')) collectProviders(property(initial, 'providers'), configScope(declaration));
-    else if (Node.isArrayLiteralExpression(initial) && initial.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression).some(object => property(object, 'provide'))) collectProviders(initial, configScope(declaration));
+    if (Node.isObjectLiteralExpression(initial) && property(initial, 'providers')) configScope(declaration, property(initial, 'providers'));
+    else if (Node.isArrayLiteralExpression(initial) && initial.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression).some(object => property(object, 'provide'))) configScope(declaration, initial);
   }
-  for (const file of model.files) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+  for (const file of model.files) if (angularFiles.has(file)) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     if (imported(call.getExpression(), '@angular/platform-browser') !== 'bootstrapApplication') continue;
     const component = reference(call.getArguments()[0]);
     if (!component || !Node.isClassDeclaration(component)) continue;
     const config = call.getArguments()[1];
     const resolved = reference(config);
     const declaration = config?.getSymbol()?.getDeclarations().find(Node.isVariableDeclaration) ?? resolved?.getFirstAncestorByKind(SyntaxKind.VariableDeclaration);
-    const value = configScope(declaration ?? config ?? call);
+    const value = configScope(declaration ?? config ?? call, resolved && Node.isObjectLiteralExpression(resolved) ? property(resolved, 'providers') : undefined);
     if (!declaration) value.identity = `${model.fileQN(call)}#bootstrap:${qn(component)}`;
-    if (resolved && Node.isObjectLiteralExpression(resolved) && !declaration) collectProviders(property(resolved, 'providers'), value);
-    else if (config && (!resolved || !Node.isObjectLiteralExpression(resolved))) { value.uncertain = true; diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`); }
+    if (config && (!resolved || !Node.isObjectLiteralExpression(resolved))) { value.uncertain = true; diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`); }
     scopeForClass(component).parents.push(value);
   }
   const modules = angular.filter(item => item.kind === 'NgModule').map(item => item.declaration);
@@ -603,14 +652,33 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
       }
     }
   }
+  const fieldDeclarations = new Map<Node, Node | undefined>();
   function fieldDeclaration(expression: Node): Node | undefined {
+    charge();
+    if (fieldDeclarations.has(expression)) return fieldDeclarations.get(expression);
+    const declaration = declaredField(expression); fieldDeclarations.set(expression, declaration); return declaration;
+  }
+  function declaredField(expression: Node): Node | undefined {
     if (Node.isPropertyAccessExpression(expression) && expression.getExpression().getKind() === SyntaxKind.ThisKeyword) {
       const cls = classOf(expression);
       return cls ? classField(cls, expression.getName()) : undefined;
     }
-    return expression.getSymbol()?.getDeclarations().find(declaration => model.byPath.has(model.relative(declaration)) &&
-      (Node.isParameterDeclaration(declaration) || Node.isPropertyDeclaration(declaration) || Node.isVariableDeclaration(declaration)));
+    const declarations = expression.getSymbol()?.getDeclarations() ?? []; charge(declarations.length + 1);
+    for (const declaration of declarations) {
+      if (!model.byPath.has(model.relative(declaration))) continue;
+      if (Node.isParameterDeclaration(declaration) || Node.isPropertyDeclaration(declaration) || Node.isVariableDeclaration(declaration)) return declaration;
+      if (Node.isImportSpecifier(declaration) || Node.isImportClause(declaration)) {
+        const imp = declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+        const file = model.module(expression, imp.getModuleSpecifierValue());
+        const target = file ? model.exported(file, Node.isImportSpecifier(declaration) ? declaration.getName() : 'default') : undefined;
+        // Preserve the declared type rather than resolving its initializer: a JS caller
+        // can use a TS-exported interface-typed value without importing Angular itself.
+        if (target && Node.isVariableDeclaration(target)) return target;
+      }
+    }
+    return undefined;
   }
+
   function typeNode(declaration: Node | undefined): Node | undefined { return declaration && (Node.isPropertyDeclaration(declaration) || Node.isParameterDeclaration(declaration) || Node.isVariableDeclaration(declaration)) ? declaration.getTypeNode() : undefined; }
   function initialNode(declaration: Node | undefined): Node | undefined { return declaration && (Node.isPropertyDeclaration(declaration) || Node.isParameterDeclaration(declaration) || Node.isVariableDeclaration(declaration)) ? declaration.getInitializer() : undefined; }
   function frameworkType(expression: Node, packageName: string, expected: string, seen = new Set<Node>()): boolean {
@@ -622,14 +690,20 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (initial && Node.isCallExpression(initial) && imported(initial.getExpression(), '@angular/core') === 'inject' && imported(initial.getArguments()[0], packageName) === expected) return true;
     return !!initial && initial !== expression && frameworkType(initial, packageName, expected, seen);
   }
+  const injectionCalls = new Map<Node, boolean>();
   function injectionCall(call: Node): boolean {
-    if (!Node.isCallExpression(call)) return false;
+    charge();
+    if (!Node.isCallExpression(call) || !angularFiles.has(call.getSourceFile())) return false;
+    if (injectionCalls.has(call)) return injectionCalls.get(call)!;
+    const injected = isInjectionCall(call); injectionCalls.set(call, injected); return injected;
+  }
+  function isInjectionCall(call: import('ts-morph').CallExpression): boolean {
     if (imported(call.getExpression(), '@angular/core') === 'inject') return true;
     const expression = call.getExpression();
     return Node.isPropertyAccessExpression(expression) && expression.getName() === 'get' && frameworkType(expression.getExpression(), '@angular/core', 'Injector');
   }
   // Render context must be established before any child injection is resolved.
-  for (const cls of classes) for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+  for (const cls of classes) if (angularFiles.has(cls.getSourceFile())) for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     if (classOf(call) !== cls) continue;
     const expression = call.getExpression();
     let dynamic: string | undefined;
@@ -742,7 +816,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
       const initial = field.getInitializer();
       if (initial && injectionCall(initial) && Node.isCallExpression(initial)) sites.push({ name: field.getName(), expression: initial.getArguments()[0], contract: typeInterface(field.getTypeNode()) ?? typeInterface(initial.getTypeArguments()[0]) });
     }
-    for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (angularFiles.has(cls.getSourceFile())) for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       if (classOf(call) !== cls || !injectionCall(call) || Node.isPropertyDeclaration(call.getParent())) continue;
       sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
     }

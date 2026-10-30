@@ -49,12 +49,54 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     const classes = [];
     const interfaces = [];
     const importsByFile = new Map();
+    const importsByPackage = new Map();
+    const angularFiles = new Set();
     for (const file of model.files) {
         charge(file.getFullWidth() + 1);
         classes.push(...file.getClasses());
         interfaces.push(...file.getInterfaces());
-        importsByFile.set(file, file.getImportDeclarations());
+        const imports = file.getImportDeclarations();
+        importsByFile.set(file, imports);
+        const packages = new Map();
+        for (const imp of imports) {
+            charge(imp.getFullWidth() + 1);
+            const name = imp.getModuleSpecifierValue();
+            const bucket = packages.get(name) ?? [];
+            bucket.push(imp);
+            packages.set(name, bucket);
+            if (name.startsWith('@angular/'))
+                angularFiles.add(file);
+        }
+        importsByPackage.set(file, packages);
     }
+    // Local barrels, provider/config imports and inherited framework types retain
+    // Angular evidence. A React file with no such path never needs framework API scans.
+    const importers = new Map();
+    for (const imported of model.imports) {
+        charge(imported.filePath.length + imported.importedNamespace.length + (imported.resolvedFilePath?.length ?? 0) + 1);
+        const file = model.byPath.get(imported.filePath);
+        if (!file)
+            continue;
+        if (imported.importedNamespace.startsWith('@angular/'))
+            angularFiles.add(file);
+        const target = imported.resolvedFilePath ? model.byPath.get(imported.resolvedFilePath) : undefined;
+        if (target) {
+            const parents = importers.get(target) ?? new Set();
+            parents.add(file);
+            importers.set(target, parents);
+        }
+    }
+    const angularQueue = [...angularFiles];
+    for (let index = 0; index < angularQueue.length; index++)
+        for (const importer of importers.get(angularQueue[index]) ?? []) {
+            charge();
+            if (!angularFiles.has(importer)) {
+                angularFiles.add(importer);
+                angularQueue.push(importer);
+            }
+        }
+    const apiIdentities = new Map();
+    const externalIdentities = new Map();
     charge(nodes.length + 1);
     const graphNodes = new Map(nodes.map(node => [node.qualifiedName, node]));
     const tokenQNs = new Map();
@@ -127,24 +169,45 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         graphNodes.set(qualifiedName, value);
     }
     function imported(node, packageName) {
-        charge(packageName.length + 1);
-        if (!node)
+        charge();
+        if (!node || packageName.startsWith('@angular/') && !angularFiles.has(node.getSourceFile()))
             return undefined;
-        for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
+        const cached = apiIdentities.get(node);
+        if (cached?.has(packageName))
+            return cached.get(packageName);
+        charge(packageName.length + 1);
+        let name;
+        for (const imp of importsByPackage.get(node.getSourceFile())?.get(packageName) ?? []) {
             charge(imp.getFullWidth() + 1);
-            if (imp.getModuleSpecifierValue() !== packageName)
-                continue;
             if (ts_morph_1.Node.isIdentifier(node)) {
                 const item = imp.getNamedImports().find(item => (0, semanticModel_1.sameSymbol)(node, item.getAliasNode() ?? item.getNameNode()));
-                if (item)
-                    return item.getName();
+                if (item) {
+                    name = item.getName();
+                    break;
+                }
             }
-            if (ts_morph_1.Node.isPropertyAccessExpression(node) && (0, semanticModel_1.sameSymbol)(node.getExpression(), imp.getNamespaceImport()))
-                return node.getName();
-            if (ts_morph_1.Node.isQualifiedName(node) && (0, semanticModel_1.sameSymbol)(node.getLeft(), imp.getNamespaceImport()))
-                return node.getRight().getText();
+            if (ts_morph_1.Node.isPropertyAccessExpression(node) && (0, semanticModel_1.sameSymbol)(node.getExpression(), imp.getNamespaceImport())) {
+                name = node.getName();
+                break;
+            }
+            if (ts_morph_1.Node.isQualifiedName(node) && (0, semanticModel_1.sameSymbol)(node.getLeft(), imp.getNamespaceImport())) {
+                name = node.getRight().getText();
+                break;
+            }
         }
-        return undefined;
+        if (!name && angularFiles.has(node.getSourceFile())) {
+            // Reuse admitted package provenance for named/namespace barrels and const
+            // aliases; spelling alone cannot identify a framework API.
+            if (!externalIdentities.has(node))
+                externalIdentities.set(node, model.externalReference(node));
+            const external = externalIdentities.get(node)?.properties;
+            if (external?.import_path === packageName && !external.member_path && typeof external.export_name === 'string')
+                name = external.export_name;
+        }
+        const identities = cached ?? new Map();
+        identities.set(packageName, name);
+        apiIdentities.set(node, identities);
+        return name;
     }
     function decorator(node, name) {
         const dec = node.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === name);
@@ -246,9 +309,18 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             return string(value.getInitializer(), seen);
         return undefined;
     }
+    const interfaceTypes = new Map();
     function typeInterface(node) {
+        charge();
         if (!node)
             return undefined;
+        if (interfaceTypes.has(node))
+            return interfaceTypes.get(node);
+        const value = resolveInterfaceType(node);
+        interfaceTypes.set(node, value);
+        return value;
+    }
+    function resolveInterfaceType(node) {
         const value = reference(node);
         if (value && ts_morph_1.Node.isInterfaceDeclaration(value))
             return value;
@@ -516,46 +588,51 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     // Each top-level provider configuration gets its own injector table, even when two
     // bootstraps share a source file. REGISTERS remains owned by the source file slice.
     const configScopes = new Map();
-    function configScope(owner) {
+    const configuredScopes = new Set();
+    function configScope(owner, providers) {
         let value = configScopes.get(owner);
         if (!value) {
             value = makeScope(owner);
             value.qn = model.fileQN(owner);
             configScopes.set(owner, value);
         }
+        if (providers && !configuredScopes.has(owner)) {
+            configuredScopes.add(owner);
+            collectProviders(providers, value);
+        }
         return value;
     }
     for (const file of model.files)
-        for (const declaration of file.getVariableDeclarations()) {
-            const initial = declaration.getInitializer();
-            if (!initial || declaration.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ClassDeclaration))
-                continue;
-            if (ts_morph_1.Node.isObjectLiteralExpression(initial) && property(initial, 'providers'))
-                collectProviders(property(initial, 'providers'), configScope(declaration));
-            else if (ts_morph_1.Node.isArrayLiteralExpression(initial) && initial.getDescendantsOfKind(ts_morph_1.SyntaxKind.ObjectLiteralExpression).some(object => property(object, 'provide')))
-                collectProviders(initial, configScope(declaration));
-        }
-    for (const file of model.files)
-        for (const call of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
-            if (imported(call.getExpression(), '@angular/platform-browser') !== 'bootstrapApplication')
-                continue;
-            const component = reference(call.getArguments()[0]);
-            if (!component || !ts_morph_1.Node.isClassDeclaration(component))
-                continue;
-            const config = call.getArguments()[1];
-            const resolved = reference(config);
-            const declaration = config?.getSymbol()?.getDeclarations().find(ts_morph_1.Node.isVariableDeclaration) ?? resolved?.getFirstAncestorByKind(ts_morph_1.SyntaxKind.VariableDeclaration);
-            const value = configScope(declaration ?? config ?? call);
-            if (!declaration)
-                value.identity = `${model.fileQN(call)}#bootstrap:${qn(component)}`;
-            if (resolved && ts_morph_1.Node.isObjectLiteralExpression(resolved) && !declaration)
-                collectProviders(property(resolved, 'providers'), value);
-            else if (config && (!resolved || !ts_morph_1.Node.isObjectLiteralExpression(resolved))) {
-                value.uncertain = true;
-                diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`);
+        if (angularFiles.has(file))
+            for (const declaration of file.getVariableDeclarations()) {
+                const initial = declaration.getInitializer();
+                if (!initial || declaration.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ClassDeclaration))
+                    continue;
+                if (ts_morph_1.Node.isObjectLiteralExpression(initial) && property(initial, 'providers'))
+                    configScope(declaration, property(initial, 'providers'));
+                else if (ts_morph_1.Node.isArrayLiteralExpression(initial) && initial.getDescendantsOfKind(ts_morph_1.SyntaxKind.ObjectLiteralExpression).some(object => property(object, 'provide')))
+                    configScope(declaration, initial);
             }
-            scopeForClass(component).parents.push(value);
-        }
+    for (const file of model.files)
+        if (angularFiles.has(file))
+            for (const call of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
+                if (imported(call.getExpression(), '@angular/platform-browser') !== 'bootstrapApplication')
+                    continue;
+                const component = reference(call.getArguments()[0]);
+                if (!component || !ts_morph_1.Node.isClassDeclaration(component))
+                    continue;
+                const config = call.getArguments()[1];
+                const resolved = reference(config);
+                const declaration = config?.getSymbol()?.getDeclarations().find(ts_morph_1.Node.isVariableDeclaration) ?? resolved?.getFirstAncestorByKind(ts_morph_1.SyntaxKind.VariableDeclaration);
+                const value = configScope(declaration ?? config ?? call, resolved && ts_morph_1.Node.isObjectLiteralExpression(resolved) ? property(resolved, 'providers') : undefined);
+                if (!declaration)
+                    value.identity = `${model.fileQN(call)}#bootstrap:${qn(component)}`;
+                if (config && (!resolved || !ts_morph_1.Node.isObjectLiteralExpression(resolved))) {
+                    value.uncertain = true;
+                    diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`);
+                }
+                scopeForClass(component).parents.push(value);
+            }
     const modules = angular.filter(item => item.kind === 'NgModule').map(item => item.declaration);
     const moduleSet = new Set(modules);
     function moduleReaches(root, target, seen = new Set()) {
@@ -889,13 +966,38 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             }
         }
     }
+    const fieldDeclarations = new Map();
     function fieldDeclaration(expression) {
+        charge();
+        if (fieldDeclarations.has(expression))
+            return fieldDeclarations.get(expression);
+        const declaration = declaredField(expression);
+        fieldDeclarations.set(expression, declaration);
+        return declaration;
+    }
+    function declaredField(expression) {
         if (ts_morph_1.Node.isPropertyAccessExpression(expression) && expression.getExpression().getKind() === ts_morph_1.SyntaxKind.ThisKeyword) {
             const cls = classOf(expression);
             return cls ? classField(cls, expression.getName()) : undefined;
         }
-        return expression.getSymbol()?.getDeclarations().find(declaration => model.byPath.has(model.relative(declaration)) &&
-            (ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration)));
+        const declarations = expression.getSymbol()?.getDeclarations() ?? [];
+        charge(declarations.length + 1);
+        for (const declaration of declarations) {
+            if (!model.byPath.has(model.relative(declaration)))
+                continue;
+            if (ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration))
+                return declaration;
+            if (ts_morph_1.Node.isImportSpecifier(declaration) || ts_morph_1.Node.isImportClause(declaration)) {
+                const imp = declaration.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ImportDeclaration);
+                const file = model.module(expression, imp.getModuleSpecifierValue());
+                const target = file ? model.exported(file, ts_morph_1.Node.isImportSpecifier(declaration) ? declaration.getName() : 'default') : undefined;
+                // Preserve the declared type rather than resolving its initializer: a JS caller
+                // can use a TS-exported interface-typed value without importing Angular itself.
+                if (target && ts_morph_1.Node.isVariableDeclaration(target))
+                    return target;
+            }
+        }
+        return undefined;
     }
     function typeNode(declaration) { return declaration && (ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration)) ? declaration.getTypeNode() : undefined; }
     function initialNode(declaration) { return declaration && (ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration)) ? declaration.getInitializer() : undefined; }
@@ -912,9 +1014,18 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             return true;
         return !!initial && initial !== expression && frameworkType(initial, packageName, expected, seen);
     }
+    const injectionCalls = new Map();
     function injectionCall(call) {
-        if (!ts_morph_1.Node.isCallExpression(call))
+        charge();
+        if (!ts_morph_1.Node.isCallExpression(call) || !angularFiles.has(call.getSourceFile()))
             return false;
+        if (injectionCalls.has(call))
+            return injectionCalls.get(call);
+        const injected = isInjectionCall(call);
+        injectionCalls.set(call, injected);
+        return injected;
+    }
+    function isInjectionCall(call) {
         if (imported(call.getExpression(), '@angular/core') === 'inject')
             return true;
         const expression = call.getExpression();
@@ -922,29 +1033,30 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     }
     // Render context must be established before any child injection is resolved.
     for (const cls of classes)
-        for (const call of cls.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
-            if (classOf(call) !== cls)
-                continue;
-            const expression = call.getExpression();
-            let dynamic;
-            if (imported(expression, '@angular/core') === 'createComponent')
-                dynamic = 'createComponent';
-            if (ts_morph_1.Node.isPropertyAccessExpression(expression)) {
-                if (expression.getName() === 'createComponent' && frameworkType(expression.getExpression(), '@angular/core', 'ViewContainerRef'))
-                    dynamic = 'viewContainer.createComponent';
-                if (expression.getName() === 'open' && frameworkType(expression.getExpression(), '@angular/material/dialog', 'MatDialog'))
-                    dynamic = 'dialog.open';
-                if (expression.getName() === 'openFromComponent' && frameworkType(expression.getExpression(), '@angular/material/snack-bar', 'MatSnackBar'))
-                    dynamic = 'snackbar.openFromComponent';
+        if (angularFiles.has(cls.getSourceFile()))
+            for (const call of cls.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
+                if (classOf(call) !== cls)
+                    continue;
+                const expression = call.getExpression();
+                let dynamic;
+                if (imported(expression, '@angular/core') === 'createComponent')
+                    dynamic = 'createComponent';
+                if (ts_morph_1.Node.isPropertyAccessExpression(expression)) {
+                    if (expression.getName() === 'createComponent' && frameworkType(expression.getExpression(), '@angular/core', 'ViewContainerRef'))
+                        dynamic = 'viewContainer.createComponent';
+                    if (expression.getName() === 'open' && frameworkType(expression.getExpression(), '@angular/material/dialog', 'MatDialog'))
+                        dynamic = 'dialog.open';
+                    if (expression.getName() === 'openFromComponent' && frameworkType(expression.getExpression(), '@angular/material/snack-bar', 'MatSnackBar'))
+                        dynamic = 'snackbar.openFromComponent';
+                }
+                if (dynamic) {
+                    const target = reference(call.getArguments()[0]);
+                    if (target && ts_morph_1.Node.isClassDeclaration(target) && componentSet.has(target))
+                        render(cls, target, model.relative(cls), { render_kind: dynamic, owning_callable: model.owner(call) });
+                    else
+                        diagnostic(`angularDynamicComponent: unresolved ${dynamic} in ${model.relative(cls)}`);
+                }
             }
-            if (dynamic) {
-                const target = reference(call.getArguments()[0]);
-                if (target && ts_morph_1.Node.isClassDeclaration(target) && componentSet.has(target))
-                    render(cls, target, model.relative(cls), { render_kind: dynamic, owning_callable: model.owner(call) });
-                else
-                    diagnostic(`angularDynamicComponent: unresolved ${dynamic} in ${model.relative(cls)}`);
-            }
-        }
     function select(tokenExpression, context, contract) {
         const field = tokenExpression ? fieldDeclaration(tokenExpression) : undefined;
         const token = tokenReference(tokenExpression);
@@ -1067,11 +1179,12 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             if (initial && injectionCall(initial) && ts_morph_1.Node.isCallExpression(initial))
                 sites.push({ name: field.getName(), expression: initial.getArguments()[0], contract: typeInterface(field.getTypeNode()) ?? typeInterface(initial.getTypeArguments()[0]) });
         }
-        for (const call of cls.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
-            if (classOf(call) !== cls || !injectionCall(call) || ts_morph_1.Node.isPropertyDeclaration(call.getParent()))
-                continue;
-            sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
-        }
+        if (angularFiles.has(cls.getSourceFile()))
+            for (const call of cls.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
+                if (classOf(call) !== cls || !injectionCall(call) || ts_morph_1.Node.isPropertyDeclaration(call.getParent()))
+                    continue;
+                sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
+            }
         if (sites.length) {
             charge(sites.length + 1);
             const existing = injectionsBySource.get(qn(cls));

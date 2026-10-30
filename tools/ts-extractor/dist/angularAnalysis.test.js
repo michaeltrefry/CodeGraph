@@ -52,8 +52,8 @@ function fixture(sources, includedFiles = Object.keys(sources), control = {}, on
         fs.writeFileSync(path.join(root, file), contents);
     }
     function extract(included = includedFiles) {
-        const project = new ts_morph_1.Project({ compilerOptions: { noResolve: true, experimentalDecorators: true, types: [], skipLibCheck: true }, skipAddingFilesFromTsConfig: true });
-        for (const file of included.filter(file => /\.tsx?$/.test(file)))
+        const project = new ts_morph_1.Project({ compilerOptions: { allowJs: true, jsx: 1, noResolve: true, experimentalDecorators: true, types: [], skipLibCheck: true }, skipAddingFilesFromTsConfig: true });
+        for (const file of included.filter(file => /\.[jt]sx?$/.test(file)))
             project.addSourceFileAtPath(path.join(root, file));
         const discovery = new discoveryScope_1.DiscoveryScope(root, included);
         const diagnostics = [];
@@ -634,5 +634,88 @@ function selectorCrowd(count, template, eachTemplate = '') {
         openComments.dispose();
         openScripts.dispose();
         openTags.dispose();
+    }
+});
+(0, node_test_1.test)('React import volume does not multiply unrelated Angular API/injection scans', t => {
+    let semanticWork = 0;
+    let importedWidths = 0;
+    const imports = Array.from({ length: 240 }, (_, index) => `import {helper as helper${index}} from '@react-library/long-package-${index}';`).join('');
+    const calls = Array.from({ length: 1800 }, (_, index) => `helper${index % 240}(${index});`).join('');
+    const f = fixture({ 'app.jsx': `${imports} export function Panel(){${calls}return <div/>;}` }, ['app.jsx'], { maxWork: 4000000 }, model => {
+        semanticWork = model.work.used;
+        for (const imp of model.files[0].getImportDeclarations()) {
+            const original = imp.getFullWidth.bind(imp);
+            imp.getFullWidth = () => { importedWidths++; return original(); };
+        }
+    });
+    try {
+        const result = f.extract();
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.ok(result.nodes.some(node => node.name === 'Panel' && node.label === 'Component'));
+        assert_1.strict.equal(importedWidths, 240, 'each unrelated import is indexed once, without rescanning on every call');
+        assert_1.strict.ok(result.model.work.used - semanticWork < 300000);
+        t.diagnostic(JSON.stringify({ semanticWork, angularWork: result.model.work.used - semanticWork, totalWork: result.model.work.used, importedWidths }));
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('non-Angular JS callers retain interface/class dispatch from imported typed declarations', () => {
+    const f = fixture({
+        'typed.ts': `export interface Worker{run():void;save:()=>void;data:string;}export class Impl implements Worker{data='';run(){}save=()=>{}}
+      export const worker:Worker=new Impl();export const concrete:Impl=new Impl();`,
+        'app.js': `import {worker,concrete} from './typed';export function run(){worker.run();worker.save();concrete.run();}`,
+    });
+    try {
+        const result = f.extract();
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.ok(result.nodes.some(node => node.qualifiedName.endsWith('Worker.save') && node.properties.is_interface_member));
+        assert_1.strict.equal(matching(result.edges, 'CALLS', '#run', 'Worker.run').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', '#run', 'Worker.save').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', '#run', 'Impl.run').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', 'Worker.data').length, 0);
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('explicit Angular bootstrap initializes a plain imported provider config exactly once', () => {
+    const f = fixture({
+        'services.ts': `export class Original{load(){}}export class Replacement{load(){}}`,
+        'config.ts': `import {Original,Replacement} from './services';export const config={providers:[{provide:Original,useClass:Replacement}]};`,
+        'app.ts': `import {Component,inject} from '@angular/core';import {Original} from './services';@Component({selector:'app',template:''})export class App{service=inject(Original);run(){this.service.load();}}`,
+        'main.ts': `import {bootstrapApplication} from '@angular/platform-browser';import {App} from './app';import {config} from './config';bootstrapApplication(App,config);`,
+    });
+    try {
+        const result = f.extract();
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.equal(matching(result.edges, 'REGISTERS', 'config.ts', 'Replacement').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'INJECTS', 'App', 'Replacement').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', 'App.run', 'Replacement.load').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', 'App.run', 'Original.load').length, 0);
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('framework evidence and API aliases follow admitted barrels while shadowed names remain unrelated', () => {
+    const f = fixture({
+        'framework.ts': `export {Component as Page,inject as resolve,InjectionToken,Input,Injector} from '@angular/core';`,
+        'barrel.ts': `export * from './framework';`,
+        'services.ts': `export class Original{load(){}}export class Replacement{load(){}}`,
+        'app.ts': `import * as ng from './barrel';import {resolve} from './barrel';import {Original,Replacement} from './services';const get=resolve;
+      @ng.Page({selector:'app',template:'',providers:[{provide:Original,useClass:Replacement}]})export class App{service=get(Original);run(){this.service.load();}}
+      export function unrelated(resolve:any){resolve(Original).load();}`,
+    });
+    try {
+        const result = f.extract();
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.equal(result.nodes.find(node => node.name === 'App')?.label, 'Component');
+        assert_1.strict.equal(matching(result.edges, 'INJECTS', 'App', 'Replacement').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', 'App.run', 'Replacement.load').length, 1);
+        assert_1.strict.equal(matching(result.edges, 'CALLS', '#unrelated', 'Replacement.load').length, 0);
+    }
+    finally {
+        f.dispose();
     }
 });
