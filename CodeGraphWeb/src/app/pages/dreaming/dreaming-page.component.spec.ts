@@ -66,7 +66,22 @@ describe('DreamingPageComponent', () => {
     page.tab.set('instructions'); fixture.detectChanges();
     await page.saveInstructions('base'); expect(api['saveInstructions']).toHaveBeenCalled();
     auth.currentUser.set({ isAdmin: true }); expect(page.canEditSettings()).toBe(true);
-    auth.currentUser.set(null); auth.enabled.set(false); expect(page.canEditSettings()).toBe(true);
+    auth.currentUser.set(null); auth.enabled.set(false); expect(page.canEditSettings()).toBe(false);
+  });
+
+  it.each([
+    { enabled: false, isAdmin: false, mode: 'local development viewer' },
+    { enabled: false, isAdmin: true, mode: 'local development admin' },
+    { enabled: true, isAdmin: false, mode: 'JWT viewer' },
+    { enabled: true, isAdmin: true, mode: 'JWT admin' }
+  ])('uses the server admin permission for $mode settings controls', async ({ enabled, isAdmin }) => {
+    auth.enabled.set(enabled); auth.currentUser.set({ isAdmin });
+    const fixture = await create(); const page = fixture.componentInstance;
+    page.tab.set('settings'); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('fieldset').disabled).toBe(!isAdmin);
+    expect(fixture.nativeElement.querySelector('button[type=submit]').disabled).toBe(!isAdmin);
+    await page.saveSettings();
+    expect(api['saveSettings']).toHaveBeenCalledTimes(isAdmin ? 1 : 0);
   });
 
   it('lists run attribution, model, tokens, cost and action counts, and renders evidence and measured before/after', async () => {

@@ -17,7 +17,7 @@ import { DreamAction, DreamEffects, DreamInstructionSet, DreamRevertResult, Drea
 })
 export class DreamingPageComponent implements OnInit {
   private readonly auth = inject(AuthService);
-  readonly canEditSettings = computed(() => !this.auth.enabled() || this.auth.currentUser()?.isAdmin === true);
+  readonly canEditSettings = computed(() => this.auth.currentUser()?.isAdmin === true);
   private readonly api = inject(DreamingApiService);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
