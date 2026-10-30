@@ -22,7 +22,7 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
         await graph.UpsertFileHashBatchAsync("codegraph", new Dictionary<string, string> { ["Source.cs"] = Hash(source) });
         var entry = (await ((IKnowledgeStore)db.Store).RecordKnowledgeAsync(project,
             new(KnowledgeKind.Fact, "Source.Answer returns 42", "A source-scoped claim captured before explicit verification.", KnowledgeConfidence.High,
-                null, null, ["codegraph"], ["Source.cs"], [], commit), Human, null)).Entry;
+                null, null, ["codegraph"], ["Source.cs"], [], null), Human, null)).Entry;
         JsonElement full = default;
         var turn = 0;
         var model = new ScriptedModel((request, _) => Task.FromResult(++turn switch
@@ -55,8 +55,9 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
         var after = (await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(entry.Id, true))!;
         after.PossiblyStale.ShouldBeFalse();
         after.Summary.ShouldBe(entry.Summary);
-        after.Revisions!.First().Action.ShouldBe("verified");
-        after.Revisions.First().Author.SessionId.ShouldBe(run.Id.ToString());
+        var verification = after.Revisions!.First();
+        verification.Action.ShouldBe("verified");
+        verification.Author.SessionId.ShouldBe(run.Id.ToString());
         after.Version.ShouldBe(entry.Version + 1);
     }
 }
