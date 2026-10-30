@@ -1,6 +1,6 @@
 // Sized against selected indexed frontends, including relocated checkout snapshots.
 // Keep finite shared work/output bounds with room for normal source growth.
-export const DEFAULT_EXTRACTION_WORK_LIMIT = 400_000_000;
+export const DEFAULT_EXTRACTION_WORK_LIMIT = 500_000_000;
 export const DEFAULT_RETAINED_AST_NODES = 3_000_000;
 export const DEFAULT_OUTPUT_ITEMS = 250_000;
 export const MAX_PARSE_SOURCE_UNITS = 2 * 1024 * 1024;
