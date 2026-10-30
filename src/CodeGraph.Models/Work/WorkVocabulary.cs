@@ -187,7 +187,7 @@ public static class WorkLimits
     public const int MaxAcceptanceTests = 50;
     public const int MaxAcceptanceTestLength = 2000;
     public const int MaxItemGoalLength = 2000;
-    /// <summary>An item holds at most 3 acceptance criteria (R6 plans 1 to 3); 0 is allowed for backward compatibility (items created before S4, imports).</summary>
+    /// <summary>An item holds at most 10 acceptance criteria (plans 1 to 10); 0 is allowed for backward compatibility (items created before S4, imports).</summary>
     public const int MaxAcceptanceCriteria = 10;
     public const int MaxCriterionLength = 2000;
     public const int MaxCriterionIdLength = 16;

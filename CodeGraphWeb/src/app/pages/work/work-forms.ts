@@ -54,7 +54,7 @@ export class DialogComponent {
         <label style="flex:0 0 90px">Order <input class="wrk-input" type="number" name="order" min="0" [(ngModel)]="order" /></label>
       </div>
       <label>Goal <textarea class="wrk-input" name="goal" rows="2" [(ngModel)]="goal"></textarea></label>
-      <label>Acceptance criteria (one per line, at most 3) <textarea class="wrk-input" name="criteria" rows="3" [(ngModel)]="criteria"></textarea></label>
+      <label>Acceptance criteria (one per line, at most 10) <textarea class="wrk-input" name="criteria" rows="3" [(ngModel)]="criteria"></textarea></label>
       <div class="wrk-form-row">
         <label>Inherits epic requirements (E1, E3) <input class="wrk-input" name="inherits" [(ngModel)]="inherits" /></label>
         <label>Blocked by (keys) <input class="wrk-input" name="blockedBy" [(ngModel)]="blockedBy" [disabled]="!!initial()" [title]="initial() ? 'Change blockers on the item page' : ''" /></label>

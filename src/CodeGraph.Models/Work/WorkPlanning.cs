@@ -124,7 +124,7 @@ public sealed class SyncPlanItemInput
 
     public string? Repository { get; init; }
 
-    [Description("Replaces the item's acceptance criteria (at most 3).")]
+    [Description("Replaces the item's acceptance criteria (at most 10).")]
     public List<AcceptanceCriterionInput>? AcceptanceCriteria { get; init; }
 
     [Description("Replaces the requirements (E2) of the feature the item serves.")]

@@ -94,7 +94,7 @@ public static class WorkTools
             "record a handoff, and claim, renew or release it (claims are advisory and do not stop other writes). Complete is set only here, by the agent or person " +
             "who judges the work done, optionally with acceptance_report (summary and the state and evidence of named criteria; not validated); a merge only flags " +
             "merged_awaiting_acceptance. A feature takes goals, requirements (an active one left out must be in drop_requirements with a decision) and " +
-            "acceptance_tests; an item takes goal, acceptance_criteria (at most 3; 0 allowed for backward compatibility), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
+            "acceptance_tests; an item takes goal, acceptance_criteria (at most 10; 0 allowed for backward compatibility), inherits (requirements of its feature) and touches. With session_id a claim is the session's and lasts " +
             "while the session is live (leave marker and ttl_seconds out); a retried claim the session already holds answers it. A session whose claim on the item " +
             "lapsed is refused claim_lost until it reclaims the unclaimed item (claim) or lets go of it (release_claim). Answers the object as it is after the write, " +
             "with its new version." + SavePoints + Sessions + Errors,
