@@ -233,7 +233,7 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
 
     private async Task AddDreamProposalQueueAsync(MySqlConnection connection, Guid projectId, List<ReviewItem> items, CancellationToken ct)
     {
-        var proposals = await connection.QueryAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE project_id=@projectId AND status='pending' ORDER BY created_at,id LIMIT " + MaxReviewCandidates, new { projectId }, cancellationToken: ct));
+        var proposals = await connection.QueryAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE project_id=@projectId AND status='pending' ORDER BY created_at,id" + ReviewCandidateLimit, new { projectId }, cancellationToken: ct));
         var rows = proposals.ToList();
         if (rows.Count == 0) return;
         var targets = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(

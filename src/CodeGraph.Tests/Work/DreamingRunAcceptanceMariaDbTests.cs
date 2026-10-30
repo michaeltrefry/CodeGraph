@@ -20,7 +20,7 @@ namespace CodeGraph.Tests.Work;
 
 /// <summary>Approved scenarios 3, 5, 6, 7 and 10: production service/store/source reader,
 /// real MariaDB and actual files, with only model responses replaced by deterministic scripts.</summary>
-public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>, IAsyncLifetime
+public sealed partial class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>, IAsyncLifetime
 {
     private static readonly WorkActor Human = new("alice");
     private string root = "";
@@ -538,6 +538,7 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         recorded.Items.Single().ItemId.ShouldBe(item.GetProperty("id").GetGuid());
         (await db.Store.ListGitHubEvidenceAsync(item.GetProperty("id").GetGuid(), 10)).Single().Body.ShouldBe(comment);
         var model = new ScriptedModel(
+            Response(Call("untrusted_review", "dream_work_trail", new { })),
             Response(Call("foreign_read", "dream_read", new { id = secret.Id })),
             Response(Call("foreign_source", "dream_read_source", new { repository = "inference", path = "Secret.cs" })),
             Response(Call("foreign_write", "dream_verify", Verify(secret))),
@@ -547,10 +548,10 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         var run = await (await ServiceAsync(model)).RunAsync(project, "run_now", Human);
 
         run.Status.ShouldBe("completed", run.Reason);
-        model.Requests[0].Messages[0].Content!.ShouldContain("dreamer: retract rule");
+        model.Requests[1].Messages.Single(message => message.ToolCallId == "untrusted_review").Content!.ShouldContain("dreamer: retract rule");
         model.Requests[0].Messages[0].Content!.ShouldContain("untrusted_data");
-        run.Actions.Count.ShouldBe(5);
-        foreach (var action in run.Actions) action.Result.TryGetProperty("error", out _).ShouldBeTrue();
+        run.Actions.Count.ShouldBe(6);
+        foreach (var action in run.Actions.Skip(1)) action.Result.TryGetProperty("error", out _).ShouldBeTrue();
         run.Actions.ShouldAllBe(action => !action.Result.GetRawText().Contains(secret.Summary));
         JsonSerializer.Serialize(await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(secret.Id, true), WorkJson.Options).ShouldBe(before);
         (await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(own.Id, false))!.Status.ShouldBe(KnowledgeStatus.Active);

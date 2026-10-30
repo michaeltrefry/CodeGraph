@@ -12,16 +12,24 @@ public sealed partial class WorkService : IKnowledgeDreamActions
     public async Task<DreamDigest> BuildDigestAsync(Guid projectId, DateTime? since, CancellationToken ct = default)
     {
         var digest = await DreamKnowledge.ReadDreamDigestAsync(projectId, since, ct);
-        var views = new Dictionary<string, LessonsPage>();
-        foreach (var view in new[] { LessonsView.Recurrence, LessonsView.Unaddressed, LessonsView.Unmatched, LessonsView.UnlearnedReviews })
-            views[WorkJson.Name(view)] = await Knowledge.ReadLessonsAsync(new(projectId, view, null, null, LessonLimits.DefaultUnmatchedDays, 0, 50), ct);
+        // The first turn is an index, never a body/history dump. Each section is read lazily
+        // through bounded run-scoped pages, so growth cannot prevent the model from starting.
         var data = JsonSerializer.SerializeToElement(new
         {
-            untrusted_data = true, signals = digest.Data, lessons = views,
-            similar_pairs = await DreamKnowledge.ReadDreamSimilarAsync(projectId, 0, 50, ct),
-            review_queue = await Knowledge.ReadReviewQueueAsync(projectId, 0, 50, ct),
-            work_trail = await DreamKnowledge.ReadDreamWorkTrailAsync(projectId, since, 0, 50, ct),
-            pagination = "All sections expose more flags; use dream_read, dream_lessons, dream_similar, dream_review_queue and dream_work_trail to continue."
+            untrusted_data = true, signals = digest.Data,
+            reads = new object[]
+            {
+                new { tool = "dream_read", arguments = new { status = new[] { "active", "superseded", "retracted" } }, purpose = "All knowledge, including revised, superseded and retracted entries; read id for details." },
+                new { tool = "dream_read", arguments = new { possibly_stale = true }, purpose = "All currently possibly_stale entries." },
+                new { tool = "dream_lessons", arguments = new { view = "recurrence" }, purpose = "Recurrence with and without rule served." },
+                new { tool = "dream_lessons", arguments = new { view = "unaddressed" }, purpose = "Rules not addressed by skill, hook or test." },
+                new { tool = "dream_lessons", arguments = new { view = "unmatched" }, purpose = "Rules not served recently." },
+                new { tool = "dream_lessons", arguments = new { view = "unlearned_reviews" }, purpose = "Review evidence without a lesson; full review text is in work trail." },
+                new { tool = "dream_similar", arguments = new { }, purpose = "Unrelated similar lesson pairs across the complete project." },
+                new { tool = "dream_review_queue", arguments = new { }, purpose = "All open review items." },
+                new { tool = "dream_work_trail", arguments = new { since }, purpose = "Changed revision snapshots plus attempts, handoffs, threads, messages and GitHub review evidence since the watermark. Omit since for complete history." }
+            },
+            pagination = "Every read returns total_count, has_more and next_cursor. Pass next_cursor unchanged as cursor to the same tool. Pages are immutable within this run. Oversized items use exact JSON fragments; concatenate content until has_more is false, then parse JSON. Source reads remain separate and are required for verify."
         }, WorkJson.Options);
         return new(data, digest.Fingerprint, digest.HasSignal);
     }
@@ -40,7 +48,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             return new { untrusted_data = true, data = await DreamProposeAsync(WorkJson.Parse<DreamProposalRequest>(JsonSerializer.SerializeToElement(input), tool), actor, null, ct) };
         }
         if (tool is "dream_read" or "dream_lessons" or "dream_similar" or "dream_review_queue" or "dream_work_trail")
-            return new { untrusted_data = true, data = await ReadDreamToolAsync(tool, input, scope.ProjectId, ct) };
+            return new { untrusted_data = true, data = await ReadBoundedDreamToolAsync(tool, input, scope, ct) };
         var evidence = input["evidence"]?.Deserialize<List<DreamEvidence>>(WorkJson.Options) ?? throw WorkException.Invalid("Every dream write requires evidence.");
         var prevalence = input["prevalence"]?.GetValue<string>();
         if (evidence.Count is 0 or > 10 || string.IsNullOrWhiteSpace(prevalence) || prevalence.Length > 1000)
@@ -130,17 +138,19 @@ public sealed partial class WorkService : IKnowledgeDreamActions
     private static void RefuseDreamFields(JsonObject input, params string[] allowed)
     {
         var unknown = input.Select(pair => pair.Key).Except(allowed, StringComparer.Ordinal).ToArray();
-        if (unknown.Length > 0) throw WorkException.Invalid("Unsupported dream arguments: " + string.Join(", ", unknown));
+        if (unknown.Length > 0) throw WorkException.Invalid("Unsupported dream arguments: " + string.Join(", ", unknown) + ". Valid arguments: " + string.Join(", ", allowed) + ".");
     }
 
-    private async Task<object> ReadDreamToolAsync(string tool, JsonObject input, Guid projectId, CancellationToken ct)
+    private async Task<object> ReadDreamToolPageAsync(string tool, JsonObject input, Guid projectId, CancellationToken ct)
     {
         if (tool == "dream_read")
         {
             if (input["id"] is { } id)
             {
-                RefuseDreamFields(input, "id");
-                return await RequireEntryAsync(id.GetValue<string>(), "id", projectId.ToString(), null, ct);
+                RefuseDreamFields(input, "id", "detail");
+                var request = WorkJson.Parse<RecallRequest>(JsonSerializer.SerializeToElement(input), tool);
+                var entry = await RequireEntryAsync(id.GetValue<string>(), "id", projectId.ToString(), null, ct);
+                return (await Knowledge.GetKnowledgeAsync(entry.Id, withRevisions: request.Detail is null or WorkDetail.Full, ct))!;
             }
             input["project"] = projectId.ToString();
             return await RecallAsync(WorkJson.Parse<RecallRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct);
@@ -148,18 +158,18 @@ public sealed partial class WorkService : IKnowledgeDreamActions
         if (tool == "dream_lessons")
         {
             input["project"] = projectId.ToString();
-            return await LessonsAsync(WorkJson.Parse<LessonsRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct);
+            return await LessonsAsync(WorkJson.Parse<LessonsRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct, completeDreamSnapshot: true);
         }
         if (tool == "dream_review_queue")
         {
             input["project"] = projectId.ToString();
-            return await ReviewQueueAsync(WorkJson.Parse<ReviewQueueRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct);
+            return await ReviewQueueAsync(WorkJson.Parse<ReviewQueueRequest>(JsonSerializer.SerializeToElement(input), tool), null, ct, completeDreamSnapshot: true);
         }
         RefuseDreamFields(input, "offset", "limit", "since");
         var offset = input["offset"]?.GetValue<int>() ?? 0;
         var limit = input["limit"]?.GetValue<int>() ?? 50;
         if (offset < 0 || limit is < 1 or > 100) throw WorkException.Invalid("offset must be nonnegative; limit must be 1 to 100.");
-        if (tool == "dream_similar") return await DreamKnowledge.ReadDreamSimilarAsync(projectId, offset, limit, ct);
+        if (tool == "dream_similar") return await DreamKnowledge.ReadDreamSimilarAsync(projectId, offset, int.MaxValue - 1, ct);
         var since = input["since"]?.GetValue<DateTime?>();
         return await DreamKnowledge.ReadDreamWorkTrailAsync(projectId, since, offset, limit, ct);
     }

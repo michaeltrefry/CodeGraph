@@ -11,7 +11,7 @@ public sealed partial class MySqlWorkStore
     {
         DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
-        var entries = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition($"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id=@projectId ORDER BY e.id", new { projectId }, cancellationToken: ct))).ToList();
+        var entries = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition($"SELECT {KnowledgeColumns.Replace("e.body, e.details_json,", "")} {KnowledgeFrom} WHERE e.project_id=@projectId ORDER BY e.id", new { projectId }, cancellationToken: ct))).ToList();
         var events = (await connection.QueryAsync(new CommandDefinition("SELECT correction_id,entry_id,event_hash,counted,rule_at_event,served,author,author_kind,session_id,created_at FROM lesson_events WHERE project_id=@projectId ORDER BY correction_id", new { projectId }, cancellationToken: ct))).ToArray();
         var reviews = (await connection.QueryAsync(new CommandDefinition("SELECT r.id,r.updated_at FROM work_github_evidence r JOIN work_items i ON i.id=r.item_id WHERE i.project_id=@projectId ORDER BY r.id", new { projectId }, cancellationToken: ct))).ToArray();
         var challenges = (await connection.QueryAsync(new CommandDefinition("SELECT id,entry_id,status,created_at,resolved_at,author,author_kind,resolved_by,resolved_by_kind,author_session_id FROM lesson_challenges WHERE project_id=@projectId ORDER BY id", new { projectId }, cancellationToken: ct))).ToArray();
@@ -23,7 +23,7 @@ public sealed partial class MySqlWorkStore
             UNION ALL SELECT 'thread',c.id,c.created_at,NULL FROM work_item_comments c JOIN work_items i ON i.id=c.item_id WHERE i.project_id=@projectId
             ORDER BY kind,id
             """, new { projectId }, cancellationToken: ct))).ToArray();
-        var changedRevisions = (await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.author,r.author_kind,r.created_at,r.snapshot_json FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND (@since IS NULL OR r.created_at>@since) ORDER BY r.created_at DESC,r.entry_id,r.revision DESC LIMIT 101", new { projectId, since }, cancellationToken: ct))).ToArray();
+        var changedRevisions = (await connection.QueryAsync(new CommandDefinition("SELECT r.entry_id,r.revision,r.action,r.author,r.author_kind,r.created_at FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND (@since IS NULL OR r.created_at>=@since) ORDER BY r.created_at DESC,r.entry_id,r.revision DESC", new { projectId, since }, cancellationToken: ct))).ToArray();
 
         var freshness = (await connection.QueryAsync(new CommandDefinition("SELECT k.entry_id,k.repository_name,k.path,k.content_hash,h.content_hash AS current_hash FROM knowledge_entry_files k JOIN knowledge_entries e ON e.id=k.entry_id LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE e.project_id=@projectId ORDER BY k.entry_id,k.repository_name,k.path", new { projectId }, cancellationToken: ct))).ToArray();
         // The watermark is the previous digest's start, not its completion: changes that arrive
@@ -51,10 +51,14 @@ public sealed partial class MySqlWorkStore
         var data = JsonSerializer.SerializeToElement(new
         {
             untrusted_data = true, project_id = projectId, since,
-            changed_count = changed.Count, changed_entries = changed.Take(100).Select(row => ToRow(row)), changed_more = changed.Count > 100,
-            stale_count = stale.Count, possibly_stale = stale.Take(100).Select(row => ToRow(row)), stale_more = stale.Count > 100,
-            changed_revisions = changedRevisions.Take(100), changed_revisions_more = changedRevisions.Length > 100,
-            lesson_event_count = events.Length, review_evidence_count = reviews.Length,
+            changed_count = changed.Count, changed_entries = changed.Take(5).Select(row => ToRow(row)), changed_more = changed.Count > 5,
+            stale_count = stale.Count, possibly_stale = stale.Take(5).Select(row => ToRow(row)), stale_more = stale.Count > 5,
+            changed_revisions = changedRevisions.Take(5), changed_revisions_count = changedRevisions.Length, changed_revisions_more = changedRevisions.Length > 5,
+            knowledge_count = entries.Count, lesson_event_count = events.Length, review_evidence_count = reviews.Length,
+            open_challenge_count = challenges.Count(row => (string)row.status == "open"), open_proposal_count = proposals.Count(row => (string)row.status == "pending"),
+            work_trail_count = changedRevisions.Length + activity.Count(row => since is null || (DateTime)row.changed_at >= since)
+                + trail.Count(row => since is null || (DateTime)(row.resolved_at ?? row.created_at) >= since)
+                + reviews.Count(row => since is null || (DateTime)row.updated_at >= since),
             available_reads = new[] { "dream_read", "dream_lessons", "dream_similar", "dream_review_queue", "dream_work_trail", "dream_search_graph", "dream_read_source" }
         }, WorkJson.Options);
         return new(data, fingerprint, hasSignal);
@@ -84,26 +88,63 @@ public sealed partial class MySqlWorkStore
         return new { items = pairs, more = false, next_offset = (int?)null };
     }
 
-    public async Task<object> ReadDreamWorkTrailAsync(Guid projectId, DateTime? since, int offset, int limit, CancellationToken ct = default)
+    public async Task<JsonElement> ReadDreamKnowledgeVersionAsync(Guid projectId, Guid entryId, long version, CancellationToken ct = default)
     {
         DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
-        var rows = (await connection.QueryAsync(new CommandDefinition("""
-            SELECT * FROM (
+        var json = await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT r.snapshot_json FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId AND r.entry_id=@entryId AND JSON_VALUE(r.snapshot_json,'$.version')=@version ORDER BY r.revision DESC LIMIT 1",
+            new { projectId, entryId, version }, cancellationToken: ct));
+        if (json is null) throw WorkException.NotFound("This knowledge version is no longer available in the project's history.");
+        return JsonSerializer.Deserialize<JsonElement>(json);
+    }
+
+    // A single SELECT captures the membership/order and content identity of the requested
+    // window. Keep keys/hashes only: full revision bodies are fetched only when a page needs one.
+    private const string DreamTrailSql = """
+        SELECT * FROM (
               SELECT 'revision' kind,CONCAT(r.entry_id,':',r.revision) id,NULL item_id,r.created_at,r.snapshot_json data FROM knowledge_revisions r JOIN knowledge_entries e ON e.id=r.entry_id WHERE e.project_id=@projectId
-              UNION ALL SELECT 'attempt',a.id,a.item_id,a.started_at,JSON_OBJECT('branch',a.branch,'outcome',a.outcome,'reason',a.reason,'ended_at',a.ended_at) data
+              UNION ALL SELECT 'attempt',a.id,a.item_id,COALESCE(a.ended_at,a.started_at),JSON_OBJECT('branch',a.branch,'outcome',a.outcome,'reason',a.reason,'ended_at',a.ended_at) data
                 FROM work_attempts a JOIN work_items i ON i.id=a.item_id WHERE i.project_id=@projectId
               UNION ALL SELECT 'handoff',h.id,h.item_id,h.created_at,JSON_OBJECT('done',h.done,'decisions',h.decisions_json,'open_issues',h.open_issues_json,'corrections',h.corrections_json,'next_action',h.next_action)
                 FROM work_handoffs h JOIN work_items i ON i.id=h.item_id WHERE i.project_id=@projectId
               UNION ALL SELECT 'thread',c.id,c.item_id,c.created_at,JSON_OBJECT('body',c.body,'author',c.author)
                 FROM work_item_comments c JOIN work_items i ON i.id=c.item_id WHERE i.project_id=@projectId
-              UNION ALL SELECT 'message',m.id,m.item_id,m.created_at,JSON_OBJECT('body',m.body,'kind',m.kind,'author',m.sender_name)
+              UNION ALL SELECT 'message',m.id,m.item_id,COALESCE(m.resolved_at,m.created_at),JSON_OBJECT('body',m.body,'kind',m.kind,'author',m.sender_name)
                 FROM work_messages m WHERE m.project_id=@projectId
               UNION ALL SELECT 'review',r.id,r.item_id,r.updated_at,JSON_OBJECT('kind',r.kind,'body',r.body,'url',r.url,'source',r.source,'author',r.author_login)
                 FROM work_github_evidence r JOIN work_items i ON i.id=r.item_id WHERE i.project_id=@projectId
-            ) trail WHERE @since IS NULL OR created_at>@since ORDER BY created_at,id,kind LIMIT @take OFFSET @offset
-            """, new { projectId, since, offset, take = limit + 1 }, cancellationToken: ct))).ToList();
-        return new { items = rows.Take(limit), more = rows.Count > limit, next_offset = rows.Count > limit ? offset + limit : (int?)null };
+        ) trail
+        """;
+
+    public async Task<IReadOnlyList<DreamTrailReference>> ListDreamWorkTrailAsync(Guid projectId, DateTime? since, CancellationToken ct = default)
+    {
+        DreamPolicy.RequireCurrentProject(projectId);
+        await using var connection = await OpenAsync(ct);
+        return (await connection.QueryAsync<DreamTrailReference>(new CommandDefinition(
+            "SELECT kind,id,item_id,created_at,SHA2(data,256) AS content_hash FROM (" + DreamTrailSql + ") t WHERE @since IS NULL OR created_at>=@since ORDER BY created_at,id,kind",
+            new { projectId, since }, cancellationToken: ct))).ToList();
+    }
+
+    public async Task<JsonElement> ReadDreamWorkTrailItemAsync(Guid projectId, DreamTrailReference reference, CancellationToken ct = default)
+    {
+        DreamPolicy.RequireCurrentProject(projectId);
+        await using var connection = await OpenAsync(ct);
+        var row = await connection.QuerySingleOrDefaultAsync(new CommandDefinition(
+            "SELECT kind,id,item_id,created_at,data,SHA2(data,256) AS content_hash FROM (" + DreamTrailSql + ") t WHERE kind=@kind AND id=@id",
+            new { projectId, kind = reference.Kind, id = reference.Id }, cancellationToken: ct));
+        if (row is null || !string.Equals((string)row.content_hash, reference.ContentHash, StringComparison.Ordinal))
+            throw new WorkException(WorkErrorCodes.Conflict, "This work-trail item changed after the page window was captured. Start a new read without cursor to inspect its current state.");
+        return JsonSerializer.SerializeToElement(new { kind = (string)row.kind, id = (string)row.id, item_id = row.item_id,
+            created_at = row.created_at, data = JsonSerializer.Deserialize<JsonElement>((string)row.data) }, WorkJson.Options);
+    }
+
+    public async Task<object> ReadDreamWorkTrailAsync(Guid projectId, DateTime? since, int offset, int limit, CancellationToken ct = default)
+    {
+        var index = await ListDreamWorkTrailAsync(projectId, since, ct);
+        var rows = new List<JsonElement>();
+        foreach (var row in index.Skip(offset).Take(limit)) rows.Add(await ReadDreamWorkTrailItemAsync(projectId, row, ct));
+        return new { items = rows, more = index.Count > offset + limit, next_offset = index.Count > offset + limit ? offset + limit : (int?)null };
     }
 
     public async Task ValidateDreamEvidenceAsync(Guid projectId, IReadOnlyList<DreamEvidence> evidence, CancellationToken ct = default)

@@ -1229,6 +1229,9 @@ public sealed partial class MySqlWorkStore
     // ---- review queue ------------------------------------------------------------------------------
 
     private const int MaxReviewCandidates = 500;
+    // Interactive views keep their existing candidate bound. A dream's immutable read snapshot
+    // must enumerate the complete queue before applying its own bounded pages.
+    private static string ReviewCandidateLimit => DreamExecutionScope.Current is null ? $" LIMIT {MaxReviewCandidates}" : "";
 
     public async Task<ReviewQueuePage> ReadReviewQueueAsync(Guid projectId, int offset, int limit, CancellationToken ct = default)
     {
@@ -1239,7 +1242,7 @@ public sealed partial class MySqlWorkStore
         // Open challenges of active rules, one item per rule (deduplicated).
         var challenged = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND " +
-            $"EXISTS (SELECT 1 FROM lesson_challenges c WHERE c.entry_id = e.id AND c.status = 'open') ORDER BY e.id LIMIT {MaxReviewCandidates}",
+            $"EXISTS (SELECT 1 FROM lesson_challenges c WHERE c.entry_id = e.id AND c.status = 'open') ORDER BY e.id{ReviewCandidateLimit}",
             new { projectId }, cancellationToken: ct))).ToList();
         var challenges = await ReadChallengesAsync(connection, null, challenged.Select(row => row.Id).ToList(), openOnly: true, ct);
         foreach (var row in challenged)
@@ -1253,14 +1256,14 @@ public sealed partial class MySqlWorkStore
         // Lessons proposed for rule status.
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'lesson' AND e.rule_state = 'proposed' " +
-            $"ORDER BY e.id LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
+            $"ORDER BY e.id{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
             items.Add(new ReviewItem(ReviewKinds.ProposedRule, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, Utc(row.UpdatedAt), Author: AuthorOf(row)));
 
         // Contradicting lessons, both active: one item per pair.
         var pairs = (await connection.QueryAsync<(Guid EntryId, Guid OtherId, DateTime CreatedAt)>(new CommandDefinition(
             "SELECT l.entry_id, l.other_id, l.created_at FROM lesson_links l JOIN knowledge_entries a ON a.id = l.entry_id JOIN knowledge_entries b ON b.id = l.other_id " +
             "WHERE a.project_id = @projectId AND l.relation = 'contradicts' AND l.entry_id < l.other_id AND a.status = 'active' AND b.status = 'active' " +
-            $"ORDER BY l.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct))).ToList();
+            $"ORDER BY l.created_at{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct))).ToList();
         if (pairs.Count > 0)
         {
             var linked = (await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
@@ -1281,7 +1284,7 @@ public sealed partial class MySqlWorkStore
         // Decisions an agent made on its own, not yet acknowledged (and not overturned).
         foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
             $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'decision' AND e.made_autonomously = 1 " +
-            $"AND e.reviewed_at IS NULL ORDER BY e.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
+            $"AND e.reviewed_at IS NULL ORDER BY e.created_at{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
             items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt), Author: AuthorOf(row)));
 
         await AddDreamProposalQueueAsync(connection, projectId, items, ct);
