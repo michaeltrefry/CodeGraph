@@ -62,6 +62,7 @@ public sealed partial class MySqlWorkStore
     public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "StartSessionAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using var messageLock = new MessageLockScope(connection, transaction);
@@ -104,6 +105,7 @@ public sealed partial class MySqlWorkStore
     public Task<WorkActor> TouchSessionAsync(Guid sessionId, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "TouchSessionAsync");
             var now = Now();
             var row = await RequireOwnSessionAsync(connection, null, sessionId, actor, ct);
             if (row.EndedAt is { } ended)

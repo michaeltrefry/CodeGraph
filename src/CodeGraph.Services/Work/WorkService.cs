@@ -78,6 +78,10 @@ public sealed partial class WorkService(
 
     public async Task<object> ExecuteAsync(string tool, JsonElement arguments, WorkActor actor, CancellationToken ct = default)
     {
+        if (DreamPolicy.IsDreamer(actor))
+            return await ExecuteDreamerWorkAsync(tool, arguments, actor, ct);
+        if (DreamExecutionScope.Current is not null)
+            throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may not replace its actor identity.");
         // Every argument is read before anything is written, the heartbeat included.
         object request = tool switch
         {

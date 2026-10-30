@@ -260,6 +260,7 @@ public sealed partial class MySqlWorkStore
     public Task<PostedMessage> PostMessageAsync(NewMessageSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "PostMessageAsync");
             var now = Now();
             // Which item rows this call needs, known before anything is locked: the item's message
             // rows and the parent's item never change.
@@ -515,6 +516,7 @@ public sealed partial class MySqlWorkStore
     public Task<AckResult> AckAsync(AckSpec spec, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "AckAsync");
             var now = Now();
             // Closing a blocking question bumps its item, so that item's row comes first.
             var holds = new Dictionary<Guid, bool>();

@@ -287,6 +287,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<IReadOnlyList<NoticeView>> TakeNoticesAsync(WorkActor actor, CancellationToken ct = default)
     {
+            DreamPolicy.Refuse(actor, "TakeNoticesAsync");
         // The session's notices, and those of the identity's claims made without a session, which
         // reach the identity's next call with or without a session.
         var (where, parameters) = actor.SessionId is { } session
@@ -759,6 +760,7 @@ public sealed partial class MySqlWorkStore
     public Task<SyncPlanPreview> PreviewPlanAsync(Guid featureId, RevisedPlanSpec plan, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "PreviewPlanAsync");
             var now = Now();
             // One snapshot: the versions the token binds are the state the diff was computed from.
             await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
@@ -799,6 +801,7 @@ public sealed partial class MySqlWorkStore
         // at a time, and the cycle check sees every edge committed before it.
         RunAsync([DependencyLockName], async connection =>
         {
+            DreamPolicy.Refuse(actor, "ApplyPlanAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
 

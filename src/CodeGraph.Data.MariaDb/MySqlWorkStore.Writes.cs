@@ -23,6 +23,7 @@ public sealed partial class MySqlWorkStore
         // concurrent creates cannot interleave, and the second finds the first one's project.
         RunAsync([ProjectCreateLockName], async connection =>
         {
+            DreamPolicy.Refuse(actor, "CreateProjectAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             if (keyHash is not null && await FindKeyAsync(connection, transaction, GlobalScope, ProjectOperation, keyHash, ct) is { EntityId: { } existing })
@@ -181,6 +182,7 @@ public sealed partial class MySqlWorkStore
     public Task<WorkCreated<FeatureView>> CreateFeatureAsync(Guid projectId, NewFeatureSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "CreateFeatureAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var project = await HoldProjectAsync(connection, transaction, projectId, ct);
@@ -320,6 +322,7 @@ public sealed partial class MySqlWorkStore
         // committed (no gaps, no duplicates) and a keyed repeat finds the first one's item.
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "CreateItemAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var project = await HoldProjectAsync(connection, transaction, projectId, ct);
@@ -850,6 +853,7 @@ public sealed partial class MySqlWorkStore
         // like a create, so its numbers follow the earlier creates without gaps.
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "ImportPlanAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(ct);
             var project = await HoldProjectAsync(connection, transaction, projectId, ct);
@@ -916,6 +920,7 @@ public sealed partial class MySqlWorkStore
 
     public async Task<NextWorkResult> NextWorkAsync(NextWorkSpec spec, WorkActor actor, CancellationToken ct = default)
     {
+            DreamPolicy.Refuse(actor, "NextWorkAsync");
         // The calls of one identity in one project run one at a time, so the look-up of its key and
         // of its existing claim cannot race its own retry. Between identities the conditional
         // UPDATE of the claim decides: two callers never get one item.

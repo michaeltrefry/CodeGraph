@@ -2,8 +2,8 @@ using System.Text.Json;
 
 namespace CodeGraph.Models.Work;
 
-public sealed record DreamSettings(bool Enabled = false, string DefaultProvider = "anthropic", string DefaultModel = "claude-sonnet-4-6",
-    int MaxTurns = 12, int MaxTokensPerRun = 24000, int MinimumIntervalMinutes = 60, string Schedule = "0 0 2 * * *",
+public sealed record DreamSettings(bool Enabled = true, string DefaultProvider = "anthropic", string DefaultModel = "claude-sonnet-4-6",
+    int MaxTurns = 12, int MaxTokensPerRun = 24000, int MinimumIntervalMinutes = 60, string Schedule = "0 2 * * *",
     decimal InputCostPerMillion = 3m, decimal OutputCostPerMillion = 15m);
 
 public sealed record DreamEvidence(string Kind, string Reference, string Summary);
@@ -48,19 +48,19 @@ public static class DreamPolicy
     {
         var scope = DreamExecutionScope.Current;
         if (!IsDreamer(actor) || scope is null || actor.SessionId != scope.RunId.ToString() || actor.Model != scope.Model)
-            throw WorkException.Invalid("The dreamer requires an active, matching server run. Nothing was changed.");
+            throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer requires an active, matching server run. Nothing was changed.");
         return scope;
     }
     public static void RequireProject(WorkActor actor, Guid projectId)
-    { if (IsDreamer(actor) && RequireScope(actor).ProjectId != projectId) throw WorkException.Invalid("The dreamer may access only its run's project. Nothing was changed."); }
+    { if (IsDreamer(actor) && RequireScope(actor).ProjectId != projectId) throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may access only its run's project. Nothing was changed."); }
     public static void Refuse(WorkActor actor, string operation)
-    { if (IsDreamer(actor)) throw WorkException.Invalid($"The dreamer may not {operation}. Nothing was changed."); }
+    { if (IsDreamer(actor)) throw new WorkException(WorkErrorCodes.Forbidden,$"The dreamer may not {operation}. Nothing was changed."); }
     public static void RequireWrite(WorkActor actor, string operation)
     {
         if (!IsDreamer(actor)) return;
         var scope = RequireScope(actor);
         if (scope.Evidence.Count == 0 || scope.Evidence.Any(e => string.IsNullOrWhiteSpace(e.Reference) || string.IsNullOrWhiteSpace(e.Summary)))
-            throw WorkException.Invalid($"Dreamer {operation} requires evidence references and what they demonstrate. Nothing was changed.");
+            throw new WorkException(WorkErrorCodes.Forbidden,$"Dreamer {operation} requires evidence references and what they demonstrate. Nothing was changed.");
     }
     public static void RequireVerification(WorkActor actor, KnowledgeView entry)
     {
@@ -70,6 +70,6 @@ public static class DreamPolicy
         var files = entry.VerifiedFiles ?? [];
         var nodes = entry.Nodes ?? [];
         if (files.Count == 0 && nodes.Count == 0 || files.Any(f => !scope.ReadFile(f.Repository, f.Path)) || nodes.Any(n => !scope.ReadNode(n.Id)))
-            throw WorkException.Invalid("Dreamer verify requires reading every referenced graph node and source file in this run. Nothing was changed.");
+            throw new WorkException(WorkErrorCodes.Forbidden,"Dreamer verify requires reading every referenced graph node and source file in this run. Nothing was changed.");
     }
 }

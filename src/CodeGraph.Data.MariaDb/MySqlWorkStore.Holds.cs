@@ -225,6 +225,7 @@ public sealed partial class MySqlWorkStore
     public Task<AcquireResult> AcquireAsync(AcquireSpec spec, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "AcquireAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(HoldIsolation, ct);
 
@@ -349,6 +350,7 @@ public sealed partial class MySqlWorkStore
     public Task<HoldView> RenewHoldAsync(Guid holdId, int? ttlSeconds, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "RenewHoldAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(HoldIsolation, ct);
             var resource = await LockHoldAsync(connection, transaction, holdId, actor, ct);
@@ -382,6 +384,7 @@ public sealed partial class MySqlWorkStore
     public Task<ReleaseResult> ReleaseHoldAsync(Guid holdId, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {
+            DreamPolicy.Refuse(actor, "ReleaseHoldAsync");
             var now = Now();
             await using var transaction = await connection.BeginTransactionAsync(HoldIsolation, ct);
             var resource = await LockHoldAsync(connection, transaction, holdId, actor, ct);
