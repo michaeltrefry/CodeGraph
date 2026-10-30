@@ -27,6 +27,7 @@ public sealed class DreamExecutionScope : IDisposable
     private static readonly AsyncLocal<DreamExecutionScope?> Slot = new();
     private readonly DreamExecutionScope? previous;
     private readonly HashSet<string> sourceReads = new(StringComparer.Ordinal);
+    private readonly Dictionary<string,(string? Content,string? Index)> sourceHashes = new(StringComparer.Ordinal);
     public static DreamExecutionScope? Current => Slot.Value;
     public Guid RunId { get; }
     public Guid ProjectId { get; }
@@ -38,8 +39,10 @@ public sealed class DreamExecutionScope : IDisposable
     public static DreamExecutionScope Begin(Guid runId, Guid projectId, string model) => new(runId, projectId, model);
     public IDisposable UseEvidence(IReadOnlyList<DreamEvidence> evidence)
     { var old = Evidence; Evidence = evidence; return new Restore(() => Evidence = old); }
-    public void MarkSourceRead(string repository, string path, long? nodeId = null)
-    { sourceReads.Add($"file:{repository}:{path}"); if (nodeId is { } id) sourceReads.Add($"node:{id}"); }
+    public void MarkSourceRead(string repository, string path, long? nodeId = null, string? contentHash = null, string? indexHash = null)
+    { sourceReads.Add($"file:{repository}:{path}"); sourceHashes[$"file:{repository}:{path}"]=(contentHash,indexHash); if (nodeId is { } id) sourceReads.Add($"node:{id}"); }
+    public string? ReadFileHash(string repository,string path)=>sourceHashes.TryGetValue($"file:{repository}:{path}",out var proof)
+        &&proof.Content is not null&&string.Equals(proof.Content,proof.Index,StringComparison.OrdinalIgnoreCase)?proof.Index:null;
     public bool ReadFile(string repository, string path) => sourceReads.Contains($"file:{repository}:{path}");
     public bool ReadNode(long id) => sourceReads.Contains($"node:{id}");
     public void Dispose() => Slot.Value = previous;

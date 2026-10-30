@@ -66,11 +66,19 @@ public partial class GraphAssistant : IDreamBatchModel
     }
     internal async Task<object> ReadDreamSourceAsync(string repository,string path,long? nodeId,CancellationToken ct)
     {
-        var lines=await RepoFileResolver.ReadAllLinesAsync(repository,path,sourceOptions,store)
+        var indexed=await store.GetFileHashesAsync(repository);
+        indexed.TryGetValue(path,out var indexHash);
+        await using var stream=await RepoFileResolver.OpenReadAsync(repository,path,sourceOptions,store,ct)
             ??throw WorkException.NotFound("Source file was not found; it has not been verified.");
-        ct.ThrowIfCancellationRequested();
-        DreamExecutionScope.Current!.MarkSourceRead(repository,path,nodeId);
-        return new {untrusted_data=new {repository,path,node_id=nodeId,source=string.Join("\n",lines)}};
+        using var bytes=new MemoryStream();await stream.CopyToAsync(bytes,ct);
+        var raw=bytes.ToArray();
+        // XxHash3 is the indexing pipeline's byte hash. Older imported baselines may use SHA256.
+        var contentHash=indexHash?.Length==64?Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(raw)):
+            Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(raw));
+        DreamExecutionScope.Current!.MarkSourceRead(repository,path,nodeId,contentHash,indexHash);
+        using var reader=new StreamReader(new MemoryStream(raw),detectEncodingFromByteOrderMarks:true);
+        var source=await reader.ReadToEndAsync(ct);
+        return new {untrusted_data=new {repository,path,node_id=nodeId,content_hash=contentHash,indexed_hash=indexHash,source}};
     }
     internal Task<string> SearchDreamGraphAsync(string repository,string pattern,string? label,int limit) =>
         SearchGraphAsync(JsonSerializer.SerializeToElement(new {repository,namePattern=pattern,label,limit}));
