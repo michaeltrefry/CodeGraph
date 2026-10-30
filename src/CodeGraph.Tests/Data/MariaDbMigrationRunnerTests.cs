@@ -149,7 +149,11 @@ public class MariaDbMigrationRunnerTests
             ["084_lessons_rules.sql"] = 1,
             ["092_rename_project_to_repository.sql"] = 2,
             // sc-27995: dismiss pre-queue failures once, using the restart-safe null predicates.
-            ["093_job_queue_visibility.sql"] = 3
+            ["093_job_queue_visibility.sql"] = 3,
+            // sc-27965: adopt existing correction applicability before exact merge journaling.
+            ["101_lesson_merge_journal.sql"] = 1,
+            // sc-27970: replace only the untouched bootstrap dreaming instructions.
+            ["105_dreaming_instructions.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",
