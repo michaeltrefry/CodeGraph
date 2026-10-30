@@ -19,6 +19,25 @@ public sealed class DreamingPolicyMariaDbTests(WorkDatabase db) : IClassFixture<
 {
     private static readonly WorkActor Human = new("alice");
 
+    [Fact]
+    public async Task Ordinary_record_dispatch_cannot_default_the_dreamers_required_confidence()
+    {
+        var seed = await SeedAsync();
+        var runId = Guid.NewGuid();
+        await PersistRunAsync(runId, seed.Project);
+        var before = await SnapshotAsync();
+        using var run = DreamExecutionScope.Begin(runId, seed.Project, "scripted-policy");
+        using var evidence = run.UseEvidence([new("entry", seed.Lesson.Id.ToString(), "Existing local evidence")]);
+        using var prevalence = DreamWriteMetadata.Begin("one source entry");
+
+        var refused = await Should.ThrowAsync<WorkException>(() => db.Service.ExecuteAsync(WorkTools.Record,
+            JsonSerializer.SerializeToElement(new { project = seed.Project, entry = new { kind = "fact", summary = "Omitted required confidence" } }, WorkJson.Options), run.Actor));
+
+        refused.Code.ShouldBe(WorkErrorCodes.Forbidden);
+        refused.Message.ShouldContain("confidence", Case.Insensitive);
+        (await SnapshotAsync()).ShouldBe(before);
+    }
+
     [Theory]
     [InlineData("entry")]
     [InlineData("entry_rows")]

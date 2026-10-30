@@ -63,18 +63,38 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         await graph.UpsertFileHashBatchAsync("codegraph", new Dictionary<string, string> { ["Source.cs"] = Hash(renamed) });
         var nodeId = await graph.UpsertNodeAsync(new() { Repository = "codegraph", Label = NodeLabel.Method,
             Name = "Compute", QualifiedName = "Source.Compute", FilePath = "Source.cs", StartLine = 1, EndLine = 1 });
-        var model = new ScriptedModel(
-            Response(Call("read", "dream_read_source", new { repository = "codegraph", node_id = nodeId })),
-            Response(Call("propose", "dream_propose", new { action = "supersede", target = entry.Id, expected_version = entry.Version,
-                rationale = "The referenced method was renamed from Answer to Compute", prevalence = "one stale fact and one graph node",
-                evidence = new[] { new { kind = "entry", id = entry.Id.ToString() }, new { kind = "graph_node", id = nodeId.ToString() } },
-                replacement = new { kind = "fact", summary = "Source.Compute returns 42", confidence = "high", repositories = new[] { "codegraph" }, nodes = new[] { nodeId } } })), Response());
+        long discovered = 0;
+        var turn = 0;
+        var model = new ScriptedModel((request, _) =>
+        {
+            var response = (++turn) switch
+            {
+                1 => Response(Call("search", "dream_search_graph", new { repository = "codegraph", name_pattern = "Compute", label = "Method" })),
+                2 => ReadDiscoveredNode(request),
+                3 => Response(Call("propose", "dream_propose", new { action = "supersede", target = entry.Id, expected_version = entry.Version,
+                    rationale = "The referenced method was renamed from Answer to Compute", prevalence = "one stale fact and one graph node",
+                    evidence = new[] { new { kind = "entry", id = entry.Id.ToString() }, new { kind = "graph_node", id = discovered.ToString() } },
+                    replacement = new { kind = "fact", summary = "Source.Compute returns 42", confidence = "high", repositories = new[] { "codegraph" }, nodes = new[] { discovered } } })),
+                _ => Response()
+            };
+            return Task.FromResult(response);
+        });
+        DreamModelResponse ReadDiscoveredNode(DreamModelRequest request)
+        {
+            var reply = request.Messages.Single(message => message.Role == "tool" && message.ToolCallId == "search");
+            using var parsed = JsonDocument.Parse(reply.Content!);
+            var found = parsed.RootElement.GetProperty("untrusted_data").GetProperty("items").EnumerateArray().Single();
+            found.GetProperty("qualified_name").GetString().ShouldBe("Source.Compute");
+            discovered = found.GetProperty("id").GetInt64();
+            return Response(Call("read", "dream_read_source", new { repository = "codegraph", node_id = discovered }));
+        }
 
         var run = await (await ServiceAsync(model)).RunAsync(project, "run_now", Human);
 
         run.Status.ShouldBe("completed", run.Reason);
-        SuccessfulWrites(run, 2);
-        var proposed = ProposalResult(run.Actions[1]);
+        SuccessfulWrites(run, 3);
+        discovered.ShouldBe(nodeId);
+        var proposed = ProposalResult(run.Actions[2]);
         proposed.Created.ShouldBeTrue();
         proposed.Proposal!.Evidence.ShouldContain(item => item.Kind == DreamEvidenceKind.GraphNode && item.Id == nodeId.ToString());
         proposed.Proposal.RunId.ShouldBe(run.Id);
@@ -286,6 +306,42 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
     }
 
     [Fact]
+    public async Task An_index_change_after_source_was_read_cannot_be_verified_from_the_old_read()
+    {
+        var (project, entry) = await StaleFactAsync();
+        var turn = 0;
+        var model = new ScriptedModel(async (_, ct) =>
+        {
+            if (++turn == 1)
+                return Response(Call("read", "dream_read_source", new { repository = "codegraph", path = "Source.cs" }));
+            if (turn == 2)
+            {
+                Task reindex;
+                using (ExecutionContext.SuppressFlow())
+                    reindex = Task.Run(async () =>
+                    {
+                        const string changed = "public static class Source { public static int Answer() => 43; }";
+                        await File.WriteAllTextAsync(Path.Combine(root, "codegraph", "Source.cs"), changed, ct);
+                        await graph.UpsertFileHashBatchAsync("codegraph", new Dictionary<string, string> { ["Source.cs"] = Hash(changed) });
+                    }, ct);
+                await reindex;
+                return Response(Call("verify", "dream_verify", Verify(entry)));
+            }
+            return Response();
+        });
+
+        var run = await (await ServiceAsync(model)).RunAsync(project, "run_now", Human);
+
+        run.Status.ShouldBe("completed", run.Reason);
+        run.Actions.Count.ShouldBe(2);
+        run.Actions[0].Result.GetRawText().ShouldContain("Answer() => 42");
+        run.Actions[1].Result.GetProperty("error").GetString().ShouldBe(WorkErrorCodes.Forbidden);
+        var after = (await ((IKnowledgeStore)db.Store).GetKnowledgeAsync(entry.Id, false))!;
+        after.PossiblyStale.ShouldBeTrue();
+        after.Version.ShouldBe(entry.Version);
+    }
+
+    [Fact]
     public async Task A_failed_source_read_and_another_runs_successful_read_never_authorize_verification()
     {
         var (project, entry) = await StaleFactAsync();
@@ -410,6 +466,34 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
             .ShouldContain("Within budget");
         (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM knowledge_entries WHERE project_id=@project AND summary='Must not be written'", new { project })).ShouldBe(0);
         (await runs.GetRunAsync(project, run.Id))!.Actions.Count.ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task A_growing_tool_transcript_stops_before_the_next_call_and_reports_its_prior_durable_write()
+    {
+        var project = await ProjectAsync();
+        var evidence = await RecordAsync(project, "Evidence for a durable write before transcript growth");
+        var repositoryRoot = Path.Combine(root, "codegraph");
+        Directory.CreateDirectory(repositoryRoot);
+        await File.WriteAllTextAsync(Path.Combine(repositoryRoot, "Large.cs"), "// " + new string('x', 200000));
+        await graph.UpsertRepositoryAsync(new RepositoryEntity { Name = "codegraph", LocalPath = repositoryRoot });
+        var model = new ScriptedModel(Response(
+            Call("write", "dream_record", new { entry = new { kind = "fact", summary = "Durable before transcript growth", confidence = "high" },
+                evidence = Evidence(evidence), prevalence = "one source entry" }),
+            Call("large_source", "dream_read_source", new { repository = "codegraph", path = "Large.cs" })));
+
+        var run = await (await ServiceAsync(model, maxTokens: 128000)).RunAsync(project, "run_now", Human);
+
+        run.Status.ShouldBe("budget_exhausted", run.Reason);
+        model.Requests.Count.ShouldBe(1);
+        (run.InputTokens + run.OutputTokens).ShouldBe(2);
+        SuccessfulWrites(run, 2);
+        var write = run.Actions.Single(action => action.Tool == "dream_record");
+        write.Result.GetRawText().ShouldContain("Durable before transcript growth");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM knowledge_entries WHERE project_id=@project AND summary='Durable before transcript growth' AND status='active'", new { project })).ShouldBe(1);
+        var persisted = (await runs.GetRunAsync(project, run.Id))!;
+        persisted.Actions.Single(action => action.Tool == "dream_record").Result.GetRawText().ShouldBe(write.Result.GetRawText());
     }
 
     [Fact]
