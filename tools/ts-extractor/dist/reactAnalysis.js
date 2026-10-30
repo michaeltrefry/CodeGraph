@@ -289,11 +289,13 @@ function analyzeReact(model, nodes, edges, diagnostic) {
                         edges.push({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } });
             }
         }
-    canonicalizeScreenSelections(edges);
+    canonicalizeRenderEdges(edges);
 }
-/** Persistence identifies an edge by source/target/type. Factory instances can share a wrapper
- * declaration, so keep each declared selection canonically instead of allowing last-write wins. */
-function canonicalizeScreenSelections(edges) {
+/** Persistence identifies an edge by source/target/type. Preserve canonical evidence once
+ * per identity, including several lazy factories or screen selections sharing one declaration. */
+function canonicalizeRenderEdges(edges) {
+    const canonical = (value) => Array.isArray(value) ? value.map(canonical) :
+        value !== null && typeof value === 'object' ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => [key, canonical(value)])) : value;
     const groups = new Map();
     for (const edge of edges) {
         if (edge.type !== 'RENDERS' || edge.properties?.framework !== 'react')
@@ -305,25 +307,34 @@ function canonicalizeScreenSelections(edges) {
     }
     const discard = new Set();
     for (const group of groups.values()) {
-        if (group.length < 2 || !group.some(edge => edge.properties?.screen_key !== undefined))
+        if (group.length < 2)
             continue;
         const selections = new Map();
+        const witnesses = new Map();
         for (const edge of group) {
-            if (edge.properties?.screen_key === undefined)
-                continue;
-            const selection = Object.fromEntries(Object.entries(edge.properties).filter(([key]) => key.startsWith('screen_')));
-            selections.set(JSON.stringify(selection), selection);
+            const properties = edge.properties ?? {};
+            const priorSelections = Array.isArray(properties.screen_selections) ? properties.screen_selections :
+                properties.screen_key !== undefined ? [Object.fromEntries(Object.entries(properties).filter(([key]) => key.startsWith('screen_')))] : [];
+            for (const selection of priorSelections) {
+                const normalized = canonical(selection);
+                selections.set(JSON.stringify(normalized), normalized);
+            }
+            const witness = canonical(Object.fromEntries(Object.entries(properties).filter(([key]) => !key.startsWith('screen_'))));
+            witnesses.set(JSON.stringify(witness), witness);
         }
-        const canonical = [...selections].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+        const ordered = [...witnesses].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+        // A direct declaration reference is a stronger primary witness when a lazy candidate
+        // also reaches the same target; preserve the candidate as alternative source evidence.
+        const primary = ordered.find(witness => witness.lazy_wrapper !== true) ?? ordered[0];
         const first = group[0];
-        first.properties = { ...first.properties };
-        for (const key of Object.keys(first.properties))
-            if (key.startsWith('screen_'))
-                delete first.properties[key];
-        if (canonical.length === 1)
-            Object.assign(first.properties, canonical[0]);
-        else
-            first.properties.screen_selections = canonical;
+        first.properties = { ...primary };
+        if (ordered.length > 1)
+            first.properties.render_evidence = ordered;
+        const screenSelections = [...selections].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value);
+        if (screenSelections.length === 1)
+            Object.assign(first.properties, screenSelections[0]);
+        else if (screenSelections.length > 1)
+            first.properties.screen_selections = screenSelections;
         for (const duplicate of group.slice(1))
             discard.add(duplicate);
     }

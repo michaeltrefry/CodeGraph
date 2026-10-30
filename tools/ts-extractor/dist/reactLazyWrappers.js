@@ -13,8 +13,98 @@ function lazyWrapperTargets(model, diagnostic) {
     const mutated = new Set();
     const mutationFiles = new Set();
     let expansions = 0;
+    // A const binding can still hold a mutable object. Member writes invalidate its storage
+    // root and any statically visible reference aliases; do not reuse their old initializers.
+    const markReference = (node, seen = new Set()) => {
+        if (!node || seen.has(node))
+            return;
+        if (seen.size > 60) {
+            diagnostic(`reactLazyTraversal: mutation alias depth limit in ${model.relative(node)}`);
+            return;
+        }
+        seen.add(node);
+        if (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node) || ts_morph_1.Node.isAwaitExpression(node)) {
+            markReference(node.getExpression(), seen);
+            return;
+        }
+        if (ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node)) {
+            markReference(node.getExpression(), seen);
+            return;
+        }
+        if (ts_morph_1.Node.isConditionalExpression(node)) {
+            markReference(node.getWhenTrue(), new Set(seen));
+            markReference(node.getWhenFalse(), new Set(seen));
+            return;
+        }
+        if (ts_morph_1.Node.isBinaryExpression(node) && [ts_morph_1.SyntaxKind.BarBarToken, ts_morph_1.SyntaxKind.QuestionQuestionToken, ts_morph_1.SyntaxKind.AmpersandAmpersandToken].includes(node.getOperatorToken().getKind())) {
+            markReference(node.getLeft(), new Set(seen));
+            markReference(node.getRight(), new Set(seen));
+            return;
+        }
+        if (ts_morph_1.Node.isObjectLiteralExpression(node)) {
+            for (const property of node.getProperties()) {
+                if (ts_morph_1.Node.isPropertyAssignment(property))
+                    markReference(property.getInitializer(), new Set(seen));
+                if (ts_morph_1.Node.isShorthandPropertyAssignment(property))
+                    markReference(property.getValueSymbol()?.getDeclarations()[0], new Set(seen));
+                if (ts_morph_1.Node.isSpreadAssignment(property))
+                    markReference(property.getExpression(), new Set(seen));
+            }
+            return;
+        }
+        if (ts_morph_1.Node.isArrayLiteralExpression(node)) {
+            for (const element of node.getElements())
+                markReference(element, new Set(seen));
+            return;
+        }
+        if (ts_morph_1.Node.isCallExpression(node)) {
+            // A mutated factory result may share any passed/captured object. Reject its source
+            // references conservatively rather than pretending to execute or order the writes.
+            for (const argument of node.getArguments())
+                markReference(argument, new Set(seen));
+            const callable = model.resolve(node.getExpression());
+            if (callable && ts_morph_1.Node.isArrowFunction(callable) && !ts_morph_1.Node.isBlock(callable.getBody()))
+                markReference(callable.getBody(), new Set(seen));
+            if (callable && model.callables.has(callable))
+                for (const returned of callable.getDescendantsOfKind(ts_morph_1.SyntaxKind.ReturnStatement)) {
+                    if (model.owner(returned) === model.callables.get(callable))
+                        markReference(returned.getExpression(), new Set(seen));
+                }
+            return;
+        }
+        if (ts_morph_1.Node.isIdentifier(node)) {
+            for (const declaration of node.getSymbol()?.getDeclarations() ?? [])
+                markReference(declaration, new Set(seen));
+            return;
+        }
+        if (!model.byPath.has(model.relative(node)))
+            return;
+        // Setting a function's displayName or other metadata does not replace its body.
+        if ((0, semanticModel_1.isCallable)(node) || ts_morph_1.Node.isClassDeclaration(node))
+            return;
+        mutated.add(node);
+        if (ts_morph_1.Node.isVariableDeclaration(node))
+            markReference(node.getInitializer(), seen);
+        if (ts_morph_1.Node.isBindingElement(node))
+            markReference(node.getParent()?.getParent(), seen);
+        if (ts_morph_1.Node.isImportSpecifier(node) || ts_morph_1.Node.isImportClause(node)) {
+            const imported = node.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ImportDeclaration);
+            const file = model.module(node, imported.getModuleSpecifierValue());
+            if (file)
+                markReference(model.exported(file, ts_morph_1.Node.isImportSpecifier(node) ? node.getName() : 'default'), seen);
+        }
+    };
+    const markAssignment = (target) => {
+        if (ts_morph_1.Node.isPropertyAccessExpression(target) || ts_morph_1.Node.isElementAccessExpression(target))
+            markReference(target.getExpression());
+        else
+            for (const declaration of target.getSymbol()?.getDeclarations() ?? [])
+                mutated.add(declaration);
+    };
     const isMutated = (node) => {
-        if (!(ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isParameterDeclaration(node) || ts_morph_1.Node.isFunctionDeclaration(node)))
+        if (mutated.has(node))
+            return true;
+        if (!(ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isParameterDeclaration(node) || ts_morph_1.Node.isFunctionDeclaration(node) || ts_morph_1.Node.isBindingElement(node) || ts_morph_1.Node.isImportSpecifier(node) || ts_morph_1.Node.isImportClause(node)))
             return false;
         const file = node.getSourceFile();
         if (mutationFiles.has(file))
@@ -22,15 +112,15 @@ function lazyWrapperTargets(model, diagnostic) {
         mutationFiles.add(file);
         for (const binary of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression)) {
             const operator = binary.getOperatorToken().getKind();
-            if (operator >= ts_morph_1.SyntaxKind.FirstAssignment && operator <= ts_morph_1.SyntaxKind.LastAssignment && ts_morph_1.Node.isIdentifier(binary.getLeft()))
-                for (const declaration of binary.getLeft().getSymbol()?.getDeclarations() ?? [])
-                    mutated.add(declaration);
+            if (operator >= ts_morph_1.SyntaxKind.FirstAssignment && operator <= ts_morph_1.SyntaxKind.LastAssignment)
+                markAssignment(binary.getLeft());
         }
+        for (const operation of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.DeleteExpression))
+            markAssignment(operation.getExpression());
         for (const operation of [...file.getDescendantsOfKind(ts_morph_1.SyntaxKind.PrefixUnaryExpression), ...file.getDescendantsOfKind(ts_morph_1.SyntaxKind.PostfixUnaryExpression)]) {
             if (![ts_morph_1.SyntaxKind.PlusPlusToken, ts_morph_1.SyntaxKind.MinusMinusToken].includes(operation.getOperatorToken()))
                 continue;
-            for (const declaration of operation.getOperand().getSymbol()?.getDeclarations() ?? [])
-                mutated.add(declaration);
+            markAssignment(operation.getOperand());
         }
         return mutated.has(node);
     };

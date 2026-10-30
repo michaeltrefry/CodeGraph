@@ -727,7 +727,7 @@ return <><nav><button aria-current={activeView===item.id?'page':undefined}/></na
     try {
         writeFile(root, 'factory.tsx', `import React, {useState} from 'react';
 function named(loader, exportName){return React.lazy(async()=>{const request=loader();const module=await request;const component=module[exportName];if(!component)throw new Error('missing');return {default:component};});}
-export function arbitraryFactory(load,key){const create=()=>named(load,key);function Boundary(){const [{Widget}]=useState(()=>({Widget:create()}));return <Widget/>;}return Boundary;}`);
+export function arbitraryFactory(load,key){const create=()=>named(load,key);function Boundary(){const [{Widget}]=useState(()=>({Widget:create()}));return <Widget/>;}Boundary.displayName='Generated';return Boundary;}`);
         writeFile(root, 'targets.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
         writeFile(root, 'app.tsx', `import {arbitraryFactory as build} from './factory';const Studio=build(()=>import('./targets'),'Second');
 export function App(){const activeView='Image';return <><nav><button aria-current={activeView===item.id?'page':undefined}/></nav>{activeView==='Image'?<Studio/>:null}</>;}`);
@@ -835,6 +835,75 @@ const Screen=build(()=>import('./target'),'Screen');export function App(){return
         const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
         assert_1.strict.equal(result.complete, false);
         assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyTraversal:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('lazy wrapper export keys never reuse mutated object initializers or reference aliases', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-object-mutation-'));
+    try {
+        writeFile(root, 'target.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
+        writeFile(root, 'values.ts', "export const names={key:'First'};");
+        const helper = `import React from 'react';function build(load,key){const Lazy=React.lazy(async()=>{const module=await load();return{default:module[key]};});return function Wrapper(){return <Lazy/>;};}`;
+        const variants = [
+            ["const names={key:'First'};names.key='Second';", 'names.key'],
+            ["const names={key:'First'};names['key']='Second';", 'names.key'],
+            ["const names={key:'First'};const field='key';names[field]='Second';", 'names.key'],
+            ["const names={key:'First'};const alias=names;alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const holder={names};holder.names.key='Second';", 'names.key'],
+            ["const names={key:'First'};function identity(value){return value;}const alias=identity(names);alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};function selected(){return names;}const alias=selected();alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const selected=()=>names;const alias=selected();alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const alias=names??other;alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const first=names;const alias=first;alias['key']='Second';", 'names.key'],
+            ["const names={nested:{key:'First'}};const alias=names.nested;alias.key='Second';", 'names.nested.key'],
+            ["const names={nested:{key:'First'}};const {nested:alias}=names;alias['key']='Second';", 'names.nested.key'],
+            ["const names={key:'First'};const other={key:'Second'};const alias=flag?names:other;alias.key='Other';", 'names.key'],
+            ["const names={key:'First'};names.key+='Suffix';", 'names.key'],
+            ["const names={key:'First'};names.key++;", 'names.key'],
+            ["const names={key:'First'};delete names.key;", 'names.key'],
+            ["import {names as values} from './values';values.key='Second';", 'values.key'],
+        ];
+        for (const [declaration, key] of variants) {
+            writeFile(root, 'app.tsx', `${helper}\n${declaration}\nconst Screen=build(()=>import('./target'),${key});export function App(){return <Screen/>;}`);
+            const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+            assert_1.strict.equal(result.complete, true, declaration);
+            assert_1.strict.ok(!result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.targetQN.startsWith('Demo:target.tsx#')), declaration);
+            assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyUnresolved:')), declaration);
+        }
+        for (const declaration of ["const names={key:'First'};", "const names={key:'First'};const other={key:'Second'};other.key='Other';", "const names={key:'First'};let alias=names;alias={key:'Other'};"]) {
+            writeFile(root, 'app.tsx', `${helper}\n${declaration}\nconst Screen=build(()=>import('./target'),names.key);export function App(){return <Screen/>;}`);
+            const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+            assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.targetQN === 'Demo:target.tsx#First' && edge.properties?.lazy_wrapper), declaration);
+        }
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('same-target lazy factories coalesce into one canonical render edge with all wrapper witnesses', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-render-coalescing-'));
+    try {
+        writeFile(root, 'target.tsx', 'export function Shared(){return <div/>;}');
+        const helper = `import React from 'react';function named(load){return React.lazy(async()=>{const module=await load();return{default:module.Shared};});}
+function buildA(load){const create=()=>named(load);return function Wrapper(){const Lazy=create();return <Lazy/>;};}
+function buildB(load){const create=()=>named(load);return function Wrapper(){const Lazy=create();return <Lazy/>;};}
+const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
+        const extract = (jsx) => {
+            writeFile(root, 'app.tsx', `${helper}\nexport function App(){return <>${jsx}</>;}`);
+            return (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        };
+        const targetEdges = (result) => result.edges.filter(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:target.tsx#Shared' && edge.type === 'RENDERS');
+        const first = targetEdges(extract('<A/><B/>'));
+        assert_1.strict.equal(first.length, 1);
+        assert_1.strict.equal(first[0].properties?.lazy_wrapper, true);
+        const alternatives = first[0].properties?.render_evidence;
+        assert_1.strict.equal(alternatives.length, 2);
+        assert_1.strict.ok(alternatives.some(witness => witness.lazy_wrapper_chain.some(qn => qn.includes('#buildA.'))));
+        assert_1.strict.ok(alternatives.some(witness => witness.lazy_wrapper_chain.some(qn => qn.includes('#buildB.'))));
+        assert_1.strict.deepEqual(targetEdges(extract('<B/><A/>')), first);
+        assert_1.strict.deepEqual(targetEdges(extract('<B/><A/>')), first);
     }
     finally {
         fs.rmSync(root, { recursive: true, force: true });
