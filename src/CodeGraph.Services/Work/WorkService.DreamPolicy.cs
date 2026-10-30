@@ -35,5 +35,5 @@ public sealed partial class WorkService
         throw new WorkException(WorkErrorCodes.Forbidden,$"The dreamer may not invoke {tool}. Nothing was changed.");
     }
     private Task<object> RunDreamProposalAsync(JsonElement arguments,WorkActor actor,CancellationToken ct) =>
-        throw new WorkException(WorkErrorCodes.Forbidden,"Dream proposals are unavailable in this host.");
+        DreamProposeAsync(WorkJson.Parse<DreamProposalRequest>(arguments,WorkTools.DreamPropose),actor,null,ct);
 }

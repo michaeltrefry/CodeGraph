@@ -34,6 +34,12 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
     {
         if (actor.Kind != WorkActor.SystemKind || actor.Name != "dreamer") return null;
         if (DreamExecutionScope.Current is not { } scope) throw WorkException.Invalid("A dreamer write requires its active run.");
+        DreamPolicy.RequireScope(actor);
+        var runJson=await connection.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT run_json FROM dreaming_runs WHERE id=@id AND project_id=@project AND status='running'",new {id=scope.RunId,project=scope.ProjectId},transaction,cancellationToken:ct));
+        var run=runJson is null?null:JsonSerializer.Deserialize<DreamRun>(runJson,WorkJson.Options);
+        if(run is null||run.Model!=scope.Model||run.ProjectId!=scope.ProjectId)
+            throw new WorkException(WorkErrorCodes.Forbidden,"A dreamer mutation requires its persisted running project/model run. Nothing was changed.");
         var projectIds = (await connection.QueryAsync<Guid>(new CommandDefinition("SELECT DISTINCT project_id FROM knowledge_entries WHERE id IN @ids", new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct))).ToArray();
         if (projectIds.Any(project => project != scope.ProjectId)) throw WorkException.Invalid("Dream writes stay within one project.");
         return await CaptureDreamSnapshotAsync(connection, transaction, entryIds, ct);
