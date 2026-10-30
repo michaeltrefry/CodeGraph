@@ -378,9 +378,13 @@ public sealed partial class RepositoryIndex
     private readonly Dictionary<string, IndexedRepository> byRemote = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> remoteOwner = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> owners = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> aliases = new(StringComparer.OrdinalIgnoreCase);
 
-    public RepositoryIndex(IEnumerable<IndexedRepository> repositories)
+    /// <param name="aliases">Retired repository (<c>name</c> or <c>owner/name</c>) → the indexed repository its code now lives in.</param>
+    public RepositoryIndex(IEnumerable<IndexedRepository> repositories, IReadOnlyDictionary<string, string>? aliases = null)
     {
+        foreach (var (alias, target) in aliases ?? new Dictionary<string, string>())
+            this.aliases[alias.Trim()] = target;
         var list = repositories.ToList();
         byName = list.GroupBy(repository => repository.Name, StringComparer.OrdinalIgnoreCase).ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
         foreach (var repository in list)
@@ -404,6 +408,7 @@ public sealed partial class RepositoryIndex
     /// The indexed repository a story's <c>owner/repo</c> (or bare name) is, or null. Under another owner than its
     /// remote's, a name is the same repository only when that owner holds indexed repositories too (one moved between
     /// accounts the index covers, <c>michaeltrefry/SceneWorks</c> → <c>SceneWorks/SceneWorks</c>), not an upstream's.
+    /// A retired repository the owner aliased is the repository its code moved to.
     /// </summary>
     public IndexedRepository? Resolve(string candidate)
     {
@@ -412,6 +417,8 @@ public sealed partial class RepositoryIndex
         if (byName.TryGetValue(candidate, out var named))
             return named;
         var slash = candidate.LastIndexOf('/');
+        if ((aliases.GetValueOrDefault(candidate) ?? (slash < 0 ? null : aliases.GetValueOrDefault(candidate[(slash + 1)..]))) is { } moved)
+            return byName.GetValueOrDefault(moved);
         if (slash < 0 || byName.GetValueOrDefault(candidate[(slash + 1)..]) is not { } bare)
             return null;
         var mentioned = candidate[..slash];

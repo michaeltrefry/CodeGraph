@@ -63,13 +63,18 @@ public sealed record ImportMemberMapping(string MemberId, string Name, string Ki
 /// project for unmapped work and the member map. KanbanBoard: <see cref="KanbanEpicId"/> and its
 /// target project (<see cref="HoldingProjectKey"/>).
 /// </summary>
+/// <param name="RepositoryAliases">
+/// Shortcut: retired repositories (<c>mlx-gen</c> or <c>owner/mlx-gen</c>) and the indexed repository their code
+/// now lives in (<c>inference</c>). A story naming one is read as naming the other (sc-27928).
+/// </param>
 public sealed record ImportSettings(
     string HoldingProjectKey,
     IReadOnlyList<ImportTeamMapping> Teams,
     IReadOnlyList<ImportMemberMapping>? Members = null,
     string? KanbanEpicId = null,
     string? ApprovedBy = null,
-    DateTime? ApprovedAt = null);
+    DateTime? ApprovedAt = null,
+    IReadOnlyDictionary<string, string>? RepositoryAliases = null);
 
 public sealed record ImportRunView(
     Guid Id,
@@ -234,6 +239,8 @@ public sealed class ImportSettingsRequest
     public List<ImportTeamMapping>? Teams { get; init; }
     public List<ImportMemberMapping>? Members { get; init; }
     public string? KanbanEpicId { get; init; }
+    /// <summary>Retired repository → the indexed repository its code now lives in (Shortcut).</summary>
+    public Dictionary<string, string>? RepositoryAliases { get; init; }
     /// <summary>true approves the table now: imports are refused until it is approved.</summary>
     public bool? Approve { get; init; }
 }

@@ -171,7 +171,7 @@ public sealed class ShortcutImporter(
         // table was checked when it was saved, and is checked again here against what is true now. A repository
         // is applied to a project once: one the project owned, or the import attached, is recorded, so a
         // repository the owner later takes away from the project is not attached again by the next sync.
-        var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
+        var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct), settings.RepositoryAliases);
         foreach (var group in settings.Teams.Where(row => row.Repositories is { Count: > 0 } && targets.ContainsKey(row.ProjectKey)).GroupBy(row => row.ProjectKey))
         {
             var target = targets[group.Key];

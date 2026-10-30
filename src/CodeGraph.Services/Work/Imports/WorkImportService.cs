@@ -88,8 +88,37 @@ public sealed partial class WorkImportService(
             throw WorkException.Invalid($"Only the KanbanBoard epic SceneWorks Code Review 2026-10-27 ({KanbanImporter.CodeReviewEpicId}) is imported (D23); not {epic}. Nothing was saved.");
         if (settings.Teams.Any(team => team.Repositories is { Count: > 0 }))
             settings = settings with { Teams = await CheckRepositoriesAsync(settings.Teams, ct) };
+        if (settings.RepositoryAliases is { Count: > 0 })
+            settings = settings with { RepositoryAliases = await CheckAliasesAsync(settings.RepositoryAliases, ct) };
         return await imports.SaveImportSettingsAsync(source, settings, approve ? user : null, ct);
     }
+
+    /// <summary>
+    /// The table's repository aliases (sc-27928): each names a repository CodeGraph does not index (an alias never
+    /// hides an indexed one), as <c>name</c> or <c>owner/name</c>, and points at one it does, spelled as CodeGraph does.
+    /// </summary>
+    private async Task<Dictionary<string, string>> CheckAliasesAsync(IReadOnlyDictionary<string, string> aliases, CancellationToken ct)
+    {
+        var index = new RepositoryIndex(await imports.ListIndexedRepositoriesAsync(ct));
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (rawAlias, rawTarget) in aliases)
+        {
+            var alias = rawAlias.Trim();
+            if (!RepositoryAlias().IsMatch(alias))
+                throw WorkException.Invalid($"A repository alias is a repository name or owner/name; not '{rawAlias}'. Nothing was saved.");
+            if (index.Resolve(alias) is { } indexed)
+                throw WorkException.Invalid($"'{alias}' is the repository {indexed.Name} CodeGraph indexes: an alias names a retired one. Nothing was saved.");
+            if (index.Named(rawTarget ?? "") is not { } target)
+                throw WorkException.Invalid($"The alias '{alias}' points at '{rawTarget}', which CodeGraph does not index. Nothing was saved.");
+            if (!result.TryAdd(alias, target.Name))
+                throw WorkException.Invalid($"The alias '{alias}' appears twice. Nothing was saved.");
+        }
+
+        return result;
+    }
+
+    [GeneratedRegex(@"^(?:[A-Za-z0-9][A-Za-z0-9-]*/)?[A-Za-z0-9._-]+$")]
+    private static partial Regex RepositoryAlias();
 
     /// <summary>
     /// The table's repositories (sc-27928): each one CodeGraph indexes (spelled as CodeGraph does), given to one

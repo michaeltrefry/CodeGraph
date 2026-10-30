@@ -52,7 +52,7 @@ public sealed class WorkImportsAdminController(
             var request = WorkImportsHttp.Read<ImportSettingsRequest>(body);
             var settings = new ImportSettings(request.HoldingProjectKey.Trim().ToUpperInvariant(),
                 (request.Teams ?? []).Select(team => team with { ProjectKey = team.ProjectKey.Trim().ToUpperInvariant() }).ToList(),
-                request.Members, request.KanbanEpicId);
+                request.Members, request.KanbanEpicId, RepositoryAliases: request.RepositoryAliases);
             return new { settings = await Imports.SaveSettingsAsync(source, settings, request.Approve == true, User, HttpContext.RequestAborted), schedule = ScheduleNote };
         });
 

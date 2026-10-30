@@ -462,6 +462,22 @@ public sealed class WorkImportMappingTests
     }
 
     [Fact]
+    public void A_retired_repository_resolves_to_the_repository_its_alias_names()
+    {
+        var index = new RepositoryIndex([
+            new IndexedRepository("inference", "https://github.com/SceneWorks/inference.git", "SCENEWORKS"),
+            new IndexedRepository("SceneWorks", "https://github.com/SceneWorks/SceneWorks.git", "SCENEWORKS")
+        ], new Dictionary<string, string> { ["mlx-gen"] = "inference", ["SceneWorks/candle-gen"] = "inference" });
+
+        index.Resolve("SceneWorks/mlx-gen")!.Name.ShouldBe("inference");
+        index.Resolve("michaeltrefry/mlx-gen")!.Name.ShouldBe("inference"); // a bare alias matches any owner
+        index.Resolve("mlx-gen")!.Name.ShouldBe("inference");
+        index.Resolve("SceneWorks/candle-gen")!.Name.ShouldBe("inference");
+        index.Resolve("acme/candle-gen").ShouldBeNull(); // an owner/name alias matches that owner only
+        index.Resolve("SceneWorks/SceneWorks")!.Name.ShouldBe("SceneWorks");
+    }
+
+    [Fact]
     public void Proposed_keys_that_collide_get_a_number()
     {
         var taken = new HashSet<string> { "SCENEWORKS", "CODEFLOWCL", "CODEFLOWC2" };
