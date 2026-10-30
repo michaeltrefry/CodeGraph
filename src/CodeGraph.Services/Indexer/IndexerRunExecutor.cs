@@ -39,7 +39,22 @@ public sealed class IndexerRunExecutor(
                     ct.ThrowIfCancellationRequested();
                     try
                     {
-                        await service.RunAsync(projectId, "schedule", initiator, ct);
+                        var dreamRun = await service.RunAsync(projectId, "schedule", initiator, ct);
+                        switch (dreamRun.Status)
+                        {
+                            case "completed":
+                            case "skipped":
+                            case "budget_exhausted":
+                                break;
+                            case "failed":
+                                failures.Add(new InvalidOperationException(
+                                    $"Dreaming run {dreamRun.Id} failed for project {projectId}: {dreamRun.Reason ?? "See the run report."}"));
+                                break;
+                            default:
+                                failures.Add(new InvalidOperationException(
+                                    $"Dreaming run {dreamRun.Id} for project {projectId} returned unexpected status '{dreamRun.Status}'."));
+                                break;
+                        }
                     }
                     catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                     catch (Exception ex)
