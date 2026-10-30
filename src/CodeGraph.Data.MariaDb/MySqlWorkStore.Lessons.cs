@@ -192,6 +192,17 @@ public sealed partial class MySqlWorkStore
             new { target, hash = Sha(key), prefixLike = EscapeLike(sessionPrefix ?? "") + "%", none = sessionPrefix + "none" }, transaction, cancellationToken: ct));
     }
 
+    // Shared by normal event replay and lesson-to-lesson transfers: a session's item:none
+    // correction covers any of its items in either direction, exactly as EventSeenAsync.
+    private static bool LessonEventSeen(string key, string hash, ISet<string> hashes, ISet<string> keys)
+    {
+        if (hashes.Contains(hash)) return true;
+        var at = key.LastIndexOf(":item:", StringComparison.Ordinal);
+        if (!key.StartsWith("session:", StringComparison.Ordinal) || at < 0) return false;
+        var prefix = key[..(at + 6)];
+        return key == prefix + "none" ? keys.Any(k => k.StartsWith(prefix, StringComparison.Ordinal)) : keys.Contains(prefix + "none");
+    }
+
     private static Task InsertEventAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid entryId, KnowledgeSpec spec,
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
@@ -306,10 +317,13 @@ public sealed partial class MySqlWorkStore
             }
         }
 
-        var targetEvents = (await ReadEventsAsync(connection, transaction, [to], ct))[to].Where(row => row.Counted).Select(row => row.EventHash).ToHashSet();
+        var targetEvents = (await ReadEventsAsync(connection, transaction, [to], ct))[to].Where(row => row.Counted).ToList();
+        var hashes = targetEvents.Select(row => row.EventHash).ToHashSet();
+        var keys = targetEvents.Select(row => row.EventKey).ToHashSet();
         foreach (var moved in (await ReadEventsAsync(connection, transaction, [from.Id], ct))[from.Id])
         {
-            var counted = moved.Counted && targetEvents.Add(moved.EventHash);
+            var counted = moved.Counted && !LessonEventSeen(moved.EventKey, moved.EventHash, hashes, keys);
+            if (counted) { hashes.Add(moved.EventHash); keys.Add(moved.EventKey); }
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE lesson_events SET entry_id = @to, counted = @counted, arrival_revision = @arrival WHERE correction_id = @correction",
                 new { to, counted, arrival = target.Revision + 1, correction = moved.CorrectionId }, transaction, cancellationToken: ct));

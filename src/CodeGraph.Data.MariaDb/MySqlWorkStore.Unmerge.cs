@@ -181,16 +181,9 @@ public sealed partial class MySqlWorkStore
         var result = new List<EventRow>();
         foreach (var row in remaining)
         {
-            bool seen = hashes.Contains(row.EventHash);
-            // The native correction path dedupes a session's item:none against any of its items,
-            // in either direction. Merge imports retain their source's own uncounted flags.
-            if (!sourceFlags.ContainsKey(row.CorrectionId) && row.EventKey.StartsWith("session:", StringComparison.Ordinal) && row.EventKey.LastIndexOf(":item:", StringComparison.Ordinal) is var at && at >= 0)
-            {
-                var prefix = row.EventKey[..(at + 6)];
-                seen |= row.EventKey == prefix + "none" ? keys.Any(k => k.StartsWith(prefix, StringComparison.Ordinal)) : keys.Contains(prefix + "none");
-            }
+            var seen = LessonEventSeen(row.EventKey, row.EventHash, hashes, keys);
             var counted = baseline.TryGetValue(row.CorrectionId, out var old) ? old.Counted
-                : sourceFlags.TryGetValue(row.CorrectionId, out var sourceCounted) ? sourceCounted && !hashes.Contains(row.EventHash) : !seen;
+                : sourceFlags.TryGetValue(row.CorrectionId, out var sourceCounted) ? sourceCounted && !seen : !seen;
             if (counted) { hashes.Add(row.EventHash); keys.Add(row.EventKey); }
             result.Add(row with { Counted = counted });
         }

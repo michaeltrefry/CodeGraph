@@ -233,6 +233,34 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         (await connection.ExecuteScalarAsync<bool>("SELECT counted FROM lesson_events WHERE summary = 'Same session correction'")).ShouldBeFalse();
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Merge_counts_same_session_none_and_item_once_and_unmerge_restores_both_original_flags(bool sourceHasNoItem)
+    {
+        var project = await db.NewProjectAsync("UI");
+        var session = (await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex" })).GetProperty("session").GetProperty("id").GetString();
+        var item = (await db.NewItemAsync(project, "Same session source event")).GetProperty("key").GetString();
+        async Task<JsonElement> Record(string summary, string? context) =>
+            (await db.CallAsync(WorkTools.Record, new { session_id = session, entry = new { kind = "lesson", summary, what = "One source correction", item = context,
+                source = new { kind = "agent" }, applies_when = new { activity = new[] { "implementing" } } } })).GetProperty("entry");
+        var source = await Record("Unscoped or item source lesson", sourceHasNoItem ? null : item);
+        var target = await Record("Unscoped or item target lesson", sourceHasNoItem ? item : null);
+        var sourceId = source.GetProperty("id").GetString()!;
+        var targetId = target.GetProperty("id").GetString()!;
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        var original = (await connection.QueryAsync<(Guid CorrectionId, Guid EntryId, bool Counted, int? ArrivalRevision)>(
+            "SELECT correction_id, entry_id, counted, arrival_revision FROM lesson_events WHERE entry_id IN @ids ORDER BY correction_id",
+            new { ids = new[] { sourceId, targetId } })).ToList();
+        var merged = (await db.CallAsync(WorkTools.Record, new { relate = new { id = sourceId, expected_version = 1, same_as = targetId } })).GetProperty("entry");
+        merged.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(1);
+        (await connection.ExecuteScalarAsync<bool>("SELECT counted FROM lesson_events WHERE correction_id = @sourceId", new { sourceId })).ShouldBeFalse();
+        await db.CallAsync(WorkTools.Record, new { unmerge = new { id = sourceId, expected_version = 2 } });
+        (await connection.QueryAsync<(Guid CorrectionId, Guid EntryId, bool Counted, int? ArrivalRevision)>(
+            "SELECT correction_id, entry_id, counted, arrival_revision FROM lesson_events WHERE entry_id IN @ids ORDER BY correction_id",
+            new { ids = new[] { sourceId, targetId } })).ShouldBe(original);
+    }
+
     [Fact]
     public async Task Dreamer_cannot_unmerge_directly_or_through_record()
     {
