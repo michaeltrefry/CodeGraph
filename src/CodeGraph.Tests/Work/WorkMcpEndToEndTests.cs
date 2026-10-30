@@ -38,7 +38,12 @@ public sealed class WorkMcpEndToEndTests(WorkDatabase db) : IClassFixture<WorkDa
 
         var tools = await agent.ListToolsAsync();
         foreach (var tool in WorkTools.All)
-            tools.ShouldContain(tool.Name);
+        {
+            if (tool.Name == WorkTools.DreamSettings)
+                tools.ShouldNotContain(tool.Name);
+            else
+                tools.ShouldContain(tool.Name);
+        }
 
         var key = "MC" + Guid.NewGuid().ToString("N")[..4].ToUpperInvariant();
         (await agent.CallAsync("create_work", new { new_project = new { key, name = "Over MCP", repositories = new[] { new { repository = "codegraph", role = "owned" } } } }))

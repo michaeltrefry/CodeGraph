@@ -81,6 +81,8 @@
       @case ('settings') {
         @if (settings; as s) {
           <form class="cg-card dream-form" (ngSubmit)="saveSettings()"><h2>Dreaming settings</h2><p class="cg-muted">Shared defaults for scheduled and on-demand runs. The provider must support tool use.</p>
+            @if (!canEditSettings()) { <p class="cg-muted">Administrator access is required to change these shared settings.</p> }
+            <fieldset class="dream-settings-fields" [disabled]="!canEditSettings()">
             <label class="dream-check"><input type="checkbox" name="enabled" [(ngModel)]="s.enabled"> Enabled</label>
             <div class="dream-fields">
               <label class="cg-field"><span class="cg-field-label">Provider</span><input class="cg-input" name="provider" [(ngModel)]="s.default_provider" required></label>
@@ -91,7 +93,7 @@
               <label class="cg-field"><span class="cg-field-label">Maximum tokens per run</span><input class="cg-input" type="number" name="tokens" min="1" step="1" [(ngModel)]="s.max_tokens_per_run" required></label>
               <label class="cg-field"><span class="cg-field-label">Input price (USD / million tokens)</span><input class="cg-input" type="number" name="inputPrice" min="0" step="any" [(ngModel)]="s.input_cost_per_million" required></label>
               <label class="cg-field"><span class="cg-field-label">Output price (USD / million tokens)</span><input class="cg-input" type="number" name="outputPrice" min="0" step="any" [(ngModel)]="s.output_cost_per_million" required></label>
-            </div><button type="submit" class="cg-btn primary" [disabled]="busy() || settingsConflict()">Save settings</button>
+            </div></fieldset><button type="submit" class="cg-btn primary" [disabled]="!canEditSettings() || busy() || settingsConflict()">Save settings</button>
           </form>
         } @else { <p class="kn-empty">{{ loading() ? 'Loading settings…' : 'Settings unavailable. Refresh to retry.' }}</p> }
       }

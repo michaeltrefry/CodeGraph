@@ -25,5 +25,10 @@ public static class McpHubExplicitEntitlementPolicy
         "memory_read", "memory_store", "memory_diagnostics",
     };
 
-    public static bool RequiresExplicitSelection(string toolName) => ToolNames.Contains(toolName) || HiddenMemoryTools.Contains(toolName);
+    // Global paid-model budgets and schedules may be delegated to an agent, but only by an admin.
+    public static bool RequiresAdminSelection(string toolName) =>
+        string.Equals(toolName?.Trim(), "dream_settings", StringComparison.OrdinalIgnoreCase);
+
+    public static bool RequiresExplicitSelection(string toolName) =>
+        RequiresAdminSelection(toolName) || ToolNames.Contains(toolName) || HiddenMemoryTools.Contains(toolName);
 }

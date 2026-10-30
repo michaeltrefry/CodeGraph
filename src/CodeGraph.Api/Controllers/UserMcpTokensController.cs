@@ -12,7 +12,8 @@ namespace CodeGraph.Api.Controllers;
 [Route("api/user/mcp-tokens")]
 public class UserMcpTokensController(
     McpPersonalAccessTokenService tokenService,
-    IMcpHubStore hubStore) : Controller
+    IMcpHubStore hubStore,
+    IAuthorizationService authorization) : Controller
 {
     [HttpGet]
     public async Task<ActionResult<IReadOnlyList<McpPersonalAccessTokenMetadata>>> List(CancellationToken cancellationToken)
@@ -25,10 +26,12 @@ public class UserMcpTokensController(
     public async Task<ActionResult<IReadOnlyList<McpHubToolResponse>>> Tools(CancellationToken cancellationToken)
     {
         var tools = await hubStore.ListToolsAsync(cancellationToken);
+        var isAdmin = await IsAdminAsync();
         return Ok(tools
             // Effective entitlement requires both admin-owned `enabled` and system-owned
             // `is_available` — see Shortcut sc-1055.
             .Where(tool => tool.Enabled && tool.IsAvailable)
+            .Where(tool => isAdmin || !McpHubExplicitEntitlementPolicy.RequiresAdminSelection(tool.ToolName))
             .OrderBy(tool => tool.ProviderKey)
             .ThenBy(tool => tool.ToolName)
             .Select(tool => new McpHubToolResponse(
@@ -51,6 +54,9 @@ public class UserMcpTokensController(
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateMcpPersonalAccessTokenRequest request, CancellationToken cancellationToken)
     {
+        if (await SelectionDeniedAsync(request.ToolNames))
+            return Forbid();
+
         var result = await tokenService.CreateForUserAsync(
             GetNormalizedUsername(),
             request.Name,
@@ -81,6 +87,9 @@ public class UserMcpTokensController(
         [FromBody] UpdateMcpPersonalAccessTokenToolsRequest request,
         CancellationToken cancellationToken)
     {
+        if (await SelectionDeniedAsync(request.ToolNames))
+            return Forbid();
+
         var result = await tokenService.UpdateToolsForUserAsync(
             GetNormalizedUsername(),
             id,
@@ -110,6 +119,12 @@ public class UserMcpTokensController(
         (User.GetUsername() ?? Request.Headers["X-CodeGraph-User"].FirstOrDefault() ?? "anonymous")
         .Trim()
         .ToLowerInvariant();
+
+    private async Task<bool> SelectionDeniedAsync(IReadOnlyList<string>? toolNames) =>
+        toolNames?.Any(McpHubExplicitEntitlementPolicy.RequiresAdminSelection) == true && !await IsAdminAsync();
+
+    private async Task<bool> IsAdminAsync() =>
+        (await authorization.AuthorizeAsync(User, null, CodeGraphAuthenticationDefaults.AdminPolicy)).Succeeded;
 }
 
 public sealed record CreateMcpPersonalAccessTokenRequest(

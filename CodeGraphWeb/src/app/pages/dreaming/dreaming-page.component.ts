@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
+import { AuthService } from '../../core/auth.service';
 import { KnowledgeProjectService, actorLabel, workError, words } from '../knowledge/knowledge-ui';
 import { DreamingApiService } from './dreaming-api.service';
 import { DreamAction, DreamEffects, DreamInstructionSet, DreamRevertResult, DreamRun, DreamSettings } from './dreaming.models';
@@ -15,6 +16,8 @@ import { DreamAction, DreamEffects, DreamInstructionSet, DreamRevertResult, Drea
   styleUrls: ['../knowledge/knowledge.scss', './dreaming-page.component.scss']
 })
 export class DreamingPageComponent implements OnInit {
+  private readonly auth = inject(AuthService);
+  readonly canEditSettings = computed(() => !this.auth.enabled() || this.auth.currentUser()?.isAdmin === true);
   private readonly api = inject(DreamingApiService);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
@@ -165,7 +168,7 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async saveSettings(): Promise<void> {
-    if (!this.settings || this.settingsConflict()) return;
+    if (!this.canEditSettings() || !this.settings || this.settingsConflict()) return;
     const key = this.project.selected()!;
     const settings = { ...this.settings };
     if (!settings.default_provider.trim() || !settings.default_model.trim() || !settings.schedule.trim() ||

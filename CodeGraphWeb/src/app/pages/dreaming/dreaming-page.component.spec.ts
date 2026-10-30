@@ -5,6 +5,7 @@ import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/route
 import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KnowledgeProjectService } from '../knowledge/knowledge-ui';
+import { AuthService } from '../../core/auth.service';
 import { DreamingApiService } from './dreaming-api.service';
 import { DreamingPageComponent } from './dreaming-page.component';
 import { DreamEffects, DreamInstructionSet, DreamRun, DreamSettings } from './dreaming.models';
@@ -25,10 +26,12 @@ describe('DreamingPageComponent', () => {
   let api: Record<string, ReturnType<typeof vi.fn>>;
   let project: { selected: ReturnType<typeof signal<string | null>>; projects: ReturnType<typeof signal<any[]>>; error: ReturnType<typeof signal<string | null>>; load: ReturnType<typeof vi.fn>; select: ReturnType<typeof vi.fn> };
   let params: Subject<ReturnType<typeof convertToParamMap>>;
+  let auth: { enabled: ReturnType<typeof signal<boolean>>; currentUser: ReturnType<typeof signal<any>> };
 
   async function create() {
     await TestBed.configureTestingModule({ imports: [DreamingPageComponent], providers: [provideRouter([]),
       { provide: DreamingApiService, useValue: api }, { provide: KnowledgeProjectService, useValue: project },
+      { provide: AuthService, useValue: auth },
       { provide: ActivatedRoute, useValue: { paramMap: params } }
     ] }).compileComponents();
     const fixture = TestBed.createComponent(DreamingPageComponent);
@@ -42,12 +45,28 @@ describe('DreamingPageComponent', () => {
 
   beforeEach(() => {
     TestBed.resetTestingModule(); params = new Subject();
+    auth = { enabled: signal(true), currentUser: signal({ isAdmin: true }) };
     project = { selected: signal<string | null>('ONE'), projects: signal([{ key: 'ONE', title: 'One' }, { key: 'TWO', title: 'Two' }]), error: signal<string | null>(null), load: vi.fn().mockResolvedValue('ONE'), select: vi.fn().mockImplementation(key => project.selected.set(key)) };
     api = {
       runs: vi.fn().mockReturnValue(of([run])), run: vi.fn().mockReturnValue(of(run)), runNow: vi.fn().mockReturnValue(of(run)), effects: vi.fn().mockReturnValue(of(effects)),
       settings: vi.fn().mockReturnValue(of(settings)), saveSettings: vi.fn().mockReturnValue(of(settings)), instructions: vi.fn().mockReturnValue(of(instructions)), saveInstructions: vi.fn().mockReturnValue(of(instructions.base)),
       revert: vi.fn().mockReturnValue(of({ run_id: run.id, entries: [{ journal_id: 1, entry_id: 'rule-one', action: 'revise', status: 'conflict', reason: 'Later edit by a session.' }] }))
     };
+  });
+
+  it('shows viewers shared settings as read-only while retaining run reports, run now and wiki editing', async () => {
+    auth.currentUser.set({ isAdmin: false });
+    const fixture = await create(); const page = fixture.componentInstance;
+    page.tab.set('settings'); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('fieldset').disabled).toBe(true);
+    expect(fixture.nativeElement.querySelector('button[type=submit]').disabled).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain('Administrator access');
+    await page.saveSettings(); expect(api['saveSettings']).not.toHaveBeenCalled();
+    await page.runNow(); expect(api['runNow']).toHaveBeenCalledWith('ONE'); expect(page.selected()?.id).toBe(run.id);
+    page.tab.set('instructions'); fixture.detectChanges();
+    await page.saveInstructions('base'); expect(api['saveInstructions']).toHaveBeenCalled();
+    auth.currentUser.set({ isAdmin: true }); expect(page.canEditSettings()).toBe(true);
+    auth.currentUser.set(null); auth.enabled.set(false); expect(page.canEditSettings()).toBe(true);
   });
 
   it('lists run attribution, model, tokens, cost and action counts, and renders evidence and measured before/after', async () => {

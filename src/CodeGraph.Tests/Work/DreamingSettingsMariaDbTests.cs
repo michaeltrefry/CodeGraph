@@ -60,7 +60,7 @@ public sealed class DreamingSettingsMariaDbTests(WorkDatabase db) : IClassFixtur
             .AddSingleton<IDreamingService,DreamingService>().AddSingleton<IWorkService>(sp=>new WorkService(db.Store,db.Clock,serviceProvider:sp)).BuildServiceProvider();
         var work=services.GetRequiredService<IWorkService>();
         await using var host=await WorkRestHost.StartAsync(work,db.Store);
-        var token=await host.CreateTokenAsync("alice");
+        var token=await host.CreateTokenAsync("alice",WorkTools.All.Select(tool=>tool.Name).ToArray());
         var key=await db.NewProjectAsync("DS","codegraph");
         var path=$"/api/work/dreaming/{key}";
         async Task<(int Status,JsonElement Body)> Call(HttpMethod method,string suffix,object? body=null)=>
