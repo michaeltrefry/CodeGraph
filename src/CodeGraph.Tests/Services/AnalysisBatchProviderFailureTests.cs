@@ -72,6 +72,60 @@ public class AnalysisBatchProviderFailureTests
     }
 
     [Theory]
+    [InlineData("[null]")]
+    [InlineData("null")]
+    [InlineData("[{}]")]
+    public async Task OpenAi_MalformedChoiceShape_PreservesValidNeighbors(string choices)
+    {
+        var provider = OpenAi(new StubHandler(request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/batches/batch")
+                ? Json("""{"id":"batch","status":"completed","output_file_id":"output"}""")
+                : Json("""
+                    {"custom_id":"before","response":{"status_code":200,"body":{"model":"stub","choices":[{"message":{"content":"valid before"}}]}}}
+                    {"custom_id":"bad","response":{"status_code":200,"body":{"model":"stub","choices":__CHOICES__}}}
+                    {"custom_id":"after","response":{"status_code":200,"body":{"model":"stub","choices":[{"message":{"content":"valid after"}}]}}}
+                    """.Replace("__CHOICES__", choices))));
+
+        var results = await provider.GetBatchResultsAsync("batch");
+
+        AssertMalformedNeighbor(results, "choices");
+    }
+
+    [Theory]
+    [InlineData("[null]")]
+    [InlineData("null")]
+    [InlineData("[{}]")]
+    public async Task Anthropic_MalformedContentShape_PreservesValidNeighbors(string content)
+    {
+        var provider = Anthropic(new StubHandler(_ => Json("""
+            {"custom_id":"before","result":{"type":"succeeded","message":{"model":"stub","content":[{"type":"text","text":"valid before"}]}}}
+            {"custom_id":"bad","result":{"type":"succeeded","message":{"model":"stub","content":__CONTENT__}}}
+            {"custom_id":"after","result":{"type":"succeeded","message":{"model":"stub","content":[{"type":"text","text":"valid after"}]}}}
+            """.Replace("__CONTENT__", content))));
+
+        var results = await provider.GetBatchResultsAsync("batch");
+
+        AssertMalformedNeighbor(results, "content");
+    }
+
+    private static void AssertMalformedNeighbor(IReadOnlyList<AnalysisBatchItemResult> results, string field)
+    {
+        results.Count.ShouldBe(3);
+        results[0].CustomId.ShouldBe("before");
+        results[0].Status.ShouldBe("succeeded");
+        results[0].Text.ShouldBe("valid before");
+        results[0].Error.ShouldBeNull();
+        results[1].CustomId.ShouldBe("bad");
+        results[1].Status.ShouldBe("errored");
+        results[1].Error!.ShouldContain(field);
+        results[1].ModelUsed.ShouldBe("stub");
+        results[2].CustomId.ShouldBe("after");
+        results[2].Status.ShouldBe("succeeded");
+        results[2].Text.ShouldBe("valid after");
+        results[2].Error.ShouldBeNull();
+    }
+
+    [Theory]
     [InlineData("openai")]
     [InlineData("anthropic")]
     public async Task HttpStatusError_IncludesProviderResponseBody(string providerName)

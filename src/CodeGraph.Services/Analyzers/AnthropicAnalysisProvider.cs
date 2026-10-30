@@ -190,12 +190,18 @@ public class AnthropicAnalysisProvider(
                 continue;
             }
 
+            var status = result.Result?.Type ?? "unknown";
+            var content = result.Result?.Message?.Content;
+            var text = ExtractText(content);
+            var error = result.Result?.Error?.ToString();
+            if (string.Equals(status, "succeeded", StringComparison.OrdinalIgnoreCase) &&
+                (content is null || content.Any(block => block is null) || string.IsNullOrWhiteSpace(text)))
+            {
+                status = "errored";
+                error ??= "Malformed provider result: message content is missing, contains null blocks, or has no non-empty text.";
+            }
             results.Add(new AnalysisBatchItemResult(
-                result.CustomId,
-                result.Result?.Type ?? "unknown",
-                ExtractText(result.Result?.Message?.Content),
-                result.Result?.Message?.Model,
-                result.Result?.Error?.ToString()));
+                result.CustomId, status, text, result.Result?.Message?.Model, error));
         }
 
         return results;
@@ -257,8 +263,8 @@ public class AnthropicAnalysisProvider(
     private static string? ExtractText(IReadOnlyList<AnthropicContentBlock>? content)
     {
         return content?
-            .Where(block => block.Type == "text")
-            .Select(block => block.Text?.StripCodeFences())
+            .Where(block => block?.Type == "text")
+            .Select(block => block?.Text?.StripCodeFences())
             .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
     }
 

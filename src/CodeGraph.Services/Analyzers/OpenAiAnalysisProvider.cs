@@ -70,7 +70,7 @@ public class OpenAiAnalysisProvider(
         var completion = await response.Content.ReadFromJsonAsync<OpenAiChatCompletionResponse>(SnakeOpts, ct)
             ?? throw new InvalidOperationException("OpenAI returned null chat completion response");
         var text = completion.Choices
-            .Select(choice => choice.Message?.Content)
+            .Select(choice => choice?.Message?.Content)
             .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
         if (string.IsNullOrWhiteSpace(text))
             throw new InvalidOperationException("OpenAI returned an empty chat completion response");
@@ -207,10 +207,17 @@ public class OpenAiAnalysisProvider(
                     continue;
                 }
                 var error = item.Error?.ToString() ?? item.Response?.Body?.Error?.ToString();
-                var succeeded = error is null && item.Response?.StatusCode is >= 200 and < 300;
-                var text = item.Response?.Body?.Choices
-                    ?.Select(choice => choice.Message?.Content)
+                var choices = item.Response?.Body?.Choices;
+                var text = choices?.Select(choice => choice?.Message?.Content)
                     .FirstOrDefault(content => !string.IsNullOrWhiteSpace(content));
+                if (error is null && item.Response?.StatusCode is >= 200 and < 300)
+                {
+                    if (choices is null || choices.Count == 0 || choices.Any(choice => choice is null || choice.Message is null))
+                        error = "Malformed provider result: response choices are missing or contain a null choice/message.";
+                    else if (string.IsNullOrWhiteSpace(text))
+                        error = "Malformed provider result: response choices contain no non-empty text.";
+                }
+                var succeeded = error is null && item.Response?.StatusCode is >= 200 and < 300;
                 results.Add(new AnalysisBatchItemResult(item.CustomId, succeeded ? "succeeded" : "errored",
                     text, item.Response?.Body?.Model,
                     succeeded ? null : error ?? $"Provider returned HTTP {item.Response?.StatusCode}."));
