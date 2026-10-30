@@ -288,7 +288,6 @@ class StaticEvaluator {
             return;
         const writes = [];
         const aliases = [];
-        const containers = [];
         for (const file of this.model.files) {
             for (const imp of file.getImportDeclarations()) {
                 const target = this.model.module(file, imp.getModuleSpecifierValue());
@@ -307,8 +306,6 @@ class StaticEvaluator {
             file.forEachDescendant(node => {
                 if (this.isBinding(node))
                     aliases.push(node);
-                if (ts_morph_1.Node.isObjectLiteralExpression(node) || ts_morph_1.Node.isArrayLiteralExpression(node))
-                    containers.push(node);
                 if (ts_morph_1.Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= ts_morph_1.SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= ts_morph_1.SyntaxKind.LastAssignment)
                     writes.push({ target: node.getLeft(), member: !ts_morph_1.Node.isIdentifier(node.getLeft()) });
                 else if ((ts_morph_1.Node.isPrefixUnaryExpression(node) || ts_morph_1.Node.isPostfixUnaryExpression(node)) && [ts_morph_1.SyntaxKind.PlusPlusToken, ts_morph_1.SyntaxKind.MinusMinusToken].includes(node.getOperatorToken()))
@@ -319,64 +316,133 @@ class StaticEvaluator {
                     writes.push({ target: node.getArguments()[0], member: true });
             });
         }
-        const connectValue = (key, value) => {
-            if (ts_morph_1.Node.isObjectLiteralExpression(value) || ts_morph_1.Node.isArrayLiteralExpression(value)) {
-                this.joinAliases(key, this.aliasKey(value));
-                return;
+        const identities = new Map();
+        const selectedMember = (receiver, name, seen) => {
+            const source = identity(receiver, seen);
+            if (seen.has(source))
+                return undefined;
+            seen = new Set(seen);
+            seen.add(source);
+            if (ts_morph_1.Node.isSourceFile(source))
+                return this.model.exported(source, name);
+            if (ts_morph_1.Node.isArrayLiteralExpression(source))
+                return source.getElements()[Number(name)];
+            if (ts_morph_1.Node.isClassDeclaration(source))
+                return source.getProperty(name);
+            if (!ts_morph_1.Node.isObjectLiteralExpression(source))
+                return undefined;
+            for (const property of source.getProperties().reverse()) {
+                if (ts_morph_1.Node.isSpreadAssignment(property)) {
+                    const member = selectedMember(property.getExpression(), name, new Set(seen));
+                    if (member)
+                        return member;
+                }
+                else if (ts_morph_1.Node.isPropertyAssignment(property) && property.getName().replace(/^["']|["']$/g, '') === name)
+                    return property.getInitializer();
+                else if (ts_morph_1.Node.isShorthandPropertyAssignment(property) && property.getName() === name)
+                    return property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
             }
-            if (!(ts_morph_1.Node.isIdentifier(value) || ts_morph_1.Node.isPropertyAccessExpression(value) || ts_morph_1.Node.isElementAccessExpression(value) || ts_morph_1.Node.isParenthesizedExpression(value) || ts_morph_1.Node.isAsExpression(value) || ts_morph_1.Node.isNonNullExpression(value)))
-                return;
-            const resolved = this.model.resolve(value);
-            if (resolved)
-                this.joinAliases(key, this.aliasKey(resolved));
-            for (const reference of this.assignmentTargets(value)) {
-                // A namespace is a container of independent exports, not one mutable export.
-                if (reference.getSymbol()?.getDeclarations().some(ts_morph_1.Node.isNamespaceImport))
-                    continue;
-                // Library member symbols (e.g. AbortController.signal) describe a type,
-                // not one instance. Keep only admitted binding identities and receivers.
-                if (reference.getSymbol()?.getDeclarations().some(declaration => this.admitted(declaration)))
-                    this.joinAliases(key, this.aliasKey(reference));
+            return undefined;
+        };
+        // Resolve declaration/member identity, not runtime values. A parameter remains a
+        // stable identity even when no invocation value exists in the indexed AST.
+        const identity = (node, seen = new Set()) => {
+            if (seen.has(node) || seen.size >= 60)
+                return node;
+            const cached = identities.get(node);
+            if (cached)
+                return cached;
+            seen = new Set(seen);
+            seen.add(node);
+            let target;
+            if (ts_morph_1.Node.isParenthesizedExpression(node) || ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isNonNullExpression(node) || ts_morph_1.Node.isTypeAssertion(node))
+                target = node.getExpression();
+            else if (ts_morph_1.Node.isVariableDeclaration(node) || ts_morph_1.Node.isPropertyDeclaration(node))
+                target = node.getInitializer();
+            else if (ts_morph_1.Node.isBindingElement(node)) {
+                const path = [];
+                let element = node;
+                let source;
+                for (;;) {
+                    const pattern = element.getParentOrThrow();
+                    const name = element.getPropertyNameNode() ?? element.getNameNode();
+                    if (!element.getDotDotDotToken())
+                        path.unshift(ts_morph_1.Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : name.getText().replace(/^["']|["']$/g, ''));
+                    const owner = pattern.getParentOrThrow();
+                    if (ts_morph_1.Node.isBindingElement(owner)) {
+                        element = owner;
+                        continue;
+                    }
+                    if (ts_morph_1.Node.isVariableDeclaration(owner))
+                        source = owner.getInitializer();
+                    break; // Destructured parameters retain separate invocation-bound identities.
+                }
+                for (const name of path) {
+                    if (!source)
+                        break;
+                    source = selectedMember(source, name, new Set(seen));
+                }
+                target = source ?? node.getInitializer();
             }
+            else if (ts_morph_1.Node.isImportSpecifier(node) || ts_morph_1.Node.isImportClause(node) || ts_morph_1.Node.isNamespaceImport(node)) {
+                const declaration = node.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ImportDeclaration);
+                const file = this.model.module(node, declaration.getModuleSpecifierValue());
+                target = file && (ts_morph_1.Node.isNamespaceImport(node) ? file : this.model.exported(file, ts_morph_1.Node.isImportSpecifier(node) ? node.getName() : 'default'));
+            }
+            else if (ts_morph_1.Node.isIdentifier(node)) {
+                const declarations = node.getSymbol()?.getDeclarations().filter(declaration => this.admitted(declaration)) ?? [];
+                if (declarations.length === 1)
+                    target = declarations[0];
+            }
+            else if (ts_morph_1.Node.isPropertyAccessExpression(node) || ts_morph_1.Node.isElementAccessExpression(node)) {
+                const argument = ts_morph_1.Node.isElementAccessExpression(node) ? node.getArgumentExpression() : undefined;
+                const name = ts_morph_1.Node.isPropertyAccessExpression(node) ? node.getName() : argument && (ts_morph_1.Node.isStringLiteral(argument) || ts_morph_1.Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
+                target = name === undefined ? undefined : selectedMember(node.getExpression(), name, new Set(seen));
+                // Unknown members conservatively refer to their own receiver, never all
+                // siblings of an object that merely contains that receiver.
+                target ?? (target = node.getSymbol()?.getDeclarations().find(declaration => this.admitted(declaration) && ts_morph_1.Node.isPropertyDeclaration(declaration)));
+                target ?? (target = node.getExpression());
+            }
+            const result = target && target !== node ? identity(target, seen) : node;
+            identities.set(node, result);
+            return result;
         };
         for (const alias of aliases) {
-            if (!(ts_morph_1.Node.isVariableDeclaration(alias) || ts_morph_1.Node.isPropertyDeclaration(alias) || ts_morph_1.Node.isParameterDeclaration(alias) || ts_morph_1.Node.isBindingElement(alias)))
-                continue;
-            const key = this.aliasKey(alias), initializer = alias.getInitializer();
-            const name = alias.getNameNode();
-            // Destructured parameters are independent invocation-bound values. A write
-            // through one child must not make an immutable sibling endpoint unknown.
-            if (!ts_morph_1.Node.isParameterDeclaration(alias) && (ts_morph_1.Node.isObjectBindingPattern(name) || ts_morph_1.Node.isArrayBindingPattern(name)))
-                for (const element of name.getDescendantsOfKind(ts_morph_1.SyntaxKind.BindingElement))
-                    this.joinAliases(key, this.aliasKey(element));
-            if (initializer)
-                connectValue(key, initializer);
+            const target = identity(alias);
+            this.joinAliases(this.aliasKey(alias), this.aliasKey(target));
+            if ((ts_morph_1.Node.isParameterDeclaration(alias) || ts_morph_1.Node.isBindingElement(alias)) && alias.getInitializer())
+                this.joinAliases(this.aliasKey(alias), this.aliasKey(identity(alias.getInitializer())));
         }
-        // Containers retain binding identity even when their member has no resolvable
-        // value (notably an invocation-bound parameter). Destructuring and nested writes
-        // can conservatively invalidate contained references without simulating execution.
-        for (const container of containers) {
-            const key = this.aliasKey(container);
-            if (ts_morph_1.Node.isObjectLiteralExpression(container))
-                for (const property of container.getProperties()) {
-                    if (ts_morph_1.Node.isShorthandPropertyAssignment(property)) {
-                        const symbol = property.getValueSymbol()?.compilerSymbol;
-                        if (symbol)
-                            this.joinAliases(key, symbol);
-                    }
-                    else if (ts_morph_1.Node.isPropertyAssignment(property)) {
-                        const value = property.getInitializer();
-                        if (value)
-                            connectValue(key, value);
-                    }
-                    else if (ts_morph_1.Node.isSpreadAssignment(property))
-                        connectValue(key, property.getExpression());
+        // Containment is directional: writes through a container may affect referenced
+        // children, but writing one child cannot mutate the container's other values.
+        const contained = (container) => {
+            if (ts_morph_1.Node.isArrayLiteralExpression(container))
+                return container.getElements().map(element => ts_morph_1.Node.isSpreadElement(element) ? element.getExpression() : element);
+            if (!ts_morph_1.Node.isObjectLiteralExpression(container))
+                return [];
+            return container.getProperties().flatMap(property => {
+                if (ts_morph_1.Node.isPropertyAssignment(property)) {
+                    const value = property.getInitializer();
+                    return value ? [value] : [];
                 }
-            else if (ts_morph_1.Node.isArrayLiteralExpression(container))
-                for (const element of container.getElements())
-                    connectValue(key, ts_morph_1.Node.isSpreadElement(element) ? element.getExpression() : element);
-        }
+                if (ts_morph_1.Node.isShorthandPropertyAssignment(property)) {
+                    const value = property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
+                    return value ? [value] : [];
+                }
+                return ts_morph_1.Node.isSpreadAssignment(property) ? [property.getExpression()] : [];
+            });
+        };
         this.writtenAliases = new Set();
+        const marked = new Set();
+        const mark = (reference) => {
+            const source = identity(reference);
+            this.writtenAliases.add(this.aliasRoot(this.aliasKey(source)));
+            if (marked.has(source))
+                return;
+            marked.add(source);
+            for (const child of contained(source))
+                mark(child);
+        };
         for (const { target, member } of writes) {
             // Rebinding a local changes that binding, not objects that previously captured
             // its value. Member writes, unlike rebinding, invalidate the shared referent.
@@ -384,12 +450,8 @@ class StaticEvaluator {
                 this.writtenBindings.add(this.aliasKey(target));
                 continue;
             }
-            for (const reference of this.assignmentTargets(target)) {
-                const resolved = this.model.resolve(reference);
-                this.writtenAliases.add(this.aliasRoot(this.aliasKey(reference)));
-                if (resolved)
-                    this.writtenAliases.add(this.aliasRoot(this.aliasKey(resolved)));
-            }
+            for (const reference of this.assignmentTargets(target))
+                mark(reference);
         }
     }
     mutated(node) {

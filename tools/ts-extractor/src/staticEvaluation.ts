@@ -206,7 +206,6 @@ export class StaticEvaluator {
     if (this.writtenAliases) return;
     const writes: Array<{ target: Node; member: boolean }> = [];
     const aliases: Node[] = [];
-    const containers: Node[] = [];
     for (const file of this.model.files) {
       for (const imp of file.getImportDeclarations()) {
         const target = this.model.module(file, imp.getModuleSpecifierValue()); if (!target) continue;
@@ -219,57 +218,98 @@ export class StaticEvaluator {
       }
       file.forEachDescendant(node => {
         if (this.isBinding(node)) aliases.push(node);
-        if (Node.isObjectLiteralExpression(node) || Node.isArrayLiteralExpression(node)) containers.push(node);
         if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) writes.push({target:node.getLeft(),member:!Node.isIdentifier(node.getLeft())});
         else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken,SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) writes.push({target:node.getOperand(),member:!Node.isIdentifier(node.getOperand())});
         else if (Node.isDeleteExpression(node)) writes.push({target:node.getExpression(),member:!Node.isIdentifier(node.getExpression())});
         else if (Node.isCallExpression(node) && node.getExpression().getText()==='Object.assign' && node.getArguments()[0]) writes.push({target:node.getArguments()[0],member:true});
       });
     }
-    const connectValue = (key: object, value: Node): void => {
-      if (Node.isObjectLiteralExpression(value) || Node.isArrayLiteralExpression(value)) { this.joinAliases(key,this.aliasKey(value)); return; }
-      if (!(Node.isIdentifier(value) || Node.isPropertyAccessExpression(value) || Node.isElementAccessExpression(value) || Node.isParenthesizedExpression(value) || Node.isAsExpression(value) || Node.isNonNullExpression(value))) return;
-      const resolved=this.model.resolve(value); if (resolved) this.joinAliases(key,this.aliasKey(resolved));
-      for (const reference of this.assignmentTargets(value)) {
-        // A namespace is a container of independent exports, not one mutable export.
-        if (reference.getSymbol()?.getDeclarations().some(Node.isNamespaceImport)) continue;
-        // Library member symbols (e.g. AbortController.signal) describe a type,
-        // not one instance. Keep only admitted binding identities and receivers.
-        if (reference.getSymbol()?.getDeclarations().some(declaration=>this.admitted(declaration))) this.joinAliases(key,this.aliasKey(reference));
+    const identities = new Map<Node, Node>();
+    const selectedMember = (receiver: Node, name: string, seen: Set<Node>): Node | undefined => {
+      const source=identity(receiver,seen);
+      if (seen.has(source)) return undefined;
+      seen=new Set(seen); seen.add(source);
+      if (Node.isSourceFile(source)) return this.model.exported(source,name);
+      if (Node.isArrayLiteralExpression(source)) return source.getElements()[Number(name)];
+      if (Node.isClassDeclaration(source)) return source.getProperty(name);
+      if (!Node.isObjectLiteralExpression(source)) return undefined;
+      for (const property of source.getProperties().reverse()) {
+        if (Node.isSpreadAssignment(property)) {
+          const member=selectedMember(property.getExpression(),name,new Set(seen)); if (member) return member;
+        } else if (Node.isPropertyAssignment(property) && property.getName().replace(/^["']|["']$/g,'')===name) return property.getInitializer();
+        else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) return property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration));
       }
+      return undefined;
+    };
+    // Resolve declaration/member identity, not runtime values. A parameter remains a
+    // stable identity even when no invocation value exists in the indexed AST.
+    const identity = (node: Node, seen = new Set<Node>()): Node => {
+      if (seen.has(node) || seen.size >= 60) return node;
+      const cached=identities.get(node); if (cached) return cached;
+      seen=new Set(seen); seen.add(node);
+      let target: Node | undefined;
+      if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) target=node.getExpression();
+      else if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) target=node.getInitializer();
+      else if (Node.isBindingElement(node)) {
+        const path: string[]=[]; let element=node; let source: Node | undefined;
+        for (;;) {
+          const pattern=element.getParentOrThrow();
+          const name=element.getPropertyNameNode() ?? element.getNameNode();
+          if (!element.getDotDotDotToken()) path.unshift(Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : name.getText().replace(/^["']|["']$/g,''));
+          const owner=pattern.getParentOrThrow();
+          if (Node.isBindingElement(owner)) { element=owner; continue; }
+          if (Node.isVariableDeclaration(owner)) source=owner.getInitializer();
+          break; // Destructured parameters retain separate invocation-bound identities.
+        }
+        for (const name of path) { if (!source) break; source=selectedMember(source,name,new Set(seen)); }
+        target=source ?? node.getInitializer();
+      } else if (Node.isImportSpecifier(node) || Node.isImportClause(node) || Node.isNamespaceImport(node)) {
+        const declaration=node.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+        const file=this.model.module(node,declaration.getModuleSpecifierValue());
+        target=file && (Node.isNamespaceImport(node) ? file : this.model.exported(file,Node.isImportSpecifier(node) ? node.getName() : 'default'));
+      } else if (Node.isIdentifier(node)) {
+        const declarations=node.getSymbol()?.getDeclarations().filter(declaration=>this.admitted(declaration)) ?? [];
+        if (declarations.length===1) target=declarations[0];
+      } else if (Node.isPropertyAccessExpression(node) || Node.isElementAccessExpression(node)) {
+        const argument=Node.isElementAccessExpression(node) ? node.getArgumentExpression() : undefined;
+        const name=Node.isPropertyAccessExpression(node) ? node.getName() : argument && (Node.isStringLiteral(argument) || Node.isNumericLiteral(argument)) ? String(argument.getLiteralValue()) : undefined;
+        target=name===undefined ? undefined : selectedMember(node.getExpression(),name,new Set(seen));
+        // Unknown members conservatively refer to their own receiver, never all
+        // siblings of an object that merely contains that receiver.
+        target ??= node.getSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration) && Node.isPropertyDeclaration(declaration));
+        target ??= node.getExpression();
+      }
+      const result=target && target!==node ? identity(target,seen) : node;
+      identities.set(node,result); return result;
     };
     for (const alias of aliases) {
-      if (!(Node.isVariableDeclaration(alias) || Node.isPropertyDeclaration(alias) || Node.isParameterDeclaration(alias) || Node.isBindingElement(alias))) continue;
-      const key=this.aliasKey(alias), initializer=alias.getInitializer();
-      const name=alias.getNameNode();
-      // Destructured parameters are independent invocation-bound values. A write
-      // through one child must not make an immutable sibling endpoint unknown.
-      if (!Node.isParameterDeclaration(alias) && (Node.isObjectBindingPattern(name) || Node.isArrayBindingPattern(name))) for (const element of name.getDescendantsOfKind(SyntaxKind.BindingElement)) this.joinAliases(key,this.aliasKey(element));
-      if (initializer) connectValue(key,initializer);
+      const target=identity(alias); this.joinAliases(this.aliasKey(alias),this.aliasKey(target));
+      if ((Node.isParameterDeclaration(alias) || Node.isBindingElement(alias)) && alias.getInitializer()) this.joinAliases(this.aliasKey(alias),this.aliasKey(identity(alias.getInitializer()!)));
     }
-    // Containers retain binding identity even when their member has no resolvable
-    // value (notably an invocation-bound parameter). Destructuring and nested writes
-    // can conservatively invalidate contained references without simulating execution.
-    for (const container of containers) {
-      const key=this.aliasKey(container);
-      if (Node.isObjectLiteralExpression(container)) for (const property of container.getProperties()) {
-        if (Node.isShorthandPropertyAssignment(property)) {
-          const symbol=property.getValueSymbol()?.compilerSymbol; if (symbol) this.joinAliases(key,symbol);
-        } else if (Node.isPropertyAssignment(property)) { const value=property.getInitializer(); if (value) connectValue(key,value); }
-        else if (Node.isSpreadAssignment(property)) connectValue(key,property.getExpression());
-      }
-      else if (Node.isArrayLiteralExpression(container)) for (const element of container.getElements()) connectValue(key,Node.isSpreadElement(element) ? element.getExpression() : element);
-    }
+    // Containment is directional: writes through a container may affect referenced
+    // children, but writing one child cannot mutate the container's other values.
+    const contained = (container: Node): Node[] => {
+      if (Node.isArrayLiteralExpression(container)) return container.getElements().map(element=>Node.isSpreadElement(element) ? element.getExpression() : element);
+      if (!Node.isObjectLiteralExpression(container)) return [];
+      return container.getProperties().flatMap(property=> {
+        if (Node.isPropertyAssignment(property)) { const value=property.getInitializer(); return value ? [value] : []; }
+        if (Node.isShorthandPropertyAssignment(property)) { const value=property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration)); return value ? [value] : []; }
+        return Node.isSpreadAssignment(property) ? [property.getExpression()] : [];
+      });
+    };
     this.writtenAliases=new Set<object>();
+    const marked=new Set<Node>();
+    const mark = (reference: Node): void => {
+      const source=identity(reference);
+      this.writtenAliases!.add(this.aliasRoot(this.aliasKey(source)));
+      if (marked.has(source)) return; marked.add(source);
+      for (const child of contained(source)) mark(child);
+    };
     for (const {target,member} of writes) {
       // Rebinding a local changes that binding, not objects that previously captured
       // its value. Member writes, unlike rebinding, invalidate the shared referent.
       if (!member) { this.writtenBindings.add(this.aliasKey(target)); continue; }
-      for (const reference of this.assignmentTargets(target)) {
-        const resolved=this.model.resolve(reference);
-        this.writtenAliases.add(this.aliasRoot(this.aliasKey(reference)));
-        if (resolved) this.writtenAliases.add(this.aliasRoot(this.aliasKey(resolved)));
-      }
+      for (const reference of this.assignmentTargets(target)) mark(reference);
     }
   }
   private mutated(node: Node): boolean {

@@ -354,10 +354,11 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     const result = fixture({ 'destructure.ts': `
     export function objectWrite(){const options={method:'GET'};const holder={options};const {options:alias}=holder;alias.method='DELETE';return fetch('/api',options);}
     export function arrayWrite(){const options={method:'GET'};const holder=[options];const [alias]=holder;alias.method='DELETE';return fetch('/api',options);}
+    export function restWrite(){const options={method:'GET'};const holder={options};const {...alias}=holder;alias.options.method='DELETE';return fetch('/api',options);}
     export function deepWrite(){const options={method:'GET'};const holder={nested:{value:options}};const {nested:{value:alias}}=holder;alias.method='DELETE';return fetch('/api',options);}
     export function immutable(){const options={method:'GET'};const holder={options};const {options:alias}=holder;return fetch('/api',options);}
   ` });
-    for (const name of ['objectWrite', 'arrayWrite', 'deepWrite'])
+    for (const name of ['objectWrite', 'arrayWrite', 'deepWrite', 'restWrite'])
         assert_1.strict.deepEqual(routes(result, `Demo:destructure.ts#${name}`), []);
     assert_1.strict.deepEqual(routes(result, 'Demo:destructure.ts#immutable'), ['route:*:GET:/api']);
 });
@@ -390,4 +391,15 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
   ` });
     assert_1.strict.deepEqual(routes(result, 'Demo:independent.ts#caller'), ['route:*:POST:/api/items']);
     assert_1.strict.deepEqual(routes(result, 'Demo:independent.ts#instances'), ['route:*:GET:/api/items']);
+});
+(0, node_test_1.test)('ChatWorks SSE wrappers keep immutable URL and POST independent from written header/body siblings', () => {
+    const result = fixture({ 'sse.ts': `
+    function buildBase(status){return 'https://chat.example';}
+    async function streamChatCompletion({url,headers,body,onUpdate,signal}){return fetch(url,{method:'POST',headers,body:JSON.stringify(body),signal});}
+    export function ChatScreen(auth){const url=buildBase(status)+'/v1/chat/completions';const headers={'Content-Type':'application/json'};if(auth)headers.Authorization='Bearer token';const body={messages:[]};body.temperature=0.8;return streamChatCompletion({url,headers,body,onUpdate:()=>{},signal});}
+    function forwarded(url,headers){headers.Authorization='Bearer token';return streamChatCompletion({url,headers,body:{},onUpdate:()=>{}});}
+    export function second(){return forwarded('/v1/chat/completions',{});}
+  ` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:sse.ts#ChatScreen'), ['route:*:POST:/v1/chat/completions']);
+    assert_1.strict.deepEqual(routes(result, 'Demo:sse.ts#second'), ['route:*:POST:/v1/chat/completions']);
 });
