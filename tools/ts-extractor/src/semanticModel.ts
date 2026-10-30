@@ -48,6 +48,7 @@ export class SemanticModel {
   private readonly publicNameSets = new Map<SourceFile, Set<string>>();
   private readonly starNameSources = new Map<SourceFile, Map<string, SourceFile[]>>();
   private readonly returnExpressions = new Map<Node, Node[]>();
+  private readonly reactImportBindings = new Map<SourceFile, { names: Map<object, string>; receivers: Set<object> }>();
   private readonly resolvedRoots = new Map<Node, Node | undefined>();
   private readonly allVariables: VariableDeclaration[] = [];
   private readonly writeTargets: Node[] = [];
@@ -523,17 +524,30 @@ export class SemanticModel {
     const resolved = this.resolve(node);
     return resolved ? this.declarations.get(resolved) : undefined;
   }
-  /** Recognize React APIs only through an actual react import, including named aliases. */
+  /** Import facts are immutable for this model. Symbol identity preserves aliases and shadows,
+   * and is safe while constructor declaration indexing is still in progress. */
   reactApi(call: CallExpression): string | undefined {
-    const expression = call.getExpression();
-    for (const imp of call.getSourceFile().getImportDeclarations()) {
-      if (imp.getModuleSpecifierValue() !== 'react') continue;
-      if (Node.isIdentifier(expression)) {
-        const specifier = imp.getNamedImports().find(item => (item.getAliasNode()?.getText() ?? item.getName()) === expression.getText());
-        if (specifier && sameSymbol(expression, specifier.getAliasNode() ?? specifier.getNameNode())) return specifier.getName();
+    this.work.charge(); const file = call.getSourceFile(); let bindings = this.reactImportBindings.get(file);
+    if (!bindings) {
+      const names = new Map<object, string>(); const receivers = new Set<object>();
+      this.work.charge(file.compilerNode.statements.length + 1);
+      for (const imported of file.getImportDeclarations()) {
+        this.work.charge(imported.getFullWidth() + 1); if (imported.getModuleSpecifierValue() !== 'react') continue;
+        for (const named of imported.getNamedImports()) {
+          const symbol = (named.getAliasNode() ?? named.getNameNode()).getSymbol()?.compilerSymbol;
+          if (symbol) names.set(symbol, named.getName());
+        }
+        for (const receiver of [imported.getDefaultImport(), imported.getNamespaceImport()]) {
+          const symbol = receiver?.getSymbol()?.compilerSymbol; if (symbol) receivers.add(symbol);
+        }
       }
-      if (Node.isPropertyAccessExpression(expression) &&
-          (sameSymbol(expression.getExpression(), imp.getNamespaceImport()) || sameSymbol(expression.getExpression(), imp.getDefaultImport()))) return expression.getName();
+      bindings = { names, receivers }; this.reactImportBindings.set(file, bindings);
+    }
+    const expression = call.getExpression();
+    if (Node.isIdentifier(expression)) { const symbol = expression.getSymbol()?.compilerSymbol; return symbol ? bindings.names.get(symbol) : undefined; }
+    if (Node.isPropertyAccessExpression(expression)) {
+      const symbol = expression.getExpression().getSymbol()?.compilerSymbol;
+      if (symbol && bindings.receivers.has(symbol)) { this.work.charge(expression.getNameNode().getFullWidth() + 1); return expression.getName(); }
     }
     return undefined;
   }

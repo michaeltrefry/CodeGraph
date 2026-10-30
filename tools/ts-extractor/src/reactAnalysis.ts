@@ -10,29 +10,7 @@ interface Render { owner: string; target: string; element: Node; uncertain?: boo
  * a global registry. A provider returned by a component does not provide its own hooks. */
 export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges: PendingEdgeDto[], diagnostic: (message: string) => void): void {
   const work = model.work;
-  const reactNames = new Map<object, string>(); const reactReceivers = new Set<object>();
-  for (const file of model.files) {
-    work.charge(file.compilerNode.statements.length + 1);
-    for (const imported of file.getImportDeclarations()) {
-      work.charge(imported.getFullWidth() + 1); if (imported.getModuleSpecifierValue() !== 'react') continue;
-      for (const named of imported.getNamedImports()) {
-        const symbol = (named.getAliasNode() ?? named.getNameNode()).getSymbol()?.compilerSymbol;
-        if (symbol) reactNames.set(symbol, named.getName());
-      }
-      for (const receiver of [imported.getDefaultImport(), imported.getNamespaceImport()]) {
-        const symbol = receiver?.getSymbol()?.compilerSymbol; if (symbol) reactReceivers.add(symbol);
-      }
-    }
-  }
-  const reactApi = (call: import('ts-morph').CallExpression): string | undefined => {
-    work.charge(); const expression = call.getExpression();
-    if (Node.isIdentifier(expression)) { const symbol = expression.getSymbol()?.compilerSymbol; return symbol ? reactNames.get(symbol) : undefined; }
-    if (Node.isPropertyAccessExpression(expression)) {
-      const symbol = expression.getExpression().getSymbol()?.compilerSymbol;
-      if (symbol && reactReceivers.has(symbol)) { work.charge(expression.getNameNode().getFullWidth() + 1); return expression.getName(); }
-    }
-    return undefined;
-  };
+  const reactApi = (call: import('ts-morph').CallExpression): string | undefined => model.reactApi(call);
   const ownerAt = new Map<Node, string>();
   const jsxParent = new Map<Node, Node | undefined>();
   const jsxOrder: Node[] = []; const callsInSource: Node[] = []; const expressions: Node[] = []; const attributes: Node[] = [];

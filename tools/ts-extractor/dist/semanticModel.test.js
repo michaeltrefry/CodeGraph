@@ -63,3 +63,40 @@ const semanticModel_1 = require("./semanticModel");
     cancelled = false;
     strict_1.default.throws(() => model.resolve(api), error => error.code === 'extraction_work_incomplete');
 });
+(0, node_test_1.default)('React API imports materialize once per model and many-call lookup preserves aliases and lexical shadows', context => {
+    const measure = (count) => {
+        const project = new ts_morph_1.Project({ useInMemoryFileSystem: true, skipFileDependencyResolution: true, compilerOptions: { noResolve: true, types: [] } });
+        const file = project.createSourceFile('/repo/react.tsx', `import {createContext as make,useContext as read} from 'react'; import * as ReactNS from 'react'; import ReactDefault from 'react';\n`
+            + Array.from({ length: count }, (_, index) => `import {f as f${index}} from '@other/p${index}';`).join('\n')
+            + `\nconst Ctx=make(null); function Real(){read(Ctx);ReactNS.useContext(Ctx);ReactDefault.useContext(Ctx);}\n`
+            + `function Shadow(read:any,ReactNS:any,ReactDefault:any){read(Ctx);ReactNS.useContext(Ctx);ReactDefault.useContext(Ctx);}\n`
+            + Array.from({ length: count }, (_, index) => `f${index}();`).join('\n'));
+        let cancelled = false;
+        const model = new semanticModel_1.SemanticModel('UI', '/repo', [file], [], () => { }, { shouldCancel: () => cancelled });
+        const readImports = file.getImportDeclarations.bind(file);
+        let materializations = 0;
+        file.getImportDeclarations = () => { materializations++; return readImports(); };
+        const calls = file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression);
+        const results = calls.map(call => model.reactApi(call));
+        strict_1.default.deepEqual(results.slice(0, 7), ['createContext', 'useContext', 'useContext', 'useContext', undefined, undefined, undefined]);
+        strict_1.default.ok(results.slice(7).every(value => value === undefined), 'unrelated imports must not become React APIs');
+        strict_1.default.equal(materializations, 1, 'every API query in this admitted file shares one import index');
+        const before = model.work.used;
+        for (const call of calls)
+            model.reactApi(call);
+        const repeated = model.work.used - before;
+        strict_1.default.ok(repeated <= calls.length * 4, 'cached API lookups must not rescan imports or compare import-local names');
+        strict_1.default.equal(materializations, 1);
+        const fresh = new semanticModel_1.SemanticModel('UI', '/repo', [file], [], () => { });
+        strict_1.default.equal(fresh.reactApi(calls[0]), 'createContext');
+        strict_1.default.equal(materializations, 2, 'new analyses rebuild their own immutable import index');
+        cancelled = true;
+        strict_1.default.throws(() => model.reactApi(calls[0]), error => error.code === 'extraction_work_incomplete');
+        cancelled = false;
+        strict_1.default.throws(() => model.reactApi(calls[0]), error => error.code === 'extraction_work_incomplete');
+        return model.work.used;
+    };
+    const smaller = measure(200), larger = measure(2000);
+    strict_1.default.ok(larger < smaller * 12, `10x imports/calls should stay proportional: ${smaller} -> ${larger}`);
+    context.diagnostic(`React symbol API index: 200 imports/calls ${smaller}; 2000 ${larger}`);
+});
