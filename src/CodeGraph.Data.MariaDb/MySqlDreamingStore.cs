@@ -66,30 +66,50 @@ public sealed partial class MySqlDreamingStore(IOptions<MariaDbStorageOptions> o
     public async Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default)
     {
         await using var c=await OpenAsync(ct);
-        var j=await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT settings_json FROM dreaming_settings WHERE id=1",cancellationToken:ct));
-        var settings=j is null?new DreamSettings():JsonSerializer.Deserialize<DreamSettings>(j,WorkJson.Options)!;
-        var schedule=await c.QuerySingleOrDefaultAsync<ScheduleRow>(new CommandDefinition("SELECT is_enabled AS Enabled,cron_expression AS Cron FROM job_schedules WHERE job_type='DreamProjects' ORDER BY id LIMIT 1",cancellationToken:ct));
-        return schedule is null?settings:settings with {Enabled=schedule.Enabled,Schedule=schedule.Cron};
+        await using var tx=await c.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead,ct);
+        var row=await c.QuerySingleOrDefaultAsync<SettingsRow>(new CommandDefinition("SELECT settings_json AS Json,revision AS Revision FROM dreaming_settings WHERE id=1",transaction:tx,cancellationToken:ct));
+        var schedule=await c.QuerySingleOrDefaultAsync<ScheduleUpdate>(new CommandDefinition("SELECT id AS Id,is_enabled AS Enabled,cron_expression AS Cron,time_zone_id AS Zone,schedule_revision AS Revision FROM job_schedules WHERE job_type='DreamProjects' ORDER BY id LIMIT 1",transaction:tx,cancellationToken:ct));
+        var settings=WithVersion(row,schedule);
+        await tx.CommitAsync(ct);return settings;
     }
-    private sealed record ScheduleRow(bool Enabled,string Cron);
-    public async Task SetSettingsAsync(DreamSettings settings,WorkActor actor,CancellationToken ct=default)
+    private sealed record SettingsRow(string Json,long Revision);
+    private sealed record ScheduleUpdate(long Id,bool Enabled,string Cron,string Zone,long Revision);
+    private static string SettingsVersion(SettingsRow? row,ScheduleUpdate? schedule)=>$"v1:{row?.Revision??0}:{schedule?.Id??0}:{schedule?.Revision??0}";
+    private static DreamSettings WithVersion(SettingsRow? row,ScheduleUpdate? schedule)
+    {
+        var settings=row is null?new DreamSettings():JsonSerializer.Deserialize<DreamSettings>(row.Json,WorkJson.Options)!;
+        return settings with {Enabled=schedule?.Enabled??settings.Enabled,Schedule=schedule?.Cron??settings.Schedule,Version=SettingsVersion(row,schedule)};
+    }
+    public async Task<DreamSettings> SetSettingsAsync(DreamSettings settings,WorkActor actor,CancellationToken ct=default)
     {
         DreamPolicy.Refuse(actor,"edit settings");
+        if(string.IsNullOrWhiteSpace(settings.Version))throw WorkException.Invalid("Dreaming settings writes require the version returned by GetSettings.");
         Cronos.CronExpression cron;
         try{cron=Cronos.CronExpression.Parse(settings.Schedule,Cronos.CronFormat.Standard);}
         catch(FormatException){throw WorkException.Invalid("Dreaming schedule must be a standard five-field cron expression.");}
-        await using var c=await OpenAsync(ct);await using var tx=await c.BeginTransactionAsync(ct);
-        var schedule=await c.QuerySingleOrDefaultAsync<ScheduleUpdate>(new CommandDefinition("SELECT id AS Id,cron_expression AS Cron,time_zone_id AS Zone FROM job_schedules WHERE job_type='DreamProjects' ORDER BY id LIMIT 1 FOR UPDATE",transaction:tx,cancellationToken:ct));
-        var zone=TimeZoneInfo.FindSystemTimeZoneById(schedule?.Zone??"UTC");
-        var next=cron.GetNextOccurrence(DateTime.UtcNow,zone,false)??throw WorkException.Invalid("Dreaming schedule has no future occurrence.");
-        if(schedule is null)
-            await c.ExecuteAsync(new CommandDefinition("INSERT INTO job_schedules(name,job_type,is_enabled,cron_expression,time_zone_id,args_json,next_run_utc) VALUES('dream-projects','DreamProjects',@enabled,@cron,'UTC','{}',@next)",new {enabled=settings.Enabled,cron=settings.Schedule,next},tx,cancellationToken:ct));
-        else
-            await c.ExecuteAsync(new CommandDefinition("UPDATE job_schedules SET next_run_utc=IF(cron_expression<>@cron OR is_enabled<>@enabled,@next,next_run_utc),is_enabled=@enabled,cron_expression=@cron,schedule_revision=schedule_revision+1 WHERE id=@id",new {enabled=settings.Enabled,cron=settings.Schedule,next,id=schedule.Id},tx,cancellationToken:ct));
-        await c.ExecuteAsync(new CommandDefinition("INSERT INTO dreaming_settings(id,settings_json,updated_by,updated_at) VALUES(1,@json,@name,UTC_TIMESTAMP(6)) ON DUPLICATE KEY UPDATE settings_json=VALUES(settings_json),updated_by=VALUES(updated_by),updated_at=VALUES(updated_at)",new {json=JsonSerializer.Serialize(settings,WorkJson.Options),name=actor.Name},tx,cancellationToken:ct));
-        await tx.CommitAsync(ct);
+        await using var c=await OpenAsync(ct);
+        var lockName=MySqlWorkStore.ServerLockName(c.Database,"dream-settings");
+        if(await c.ExecuteScalarAsync<long>(new CommandDefinition("SELECT GET_LOCK(@lockName,10)",new {lockName},cancellationToken:ct))!=1)throw WorkException.Busy("Dreaming settings are being edited.");
+        try
+        {
+            await using var tx=await c.BeginTransactionAsync(ct);
+            var row=await c.QuerySingleOrDefaultAsync<SettingsRow>(new CommandDefinition("SELECT settings_json AS Json,revision AS Revision FROM dreaming_settings WHERE id=1 FOR UPDATE",transaction:tx,cancellationToken:ct));
+            var schedule=await c.QuerySingleOrDefaultAsync<ScheduleUpdate>(new CommandDefinition("SELECT id AS Id,is_enabled AS Enabled,cron_expression AS Cron,time_zone_id AS Zone,schedule_revision AS Revision FROM job_schedules WHERE job_type='DreamProjects' ORDER BY id LIMIT 1 FOR UPDATE",transaction:tx,cancellationToken:ct));
+            if(settings.Version!=SettingsVersion(row,schedule))throw new WorkException(WorkErrorCodes.Conflict,"Dreaming settings or their schedule changed; reload before saving.",WithVersion(row,schedule));
+            var zone=TimeZoneInfo.FindSystemTimeZoneById(schedule?.Zone??"UTC");
+            var next=cron.GetNextOccurrence(DateTime.UtcNow,zone,false)??throw WorkException.Invalid("Dreaming schedule has no future occurrence.");
+            if(schedule is null)
+                await c.ExecuteAsync(new CommandDefinition("INSERT INTO job_schedules(name,job_type,is_enabled,cron_expression,time_zone_id,args_json,next_run_utc) VALUES('dream-projects','DreamProjects',@enabled,@cron,'UTC','{}',@next)",new {enabled=settings.Enabled,cron=settings.Schedule,next},tx,cancellationToken:ct));
+            else
+                await c.ExecuteAsync(new CommandDefinition("UPDATE job_schedules SET next_run_utc=IF(cron_expression<>@cron OR is_enabled<>@enabled,@next,next_run_utc),is_enabled=@enabled,cron_expression=@cron,schedule_revision=schedule_revision+1 WHERE id=@id",new {enabled=settings.Enabled,cron=settings.Schedule,next,id=schedule.Id},tx,cancellationToken:ct));
+            await c.ExecuteAsync(new CommandDefinition("INSERT INTO dreaming_settings(id,settings_json,updated_by,updated_at,revision) VALUES(1,@json,@name,UTC_TIMESTAMP(6),1) ON DUPLICATE KEY UPDATE settings_json=VALUES(settings_json),updated_by=VALUES(updated_by),updated_at=VALUES(updated_at),revision=revision+1",new {json=JsonSerializer.Serialize(settings with {Version=null},WorkJson.Options),name=actor.Name},tx,cancellationToken:ct));
+            var writtenRow=await c.QuerySingleAsync<SettingsRow>(new CommandDefinition("SELECT settings_json AS Json,revision AS Revision FROM dreaming_settings WHERE id=1",transaction:tx,cancellationToken:ct));
+            var writtenSchedule=await c.QuerySingleAsync<ScheduleUpdate>(new CommandDefinition("SELECT id AS Id,is_enabled AS Enabled,cron_expression AS Cron,time_zone_id AS Zone,schedule_revision AS Revision FROM job_schedules WHERE job_type='DreamProjects' ORDER BY id LIMIT 1",transaction:tx,cancellationToken:ct));
+            var result=WithVersion(writtenRow,writtenSchedule);
+            await tx.CommitAsync(ct);return result;
+        }
+        finally{await c.ExecuteAsync("DO RELEASE_LOCK(@lockName)",new {lockName});}
     }
-    private sealed record ScheduleUpdate(long Id,string Cron,string Zone);
     private static string Slug(Guid projectId) => $"dreaming-project-{projectId:N}";
     public async Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default)
     { await using var c = await OpenAsync(ct); return new(await ReadAsync(c,"dreaming-base",ct), await ReadAsync(c,Slug(projectId),ct)); }

@@ -4,7 +4,7 @@ namespace CodeGraph.Models.Work;
 
 public sealed record DreamSettings(bool Enabled = true, string DefaultProvider = "anthropic", string DefaultModel = "claude-sonnet-4-6",
     int MaxTurns = 12, int MaxTokensPerRun = 128000, int MinimumIntervalMinutes = 60, string Schedule = "0 2 * * *",
-    decimal InputCostPerMillion = 3m, decimal OutputCostPerMillion = 15m);
+    decimal InputCostPerMillion = 3m, decimal OutputCostPerMillion = 15m, string? Version = null);
 
 public sealed record DreamEvidence(string Kind, string Reference, string Summary);
 public sealed record DreamAction(string Tool, JsonElement Arguments, JsonElement Result, IReadOnlyList<DreamEvidence> Evidence, DateTime CreatedAt);

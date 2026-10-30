@@ -31,7 +31,7 @@ public sealed partial class WorkController
     {
         if(await DeniedAsync(WorkTools.DreamSettings) is {} denied)return denied;
         var (body,error)=await ReadBodyAsync(WorkTools.DreamSettings);if(error is not null)return error;
-        return await RunAsync(WorkTools.DreamSettings,JsonSerializer.SerializeToElement(new {settings=body}));
+        return await RunAsync(WorkTools.DreamSettings,body);
     }
     [HttpGet("dreaming/{project}/instructions")]
     public async Task<IActionResult> DreamInstructions(string project)

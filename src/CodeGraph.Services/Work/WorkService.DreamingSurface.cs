@@ -20,7 +20,17 @@ public sealed partial class WorkService
             return await dreaming.ListRunsBeforeAsync(p.Id,r.Before is {} before?ParseDreamId(before):null,r.Limit,ct);
         }
         if(tool==WorkTools.DreamSettings)
-        {var r=WorkJson.Parse<DreamSettingsRequest>(args,tool);if(r.Settings is {} settings) await dreaming.SetSettingsAsync(settings,actor,ct);return await dreaming.GetSettingsAsync(ct);}
+        {
+            var r=WorkJson.Parse<DreamSettingsRequest>(args,tool);
+            if(r.Settings is {} settings)
+            {
+                if(string.IsNullOrWhiteSpace(r.ExpectedVersion))throw WorkException.Invalid("Changing settings requires expected_version from the last read.");
+                if(settings.Version is not null&&settings.Version!=r.ExpectedVersion)throw WorkException.Invalid("settings.version and expected_version disagree.");
+                return await dreaming.SetSettingsAsync(settings with {Version=r.ExpectedVersion},actor,ct);
+            }
+            else if(r.ExpectedVersion is not null)throw WorkException.Invalid("expected_version goes with settings.");
+            return await dreaming.GetSettingsAsync(ct);
+        }
         if(tool==WorkTools.DreamInstructions)
         {
             var r=WorkJson.Parse<DreamInstructionsRequest>(args,tool);var p=await RequireProjectAsync(r.Project,"project",ct);

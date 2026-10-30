@@ -14,9 +14,10 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
     public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => store.GetSettingsAsync(ct);
     public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => store.GetInstructionsAsync(projectId,ct);
     public Task<DreamInstructions> SetInstructionsAsync(Guid projectId,string scope,string content,int expectedRevision,WorkActor actor,CancellationToken ct=default) => store.SetInstructionsAsync(projectId,scope,content,expectedRevision,actor,ct);
-    public Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default)
+    public Task<DreamSettings> SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default)
     {
         DreamPolicy.Refuse(actor,"edit settings");
+        if(string.IsNullOrWhiteSpace(settings.Version))throw WorkException.Invalid("Dreaming settings writes require the version returned by GetSettings.");
         if(!model.SupportsTools(settings.DefaultProvider) || string.IsNullOrWhiteSpace(settings.DefaultModel)
            || settings.MaxTurns is <1 or >100 || settings.MaxTokensPerRun is <1 or >1000000
            || settings.MinimumIntervalMinutes is <0 or >525600 || settings.InputCostPerMillion<0 || settings.OutputCostPerMillion<0)

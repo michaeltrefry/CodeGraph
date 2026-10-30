@@ -12,7 +12,7 @@ public interface IDreamingStore
     Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit, CancellationToken ct = default);
     Task<DreamRun?> LastCompletedAsync(Guid projectId, CancellationToken ct = default);
     Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default);
-    Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default);
+    Task<DreamSettings> SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default);
     Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default);
     Task<DreamInstructions> SetInstructionsAsync(Guid projectId, string scope, string content, int expectedRevision, WorkActor actor, CancellationToken ct = default);
 }
