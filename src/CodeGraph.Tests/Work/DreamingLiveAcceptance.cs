@@ -119,17 +119,21 @@ public sealed class DreamingLiveAcceptance
         var previousSettings = await store.GetSettingsAsync();
         var settings = previousSettings with { Enabled = true, DefaultProvider = provider, DefaultModel = model,
             MaxTurns = 12, MaxTokensPerRun = 160000, MinimumIntervalMinutes = 0, InputCostPerMillion = 0, OutputCostPerMillion = 0 };
-        await dreaming.SetSettingsAsync(settings, actor);
-        await WriteAsync("settings.json", new { settings, estimated_cost_basis = "local configured provider has no per-token charge; electricity/hardware cost not estimated" });
         await using var snapshotConnection = new MySqlConnection(connectionString);
         var originalIds = (await snapshotConnection.QueryAsync<string>("SELECT id FROM knowledge_entries WHERE project_id=@project", new { project })).ToArray();
         var before = await SnapshotAsync(connectionString, project, originalIds);
         await WriteAsync("before.json", before);
         DreamRun? run = null;
         DreamRevertResult? revert = null;
+        DreamSettings? temporarySettings = null;
         string? failure = null;
         try
         {
+            // Save returns its committed version atomically. A GET after this save could see
+            // another actor's edit and would not be a safe token for restoring our own values.
+            temporarySettings = await dreaming.SetSettingsAsync(settings, actor);
+            await WriteAsync("settings.json", new { previous_settings = previousSettings, temporary_settings = temporarySettings,
+                estimated_cost_basis = "local configured provider has no per-token charge; electricity/hardware cost not estimated" });
             using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(20));
             run = await dreaming.RunAsync(project, "run_now", actor, timeout.Token);
             await WriteAsync("run.json", run);
@@ -152,7 +156,26 @@ public sealed class DreamingLiveAcceptance
                     comparison = "all preexisting and active knowledge fields, scope, freshness, events, links, challenges and addressed_by; work state; excludes append-only audit, entry revision/version/updated_at and new retracted tombstones",
                     pending_proposals = await ProposalsAsync(connectionString, project), failure });
             }
-            finally { await store.SetSettingsAsync(previousSettings, actor); }
+            finally
+            {
+                if (temporarySettings is not null)
+                {
+                    try
+                    {
+                        var restoredSettings = await dreaming.SetSettingsAsync(previousSettings with { Version = temporarySettings.Version }, actor);
+                        await WriteAsync("settings-restore.json", new { restored = true, settings = restoredSettings });
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException)
+                    {
+                        // A stale-version conflict is an acceptance failure, never permission
+                        // to fetch a fresh token and overwrite the later operator's values.
+                        await WriteAsync("settings-restore.json", new { restored = false,
+                            expected_version = temporarySettings.Version, error = ex.ToString(),
+                            concurrent_settings_preserved = ex is WorkException { Code: WorkErrorCodes.Conflict } });
+                        throw;
+                    }
+                }
+            }
         }
         run.ShouldNotBeNull();
         run.Status.ShouldBe("completed", $"See {artifacts}/run.json");

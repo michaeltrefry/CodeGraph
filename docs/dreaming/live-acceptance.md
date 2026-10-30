@@ -21,14 +21,14 @@ dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj \
   --logger 'console;verbosity=normal'
 ```
 
-The command temporarily enables dreaming with 12 turns and 160,000 total provider-reported tokens, no minimum interval, and zero per-token local provider charge. Hardware/electricity costs are not estimated. Settings are restored in `finally`. This budget is explicit and bounded; it is not a performance claim. A 20-minute run cancellation and HTTP timeout also apply. The database and evidence directory persist for inspection and continuation.
+The command temporarily enables dreaming with 12 turns and 160,000 total provider-reported tokens, no minimum interval, and zero per-token local provider charge. Hardware/electricity costs are not estimated. Settings are restored in `finally` using the version atomically returned by the temporary save. A concurrent settings or schedule edit causes restoration to conflict, preserving the later edit and failing acceptance; the harness never fetches a fresh token to overwrite it. This budget is explicit and bounded; it is not a performance claim. A 20-minute run cancellation and HTTP timeout also apply. The database and evidence directory persist for inspection and continuation.
 
 The test calls the actual production `GraphAssistant` batch provider implementation, source reader, policy service, journal and MariaDB stores. Telemetry is captured locally in the evidence directory. It always attempts to revert a returned run before evaluating acceptance, including a failed or budget-exhausted result. A crash before the run returns may require manual reversion of the persisted run from the Dreaming view or existing revert endpoint. Never rerun merely to hide a failed attempt; retain and explain every report.
 
 Each timestamped evidence directory contains:
 
 - `environment.json`: project, source commit, instruction revisions, provider route and provenance.
-- `settings.json`, `usage.json`, `run.json`: exact budget, actual token usage, all calls, mutations and proposals.
+- `settings.json`, `settings-restore.json`, `usage.json`, `run.json`: exact budget, actual token usage, all calls, mutations and proposals.
 - `before.json`, `after-run.json`, `after-revert.json`: canonical state snapshots.
 - `revert.json`, `restoration.json`: inverse actions, conflicts, semantic comparison and retained proposals.
 - `acceptance.json`: written only after all checks pass, including completed status within budget, at least one actual direct write and one proposal, evidence and prevalence on both, zero tool refusals, and semantic restoration.
