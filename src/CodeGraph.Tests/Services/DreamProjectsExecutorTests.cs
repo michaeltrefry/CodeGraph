@@ -110,7 +110,7 @@ public class DreamProjectsExecutorTests
         public Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => throw new NotSupportedException();
-        public Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DreamSettings> SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructions> SetInstructionsAsync(Guid projectId, string scope, string content, int expectedRevision, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
     }
@@ -125,7 +125,7 @@ public class DreamProjectsExecutorTests
         public Task<DreamRun?> LastCompletedAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId, Guid? before, int limit = 30, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamSettings> GetSettingsAsync(CancellationToken ct = default) => throw new NotSupportedException();
-        public Task SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<DreamSettings> SetSettingsAsync(DreamSettings settings, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructionSet> GetInstructionsAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<DreamInstructions> SetInstructionsAsync(Guid projectId, string scope, string content, int expectedRevision, WorkActor actor, CancellationToken ct = default) => throw new NotSupportedException();
     }
