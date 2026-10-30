@@ -5,7 +5,7 @@ using CodeGraph.Models;
 
 namespace CodeGraph.Services.Pipeline;
 
-public class CrossRepoLinker
+public partial class CrossRepoLinker
 {
     private static readonly IReadOnlyList<NodeLabel> RustDefinitionLabels =
     [
@@ -51,8 +51,8 @@ public class CrossRepoLinker
         var counts = await LinkCoreAsync(scopeRepository: null, ct);
 
         _logger.LogInformation(
-            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic links",
-            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
+            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic, {Npm} npm export links",
+            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust, counts.Npm);
     }
 
     /// <summary>
@@ -72,17 +72,21 @@ public class CrossRepoLinker
     {
         _logger.LogInformation("Running incremental cross-repo linking for {Repository}", repository);
 
-        // Clear existing cross-repo edges for this repository so stale links are removed
-        await _store.DeleteCrossRepoEdgesForRepositoryAsync(repository);
+        // HTTP and npm export links own their bounded diffs, including third-pair ambiguity
+        // changes. Preserve them for comparison so an unchanged sync retains their identities.
+        var existing = await _store.FindCrossRepoEdgesAsync(repository);
+        await _store.DeleteCrossRepoEdgesByIdsAsync(existing
+            .Where(edge => edge.Type != EdgeType.HTTP_CALLS && !IsNpmExportLink(edge))
+            .Select(edge => edge.Id).ToArray(), ct);
 
         var counts = await LinkCoreAsync(repository, ct);
 
         _logger.LogInformation(
-            "Incremental linking for {Repository} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic",
-            repository, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
+            "Incremental linking for {Repository} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic, {Npm} npm exports",
+            repository, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust, counts.Npm);
     }
 
-    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust)> LinkCoreAsync(
+    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust, int Npm)> LinkCoreAsync(
         string? scopeRepository, CancellationToken ct)
     {
         var http = await LinkHttpRoutesAsync(scopeRepository, ct);
@@ -91,7 +95,8 @@ public class CrossRepoLinker
         var cargo = await LinkManifestPackagesAsync(Cargo, scopeRepository, ct);
         var swift = await LinkManifestPackagesAsync(SwiftPm, scopeRepository, ct);
         var rust = await LinkRustSymbolsAsync(scopeRepository, ct);
-        return (http, messaging, nuget, cargo, swift, rust);
+        var npm = await LinkNpmExportsAsync(scopeRepository, ct);
+        return (http, messaging, nuget, cargo, swift, rust, npm);
     }
 
     private static bool InScope(string? scopeRepository, string sourceRepository, string targetRepository) =>
@@ -126,87 +131,9 @@ public class CrossRepoLinker
         // Build route lookup: normalize templates for matching
         var routeLookup = BuildHttpRouteLookup(routes);
 
-        var crossEdges = new List<CrossRepoEdge>();
-
-        // Collect all known projects for DTO→project resolution
         var repositories = await _store.ListRepositoriesAsync();
-        var repositoryNames = repositories.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var edge in httpCallEdges)
-        {
-            // Local binding is derived enrichment. Its raw wildcard edge remains the one
-            // authoritative input to cross-repository matching.
-            if (edge.EdgeProperties.GetValueOrDefault("semantic_owner") == "http_binding"
-                || GetBoolean(edge.EdgeProperties.GetValueOrDefault("binding_ambiguous")))
-                continue;
-            var isGatewayCall = GetBoolean(edge.EdgeProperties.GetValueOrDefault("gateway_call"));
-            var requestDto = edge.EdgeProperties.GetValueOrDefault("request_dto");
-
-            if (isGatewayCall && requestDto is not null && !requestDto.StartsWith("route:"))
-            {
-                var serviceName = edge.EdgeProperties.GetValueOrDefault("service_name");
-                var targetRepository = ResolveGatewayTargetRepository(serviceName, requestDto, repositoryNames);
-                if (targetRepository is null)
-                    continue;
-
-                if (edge.SourceRepository == targetRepository ||
-                    !InScope(scopeRepository, edge.SourceRepository, targetRepository))
-                    continue;
-
-                crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceRepository, targetRepository, edge.SourceId, edge.TargetId,
-                    EdgeType.HTTP_CALLS, new()
-                    {
-                        ["request_dto"] = requestDto,
-                        ["gateway_call"] = true,
-                        ["confidence_band"] = "medium"
-                    }));
-                continue;
-            }
-
-            // Standard route-based HTTP_CALLS matching
-            var urlPattern = edge.EdgeProperties.GetValueOrDefault("url_pattern");
-            var httpMethod = edge.EdgeProperties.GetValueOrDefault("http_method");
-
-            if (!IsMatchableHttpCall(httpMethod, urlPattern))
-                continue;
-
-            var matchedRoutes = SelectHttpRouteMatches(
-                httpMethod!, urlPattern!, edge.EdgeProperties.GetValueOrDefault("service_name"), requestDto,
-                edge.TargetQualifiedName, CallOrigin(edge.EdgeProperties, urlPattern!), repositoryNames, routeLookup);
-            if (matchedRoutes.Count == 0)
-                continue;
-
-            foreach (var route in matchedRoutes)
-            {
-                if (edge.SourceRepository == route.Repository ||
-                    !InScope(scopeRepository, edge.SourceRepository, route.Repository))
-                    continue;
-
-                var linkedProperties = new Dictionary<string, object>
-                {
-                    ["http_method"] = httpMethod!, ["url_pattern"] = urlPattern!,
-                    ["route_template"] = route.Properties.GetValueOrDefault("route_template") ?? "",
-                    ["confidence_band"] = "medium"
-                };
-                var origin = CallOrigin(edge.EdgeProperties, urlPattern!);
-                if (origin is not null) linkedProperties["origin"] = origin;
-                foreach (var key in new[] { "service_name", "request_dto", "origin_pattern" })
-                    if (edge.EdgeProperties.GetValueOrDefault(key) is { Length: > 0 } value) linkedProperties[key] = value;
-                if (origin is null && linkedProperties.ContainsKey("origin_pattern")) linkedProperties["origin_unresolved"] = true;
-                crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceRepository, route.Repository, edge.SourceId, route.Id,
-                    EdgeType.HTTP_CALLS, linkedProperties));
-            }
-        }
-
-        if (crossEdges.Count > 0)
-        {
-            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
-            _logger.LogInformation("Linked {Count} HTTP call(s) to routes across repos", crossEdges.Count);
-        }
-
-        return crossEdges.Count;
+        var repositoryNames = repositories.Select(repository => repository.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return await ReconcileLocalHttpBindingsAsync(scopeRepository, httpCallEdges, routeLookup, repositoryNames, ct);
     }
 
     private async Task<int> LinkMessagingAsync(string? scopeRepository, CancellationToken ct)
