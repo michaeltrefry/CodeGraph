@@ -181,4 +181,49 @@ public sealed class DreamActionsMariaDbTests(WorkDatabase db) : IClassFixture<Wo
         digest.HasSignal.ShouldBeTrue();
         digest.Fingerprint.ShouldBe((await actions.BuildDigestAsync(local.Id, null)).Fingerprint);
     }
+    [Fact]
+    public async Task A_run_report_recovers_committed_writes_and_proposals_after_lost_action_save_without_duplicating_saved_actions()
+    {
+        var project = await ProjectAsync("DE");
+        var lesson = await LessonAsync(project.Key, "Keep source attribution while recovering operator evidence");
+        var runId = Guid.NewGuid();
+        await RegisterRunAsync(runId, project.Id);
+        var runStore = new MySqlDreamingStore(Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString }));
+        var run = (await runStore.GetRunAsync(project.Id, runId))!;
+        var actions = (IKnowledgeDreamActions)db.Service;
+        object savedResult;
+        JsonElement savedArguments;
+        using (var scope = DreamExecutionScope.Begin(runId, project.Id, "scripted"))
+        {
+            savedArguments = JsonSerializer.SerializeToElement(new { id = lesson.Id, expected_version = lesson.Version, applies_when = new { activity = new[] { "testing" } }, evidence = new[] { new DreamEvidence("entry", lesson.Id.ToString(), "A scoped source") }, prevalence = "Observed once" }, WorkJson.Options);
+            savedResult = await actions.ExecuteToolAsync("dream_revise", savedArguments, scope.Actor);
+            await ToolAsync("dream_record", new { entry = new { kind = "constraint", summary = "Crash recovery preserves every committed action", confidence = "high" } }, lesson.Id);
+            await actions.ExecuteToolAsync("dream_propose", JsonSerializer.SerializeToElement(new
+            {
+                action = "retract", target = lesson.Id, expected_version = lesson.Version + 1, rationale = "Evidence proposes retirement, without applying it", prevalence = "Observed once",
+                evidence = new[] { new { kind = "entry", id = lesson.Id.ToString() } }
+            }, WorkJson.Options), scope.Actor);
+        }
+        // The first response was saved. The subsequent committed write and proposal were lost
+        // before the separate run-record update. Read and error actions must remain visible too.
+        var savedJson = JsonSerializer.SerializeToElement(savedResult, WorkJson.Options);
+        var read = new DreamAction("dream_read", JsonSerializer.SerializeToElement(new { id = lesson.Id }), JsonSerializer.SerializeToElement(new { untrusted_data = true }), [], run.StartedAt);
+        var error = new DreamAction("dream_revise", JsonSerializer.SerializeToElement(new { id = lesson.Id }), JsonSerializer.SerializeToElement(new { error = "forbidden", message = "A refused operation" }), [], run.StartedAt);
+        var stored = new DreamAction("dream_revise", savedArguments, savedJson, [new("entry", lesson.Id.ToString(), "A scoped source")], run.StartedAt);
+        await runStore.SaveRunAsync(run with { Actions = [read, error, stored], Status = "failed", EndedAt = DateTime.UtcNow });
+
+        var recovered = (await runStore.GetRunAsync(project.Id, runId))!;
+        recovered.Actions.Count.ShouldBe(5);
+        recovered.Actions.Count(action => action.Tool == "dream_record").ShouldBe(1);
+        recovered.Actions.Count(action => action.Tool == "dream_propose").ShouldBe(1);
+        recovered.Actions.Count(action => action.Result.TryGetProperty("journal_id", out _)).ShouldBe(2);
+        recovered.Actions.ShouldContain(action => action.Result.TryGetProperty("error", out var code) && code.GetString() == "forbidden");
+        recovered.Actions.Single(action => action.Tool == "dream_record").Result.GetProperty("prevalence").GetString().ShouldBe("Observed once in one session");
+        recovered.Actions.Single(action => action.Tool == "dream_propose").Evidence.Single().Reference.ShouldBe(lesson.Id.ToString());
+        (await runStore.ListRunsAsync(project.Id, 10)).Single().Actions.Count.ShouldBe(5);
+        await runStore.SaveRunAsync(recovered);
+        (await runStore.GetRunAsync(project.Id, runId))!.Actions.Count.ShouldBe(5);
+        (await runStore.GetRunAsync(Guid.NewGuid(), runId)).ShouldBeNull();
+    }
+
 }

@@ -10,6 +10,12 @@ namespace CodeGraph.Data.MariaDb;
 
 public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
 {
+    public async Task<long?> LastDreamJournalIdAsync(Guid projectId, Guid runId, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        return await connection.ExecuteScalarAsync<long?>(new CommandDefinition("SELECT MAX(id) FROM dream_write_journal WHERE project_id=@projectId AND run_id=@runId", new { projectId, runId }, cancellationToken: ct));
+    }
+
     // Explicit allowlist: journal material is never executable SQL or an arbitrary table name.
     private static readonly string[] DreamSnapshotTables = ["knowledge_entries", "knowledge_entry_repositories", "knowledge_entry_paths", "knowledge_entry_nodes", "knowledge_entry_files", "lesson_events", "lesson_links", "lesson_challenges"];
     private sealed record DreamSnapshot(Guid[] EntryIds, Dictionary<string, List<Dictionary<string, JsonElement>>> Tables);

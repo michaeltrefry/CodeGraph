@@ -7,6 +7,7 @@ public sealed record DreamKnowledgeDigest(JsonElement Data, string Fingerprint, 
 public sealed record DreamRestoreEntry(long JournalId, Guid EntryId, string Action, string Status, string? Reason = null);
 public interface IDreamingKnowledgeStore
 {
+    Task<long?> LastDreamJournalIdAsync(Guid projectId, Guid runId, CancellationToken ct = default);
     Task<DreamKnowledgeDigest> ReadDreamDigestAsync(Guid projectId, DateTime? since, CancellationToken ct = default);
     Task<object> ReadDreamSimilarAsync(Guid projectId, int offset, int limit, CancellationToken ct = default);
     Task ValidateDreamEvidenceAsync(Guid projectId, IReadOnlyList<DreamEvidence> evidence, CancellationToken ct = default);

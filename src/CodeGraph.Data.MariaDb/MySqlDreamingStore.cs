@@ -7,7 +7,7 @@ using MySqlConnector;
 
 namespace CodeGraph.Data.MariaDb;
 
-public sealed class MySqlDreamingStore(IOptions<MariaDbStorageOptions> options) : IDreamingStore
+public sealed partial class MySqlDreamingStore(IOptions<MariaDbStorageOptions> options) : IDreamingStore
 {
     private async Task<MySqlConnection> OpenAsync(CancellationToken ct)
     { var c = new MySqlConnection(options.Value.ConnectionString); await c.OpenAsync(ct); return c; }
@@ -40,9 +40,15 @@ public sealed class MySqlDreamingStore(IOptions<MariaDbStorageOptions> options) 
             new { run.Id, run.ProjectId, run.Status, run.StartedAt, run.EndedAt, json = JsonSerializer.Serialize(run, WorkJson.Options) }, cancellationToken: ct));
     }
     public async Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default)
-    { await using var c = await OpenAsync(ct); var json = await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId AND id=@runId", new { projectId, runId }, cancellationToken: ct)); return json is null ? null : JsonSerializer.Deserialize<DreamRun>(json, WorkJson.Options); }
+    { await using var c = await OpenAsync(ct); var json = await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId AND id=@runId", new { projectId, runId }, cancellationToken: ct)); return json is null ? null : await RecoverDurableActionsAsync(c, JsonSerializer.Deserialize<DreamRun>(json, WorkJson.Options)!, ct); }
     public async Task<IReadOnlyList<DreamRun>> ListRunsAsync(Guid projectId, int limit, CancellationToken ct = default)
-    { await using var c = await OpenAsync(ct); return (await c.QueryAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId ORDER BY started_at DESC,id DESC LIMIT @limit", new { projectId, limit = Math.Clamp(limit, 1, 100) }, cancellationToken: ct))).Select(j => JsonSerializer.Deserialize<DreamRun>(j, WorkJson.Options)!).ToList(); }
+    {
+        await using var c = await OpenAsync(ct);
+        var runs = (await c.QueryAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId ORDER BY started_at DESC,id DESC LIMIT @limit", new { projectId, limit = Math.Clamp(limit, 1, 100) }, cancellationToken: ct))).Select(j => JsonSerializer.Deserialize<DreamRun>(j, WorkJson.Options)!).ToList();
+        var recovered = new List<DreamRun>();
+        foreach (var run in runs) recovered.Add(await RecoverDurableActionsAsync(c, run, ct));
+        return recovered;
+    }
     public async Task<IReadOnlyList<DreamRun>> ListRunsBeforeAsync(Guid projectId,Guid? before,int limit,CancellationToken ct=default)
     {
         await using var c=await OpenAsync(ct);
@@ -51,7 +57,9 @@ public sealed class MySqlDreamingStore(IOptions<MariaDbStorageOptions> options) 
             started=await c.QuerySingleOrDefaultAsync<DateTime?>(new CommandDefinition("SELECT started_at FROM dreaming_runs WHERE id=@id AND project_id=@projectId",new {id,projectId},cancellationToken:ct))
                 ??throw WorkException.Invalid("before must name a run in this project.");
         var rows=await c.QueryAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId AND (@before IS NULL OR started_at<@started OR (started_at=@started AND id<@before)) ORDER BY started_at DESC,id DESC LIMIT @limit",new {projectId,before,started,limit=Math.Clamp(limit,1,100)},cancellationToken:ct));
-        return rows.Select(j=>JsonSerializer.Deserialize<DreamRun>(j,WorkJson.Options)!).ToList();
+        var recovered = new List<DreamRun>();
+        foreach (var json in rows) recovered.Add(await RecoverDurableActionsAsync(c, JsonSerializer.Deserialize<DreamRun>(json,WorkJson.Options)!,ct));
+        return recovered;
     }
     public async Task<DreamRun?> LastCompletedAsync(Guid projectId, CancellationToken ct = default)
     { await using var c = await OpenAsync(ct); var j = await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition("SELECT run_json FROM dreaming_runs WHERE project_id=@projectId AND status='completed' ORDER BY ended_at DESC LIMIT 1", new { projectId }, cancellationToken: ct)); return j is null ? null : JsonSerializer.Deserialize<DreamRun>(j, WorkJson.Options); }

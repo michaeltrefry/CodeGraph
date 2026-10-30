@@ -49,6 +49,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
         using var evidenceScope = scope.UseEvidence(evidence);
         using var metadata = DreamWriteMetadata.Begin(prevalence);
         input.Remove("evidence"); input.Remove("prevalence");
+        var priorJournal = await DreamKnowledge.LastDreamJournalIdAsync(scope.ProjectId, scope.RunId, ct);
         object result;
         switch (tool)
         {
@@ -122,7 +123,8 @@ public sealed partial class WorkService : IKnowledgeDreamActions
             default:
                 throw new WorkException(WorkErrorCodes.Forbidden, $"Dreaming cannot execute '{tool}'. Only reversible knowledge changes and proposals are allowed.");
         }
-        return new { untrusted_data = true, data = result, evidence, prevalence };
+        var journal = await DreamKnowledge.LastDreamJournalIdAsync(scope.ProjectId, scope.RunId, ct);
+        return new { untrusted_data = true, data = result, evidence, prevalence, journal_id = journal != priorJournal ? journal : null };
     }
 
     private static void RefuseDreamFields(JsonObject input, params string[] allowed)
