@@ -33,7 +33,14 @@ public partial class CrossRepoLinker
                 RepositorySet(previous, edge.SourceRepository).Add((edge.SourceId, edge.TargetQualifiedName));
                 continue;
             }
-            if (GetBoolean(edge.EdgeProperties.GetValueOrDefault("binding_ambiguous"))) continue;
+            if (GetBoolean(edge.EdgeProperties.GetValueOrDefault("binding_ambiguous")))
+            {
+                // Explicit ambiguity is negative request evidence, unlike absent output from
+                // an incomplete analyzer. It must retract a previously derived relation.
+                if (IsMatchableHttpCall(edge.EdgeProperties.GetValueOrDefault("http_method"), edge.EdgeProperties.GetValueOrDefault("url_pattern")))
+                    rawCallers.Add((edge.SourceRepository, edge.SourceId));
+                continue;
+            }
             var requestDto = edge.EdgeProperties.GetValueOrDefault("request_dto");
             if (GetBoolean(edge.EdgeProperties.GetValueOrDefault("gateway_call")) && requestDto is not null && !requestDto.StartsWith("route:"))
             {

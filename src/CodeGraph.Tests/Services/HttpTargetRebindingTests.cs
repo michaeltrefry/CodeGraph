@@ -103,6 +103,29 @@ public sealed class HttpTargetRebindingTests
         HttpCrossFacts(_store).ShouldBe(HttpCrossFacts(fresh));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitAmbiguousRawEvidenceRetractsPreviouslyDerivedRelation(bool crossRepository)
+    {
+        await SeedCaller("A");
+        if (crossRepository)
+        {
+            await _store.DeleteNodesByFileAsync("A", "api/routes.go");
+            _store.AddRepository("C");
+            await _store.UpsertNodeAsync(Endpoint("C"));
+            await Linker.LinkForRepositoryAsync("C", CancellationToken.None);
+            _store.CrossEdges.ShouldHaveSingleItem();
+        }
+        else Bound("A").ShouldHaveSingleItem();
+        var raw = _store.Edges.Single(edge => edge.Properties.ContainsKey("extraction_owner"));
+        raw.Properties["binding_ambiguous"] = true;
+        await Linker.LinkForRepositoryAsync("A", CancellationToken.None);
+        Bound("A").ShouldBeEmpty();
+        _store.CrossEdges.ShouldBeEmpty();
+        _store.Edges.ShouldContain(edge => edge.Properties.ContainsKey("extraction_owner"));
+    }
+
     [Fact]
     public async Task ConcreteExtractionOwnedLocalEdgeRemainsAuthoritative()
     {

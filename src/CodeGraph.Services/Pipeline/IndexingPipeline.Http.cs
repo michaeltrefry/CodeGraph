@@ -37,6 +37,8 @@ public partial class IndexingPipeline
             .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
         var sourceFiles = raw.Values.DistinctBy(edge => edge.SourceQN).ToDictionary(edge => edge.SourceQN, edge =>
                 buffer.FindByQN(edge.SourceQN)?.FilePath ?? HttpSourceFile(repositoryName, edge.SourceQN), StringComparer.Ordinal);
+        var rawSourceEvidence = buffer.AllPendingEdges.Where(edge => edge.Type == EdgeType.HTTP_CALLS && !IsHttpBinding(edge))
+            .Select(edge => edge.SourceQN).ToHashSet(StringComparer.Ordinal);
         IReadOnlyList<StoredEdge> oldBindings = [];
         if (includePersistedNodes)
         {
@@ -48,6 +50,7 @@ public partial class IndexingPipeline
             {
                 if (Excluded(edge.SourceFilePath) || buffer.FindByQN(edge.SourceQN) is not null) continue;
                 var pending = new PendingEdge(edge.SourceQN, edge.TargetQN, edge.Type, edge.Properties);
+                if (!IsHttpBinding(pending)) rawSourceEvidence.Add(edge.SourceQN);
                 if (!IsRawHttpCall(pending)) continue;
                 raw.TryAdd(HttpEdgeKey(pending), pending);
                 sourceFiles.TryAdd(edge.SourceQN, edge.SourceFilePath ?? "");
@@ -128,8 +131,7 @@ public partial class IndexingPipeline
         }
         if (preserveBindingsWithoutRawEvidence)
         {
-            var rawSources = raw.Values.Select(edge => edge.SourceQN).ToHashSet(StringComparer.Ordinal);
-            foreach (var old in oldBindings.Where(edge => !rawSources.Contains(edge.SourceQN)))
+            foreach (var old in oldBindings.Where(edge => !rawSourceEvidence.Contains(edge.SourceQN)))
             {
                 var retained = new PendingEdge(old.SourceQN, old.TargetQN, old.Type, old.Properties);
                 next.TryAdd(HttpEdgeKey(retained), retained);
