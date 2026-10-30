@@ -475,8 +475,10 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
         var evidence = await RecordAsync(project, "Evidence for a durable write before transcript growth");
         var repositoryRoot = Path.Combine(root, "codegraph");
         Directory.CreateDirectory(repositoryRoot);
-        await File.WriteAllTextAsync(Path.Combine(repositoryRoot, "Large.cs"), "// " + new string('x', 200000));
+        var largeSource = "// " + new string('x', 200000);
+        await File.WriteAllTextAsync(Path.Combine(repositoryRoot, "Large.cs"), largeSource);
         await graph.UpsertRepositoryAsync(new RepositoryEntity { Name = "codegraph", LocalPath = repositoryRoot });
+        await graph.UpsertFileHashBatchAsync("codegraph", new Dictionary<string, string> { ["Large.cs"] = Hash(largeSource) });
         var model = new ScriptedModel(Response(
             Call("write", "dream_record", new { entry = new { kind = "fact", summary = "Durable before transcript growth", confidence = "high" },
                 evidence = Evidence(evidence), prevalence = "one source entry" }),
