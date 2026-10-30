@@ -9,7 +9,7 @@ export interface ExtractionWorkControl {
 }
 export class ExtractionWorkLimitError extends Error {
   readonly code = 'extraction_work_incomplete';
-  constructor(readonly reason: 'work_limit' | 'cancelled', readonly work: number, readonly limit: number) {
+  constructor(readonly reason: 'work_limit' | 'cancelled' | 'depth_limit', readonly work: number, readonly limit: number) {
     super(`Extraction work refused: ${reason} (work=${work}, limit=${limit})`);
     this.name = 'ExtractionWorkLimitError';
   }
@@ -31,6 +31,12 @@ export class ExtractionWorkBudget {
     else if (!Number.isSafeInteger(units) || units < 0 || units > this.limit - this.spent) reason = 'work_limit';
     if (reason) { this.failure = new ExtractionWorkLimitError(reason, this.spent, this.limit); throw this.failure; }
     this.spent += units; this.control.onWork?.(this.spent);
+  }
+  checkDepth(depth: number, maximum: number): void {
+    this.charge();
+    if (!Number.isSafeInteger(depth) || depth < 0 || depth > maximum) {
+      this.failure = new ExtractionWorkLimitError('depth_limit', this.spent, this.limit); throw this.failure;
+    }
   }
   text(value: string): string { this.charge(value.length + 1); return value; }
 }

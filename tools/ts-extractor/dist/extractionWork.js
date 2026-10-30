@@ -40,6 +40,13 @@ class ExtractionWorkBudget {
         this.spent += units;
         this.control.onWork?.(this.spent);
     }
+    checkDepth(depth, maximum) {
+        this.charge();
+        if (!Number.isSafeInteger(depth) || depth < 0 || depth > maximum) {
+            this.failure = new ExtractionWorkLimitError('depth_limit', this.spent, this.limit);
+            throw this.failure;
+        }
+    }
     text(value) { this.charge(value.length + 1); return value; }
 }
 exports.ExtractionWorkBudget = ExtractionWorkBudget;
