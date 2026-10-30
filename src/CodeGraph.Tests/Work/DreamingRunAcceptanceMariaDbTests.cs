@@ -599,8 +599,9 @@ public sealed class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) : IClassF
     private async Task<DreamingService> ServiceAsync(ScriptedModel model, int maxTokens = 128000)
     {
         var service = new DreamingService(runs, db.Store, db.Service, model, sources, db.Clock);
-        await service.SetSettingsAsync(new(Enabled: true, DefaultProvider: "scripted", DefaultModel: "scripted", MaxTurns: 12,
-            MaxTokensPerRun: maxTokens, MinimumIntervalMinutes: 0), Human);
+        var current = await service.GetSettingsAsync();
+        await service.SetSettingsAsync(new DreamSettings(Enabled: true, DefaultProvider: "scripted", DefaultModel: "scripted", MaxTurns: 12,
+            MaxTokensPerRun: maxTokens, MinimumIntervalMinutes: 0) with { Version = current.Version }, Human);
         return service;
     }
     private static string Hash(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
