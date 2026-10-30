@@ -103,7 +103,8 @@ function extractCorpus(count) {
         const rootBinding = file.getVariableDeclarationOrThrow('rootApi');
         const changed = file.getVariableDeclarationOrThrow('changed');
         const viewTarget = (exportName) => {
-            const resolved = model.resolve(model.exported(file, exportName));
+            // Bypass independent-root memoization so this measures the separate return-AST cache.
+            const resolved = model.resolve(model.exported(file, exportName), new Set());
             strict_1.default.ok(resolved && ts_morph_1.Node.isObjectLiteralExpression(resolved), `${exportName} must retain its unique returned object`);
             const property = resolved.getPropertyOrThrow('View');
             strict_1.default.ok(ts_morph_1.Node.isPropertyAssignment(property));

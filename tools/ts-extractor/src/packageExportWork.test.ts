@@ -68,7 +68,8 @@ test('factory return AST caching preserves lexical symbols and does not rescan l
     const rootBinding = file.getVariableDeclarationOrThrow('rootApi');
     const changed = file.getVariableDeclarationOrThrow('changed');
     const viewTarget = (exportName: string) => {
-      const resolved = model.resolve(model.exported(file, exportName));
+      // Bypass independent-root memoization so this measures the separate return-AST cache.
+      const resolved = model.resolve(model.exported(file, exportName), new Set());
       assert.ok(resolved && Node.isObjectLiteralExpression(resolved), `${exportName} must retain its unique returned object`);
       const property = resolved.getPropertyOrThrow('View');
       assert.ok(Node.isPropertyAssignment(property));
