@@ -25,7 +25,7 @@ public sealed partial class MySqlWorkStore
         if(current.Kind!=KnowledgeKind.Lesson||current.Details?.Source?.Kind==CorrectionSourceKind.Prompt
            || state.Kind!=current.Kind||state.Summary!=current.Summary||state.Body!=current.Body||state.Confidence!=current.Confidence
            || state.MadeAutonomously!=current.MadeAutonomously||!Same(state.Details is {} sd?sd with {AppliesWhen=null}:null,current.Details is {} cd?cd with {AppliesWhen=null}:null)
-           ||!Same(state.Repositories??[],current.Repositories??[])||!Same(state.Paths,current.Paths??[])||!Same(state.Nodes,(current.Nodes??[]).Select(n=>n.Id).ToList())
+           ||!Same(state.Repositories??[],state.Details?.AppliesWhen?.Repositories??current.Repositories??[])||!Same(state.Paths,state.Details?.AppliesWhen?.Paths??current.Paths??[])||!Same(state.Nodes,(current.Nodes??[]).Select(n=>n.Id).ToList())
            || state.Supersedes is not null||state.SameAs is not null||state.Contradicts is not null)
             throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may revise only a non-prompt lesson's applies_when. Nothing was changed.");
     }

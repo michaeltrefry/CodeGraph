@@ -28,7 +28,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
 
     public async Task<object> ExecuteToolAsync(string tool, JsonElement args, WorkActor actor, CancellationToken ct = default)
     {
-        var scope = DreamExecutionScope.Current ?? throw WorkException.Invalid("Dream tools require an active run.");
+        var scope = DreamPolicy.RequireScope(actor);
         DreamPolicy.RequireProject(actor, scope.ProjectId);
         var input = JsonNode.Parse(args.GetRawText()) as JsonObject ?? throw WorkException.Invalid("Tool arguments must be an object.");
         if (input.ContainsKey("project") || input.ContainsKey("project_id") || input.ContainsKey("session_id"))
@@ -61,8 +61,14 @@ public sealed partial class WorkService : IKnowledgeDreamActions
                 var request = WorkJson.Parse<KnowledgeRevisionInput>(JsonSerializer.SerializeToElement(input), tool);
                 var entry = await RequireEntryAsync(request.Id, "id", scope.ProjectId.ToString(), null, ct);
                 if (entry.Kind != KnowledgeKind.Lesson || entry.Details?.Source?.Kind == CorrectionSourceKind.Prompt)
-                    throw WorkException.Invalid("Dreaming revises applies_when only on non-prompt lessons; open a challenge for a prompt rule.");
-                result = await RecordAsync(new() { Revise = request }, actor, null, ct);
+                    throw new WorkException(WorkErrorCodes.Forbidden, "Dreaming revises applies_when only on non-prompt lessons; open a challenge for a prompt rule.");
+                var state = ReadRevision(entry, request);
+                state = state with
+                {
+                    Repositories = request.AppliesWhen?.Repositories is not null ? state.Details!.AppliesWhen!.Repositories ?? [] : state.Repositories,
+                    Paths = request.AppliesWhen?.Paths is not null ? state.Details!.AppliesWhen!.Paths ?? [] : state.Paths
+                };
+                result = new RecordResult(false, await Knowledge.ReviseKnowledgeAsync(entry.Id, request.ExpectedVersion, state, actor, ct));
                 break;
             }
             case "dream_relate":
@@ -72,7 +78,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
                 var otherId = request.SameAs ?? request.Contradicts ?? throw WorkException.Invalid("relate needs same_as or contradicts.");
                 var other = await RequireEntryAsync(otherId, "other", scope.ProjectId.ToString(), null, ct);
                 if (request.SameAs is not null && (entry.Details?.Source?.Kind == CorrectionSourceKind.Prompt || other.Details?.Source?.Kind == CorrectionSourceKind.Prompt))
-                    throw WorkException.Invalid("A merge involving a prompt lesson requires a proposal.");
+                    throw new WorkException(WorkErrorCodes.Forbidden, "A merge involving a prompt lesson requires a proposal.");
                 result = await RecordAsync(new() { Relate = request }, actor, null, ct);
                 break;
             }
@@ -90,11 +96,11 @@ public sealed partial class WorkService : IKnowledgeDreamActions
                 RefuseDreamFields(input, "entry");
                 var entry = input["entry"]?.Deserialize<KnowledgeEntryInput>(WorkJson.Options) ?? throw WorkException.Invalid("dream_record requires entry.");
                 if (entry.Confidence is null || entry.Kind is not (KnowledgeKind.Fact or KnowledgeKind.Gotcha or KnowledgeKind.Constraint or KnowledgeKind.Attempt or KnowledgeKind.Lesson))
-                    throw WorkException.Invalid("Dreaming records fact, gotcha, constraint, attempt or lesson with explicit confidence.");
+                    throw new WorkException(WorkErrorCodes.Forbidden, "Dreaming records fact, gotcha, constraint, attempt or lesson with explicit confidence.");
                 if (entry.Supersedes is not null || entry.SameAs is not null || entry.Contradicts is not null)
-                    throw WorkException.Invalid("Record a new entry independently; use dream_relate for relations and a proposal for supersession.");
+                    throw new WorkException(WorkErrorCodes.Forbidden, "Record a new entry independently; use dream_relate for relations and a proposal for supersession.");
                 if (entry.Kind == KnowledgeKind.Lesson && entry.Source?.Kind != CorrectionSourceKind.Agent)
-                    throw WorkException.Invalid("A dreaming lesson must have source agent.");
+                    throw new WorkException(WorkErrorCodes.Forbidden, "A dreaming lesson must have source agent.");
                 result = await RecordAsync(new() { Project = scope.ProjectId.ToString(), Entry = entry }, actor, null, ct);
                 break;
             }
@@ -108,7 +114,7 @@ public sealed partial class WorkService : IKnowledgeDreamActions
                 break;
             }
             default:
-                throw WorkException.Invalid($"Dreaming cannot execute '{tool}'. Only reversible knowledge changes and proposals are allowed.");
+                throw new WorkException(WorkErrorCodes.Forbidden, $"Dreaming cannot execute '{tool}'. Only reversible knowledge changes and proposals are allowed.");
         }
         return new { untrusted_data = true, data = result, evidence, prevalence };
     }
