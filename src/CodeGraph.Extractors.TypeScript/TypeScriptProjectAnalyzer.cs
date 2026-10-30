@@ -24,7 +24,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// 6 (sc-27972): authoritative scoped source coverage, relative ApiContract endpoints
     /// and alias-aware static request values.
     /// </remarks>
-    public string ExtractionVersion => "10"; // Early weighted AST and core-output allocation bounds.
+    public string ExtractionVersion => "11"; // Shared configuration AST and semantic output retention bounds.
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;

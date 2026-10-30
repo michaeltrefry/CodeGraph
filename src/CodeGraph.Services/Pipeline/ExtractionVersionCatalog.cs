@@ -73,7 +73,7 @@ public sealed class ExtractionVersionCatalog
     /// 8: bounded native registration reads and language-specific analyzer case selection.
     /// 9: admitted bounded Go manifests and contained regular-file registration input.
     /// 10: indexed/cancellable Tauri analysis with deterministic work and depth limits.
-    public const int PipelineVersion = 16; // Early frontend allocation bounds and v4 sidecar capability.
+    public const int PipelineVersion = 17; // All frontend parsers/emitters share v5 retention bounds.
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
     private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];
