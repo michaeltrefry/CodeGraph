@@ -24,7 +24,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// 6 (sc-27972): authoritative scoped source coverage, relative ApiContract endpoints
     /// and alias-aware static request values.
     /// </remarks>
-    public string ExtractionVersion => "7"; // Bounded source/config/template admission and Vite alias work.
+    public string ExtractionVersion => "8"; // Bounded semantic expansion and indexed public exports.
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
