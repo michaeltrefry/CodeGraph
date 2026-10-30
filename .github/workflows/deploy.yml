@@ -207,6 +207,7 @@ jobs:
               "OPENAI": "OpenAi",
               "ORGANIZATION": "Organization",
               "ORGANIZATIONS": "Organizations",
+              "OWNERLOGINS": "OwnerLogins",
               "PASSWORD": "Password",
               "PERSONALACCESSTOKEN": "PersonalAccessToken",
               "PRIVATETOKEN": "PrivateToken",
