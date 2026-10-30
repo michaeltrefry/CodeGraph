@@ -45,6 +45,7 @@ import {
   DatabaseSourceResponse,
   IndexerAcceptedResponse,
   IndexerRunResponse,
+  JobQueueResponse,
   McpPersonalAccessTokenMetadata,
   McpPersonalAccessTokenCreateResponse,
   McpHubAuditResponse,
@@ -365,6 +366,14 @@ export class ApiService {
 
   syncAllDatabaseSources(): Observable<IndexerAcceptedResponse> {
     return this.http.post<IndexerAcceptedResponse>(`${API}/database-sources/sync-all`, {});
+  }
+
+  getJobQueue(): Observable<JobQueueResponse> {
+    return this.http.get<JobQueueResponse>(`${API}/admin/jobs/queue`);
+  }
+
+  dismissJob(kind: string, id: number): Observable<void> {
+    return this.http.post<void>(`${API}/admin/jobs/queue/${encodeURIComponent(kind)}/${id}/dismiss`, {});
   }
 
   listIndexerRuns(params?: { status?: string; operation?: string; take?: number }): Observable<IndexerRunResponse[]> {

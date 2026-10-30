@@ -5,6 +5,8 @@ import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { environment } from '../../../environments/environment';
 
+import { AdminJobQueueComponent } from './admin-job-queue.component';
+
 const API = environment.apiUrl;
 
 interface OperationResult {
@@ -15,7 +17,7 @@ interface OperationResult {
 @Component({
   selector: 'app-admin-operations',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, AdminJobQueueComponent],
   template: `
     <header class="adm-page-header">
       <div>
@@ -167,6 +169,8 @@ interface OperationResult {
         <pre>{{ result()!.message }}</pre>
       </section>
     }
+
+    <app-admin-job-queue />
   `,
   styles: [`
     :host { display: flex; flex-direction: column; gap: 18px; }
