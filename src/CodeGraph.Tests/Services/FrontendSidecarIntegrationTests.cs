@@ -21,6 +21,39 @@ namespace CodeGraph.Tests.Services;
 /// The Backend lane installs the sidecar dependencies before running the .NET suite.</summary>
 public sealed class FrontendSidecarIntegrationTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task RealSidecar_PreservesZeroLimitsAndPositiveExtensionOverrides(bool zeroDefault, bool perFile)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"codegraph-zero-limit-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "app.jsx"), "export function App(){return <main/>}");
+            var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+            using var server = new TypeScriptServerManager(port, NullLogger.Instance);
+            var store = new InMemoryGraphStore();
+            var analyzer = new TypeScriptProjectAnalyzer(server, NullLogger<TypeScriptProjectAnalyzer>.Instance);
+            var options = new IndexingOptions { MaxFileSizeKb = zeroDefault ? 0 : 1,
+                MaxFileSizeKbByExtension = zeroDefault ? new() { [".jsx"] = 1 } : new() { [".sql"] = 0 } };
+            ICodeExtractor[] extractors = perFile ? [new TypeScriptExtractor(server, NullLogger<TypeScriptExtractor>.Instance)] : [];
+            var pipeline = new IndexingPipeline(store, extractors, Options.Create(options), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: perFile ? null : analyzer);
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await pipeline.IndexRepositoryAsync("ZeroLimits", root, ct: timeout.Token);
+            store.Nodes.ShouldContain(node => node.Name == "App");
+            (await store.GetFileHashRecordsAsync("ZeroLimits")).Keys.ShouldContain("app.jsx");
+            var writes = store.ReplaceRepositoryFilesCallCount;
+            await pipeline.IndexRepositoryAsync("ZeroLimits", root, ct: timeout.Token);
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Fact]
     public async Task RealSidecar_RefreshesUnchangedCallersAndEntryRenders_AndPreservesFailedAnalysis()
     {

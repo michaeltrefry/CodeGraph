@@ -6,12 +6,46 @@ import { test } from 'node:test';
 import { BoundedTextReader, validateSourceScope } from './boundedTextReader';
 import { extractProject } from './extractor';
 import { buildApp, readIncludedFiles } from './app';
+import type { SourceReadLimits } from './protocol';
 
 function fixture(files: Record<string, string>) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-source-budget-'));
   for (const [file, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), text); }
   return { root, file: (name: string) => path.join(root, name), dispose: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
+
+test('zero defaults and unrelated zero overrides allow positively admitted frontend extensions', () => {
+  const f = fixture({ 'app.jsx': 'export function App(){return <main/>}' });
+  try {
+    const cases: SourceReadLimits[] = [
+      { maxFileSizeKb: 0, maxFileSizeKbByExtension: { '.jsx': 1 } },
+      { maxFileSizeKb: 1, maxFileSizeKbByExtension: { '.sql': 0 } },
+    ];
+    for (const limits of cases) {
+      const result = extractProject('ZeroLimits', f.root, '', () => {}, ['app.jsx'], limits);
+      assert.equal(result.complete, true, result.diagnostics?.join('\n'));
+      assert.deepEqual(result.processedFiles, ['app.jsx']);
+      assert.ok(result.nodes.some(node => node.name === 'App'));
+    }
+  } finally { f.dispose(); }
+});
+
+test('zero text limits accept empty text and refuse nonempty matching inputs', () => {
+  const f = fixture({ 'empty.jsx': '', 'app.jsx': 'export const value=1;' });
+  try {
+    const empty = new BoundedTextReader(f.root, undefined, { maxFileSizeKb: 0, maxAnalysisTextKb: 0 });
+    assert.equal(empty.complete, true);
+    assert.equal(empty.read(f.file('empty.jsx'), true), '');
+    assert.equal(empty.complete, true);
+    assert.equal(empty.read(f.file('app.jsx'), true), undefined);
+    assert.equal(empty.complete, false);
+    const result = extractProject('ZeroLimits', f.root, '', () => {}, ['app.jsx'], {
+      maxFileSizeKb: 1, maxFileSizeKbByExtension: { '.jsx': 0 },
+    });
+    assert.equal(result.complete, false);
+    assert.deepEqual(result.processedFiles, []);
+  } finally { f.dispose(); }
+});
 
 test('file limits match decoded UTF16 units, including multibyte text and case-insensitive extension overrides', () => {
   const f = fixture({ 'bmp.txt': 'é'.repeat(1024), 'emoji.txt': '🌳'.repeat(512), 'too-long.txt': 'é'.repeat(1025), 'large.TSX': 'a'.repeat(1800) });

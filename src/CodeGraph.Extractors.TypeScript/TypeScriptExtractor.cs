@@ -56,22 +56,17 @@ public class TypeScriptExtractor : ICodeExtractor
         var tempDir = Path.Combine(Path.GetTempPath(), $"codegraph-ts-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
         var tempTs = Path.Combine(tempDir, relative);
-        var tempTsconfig = Path.Combine(tempDir, "tsconfig.json");
 
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(tempTs)!);
             await File.WriteAllTextAsync(tempTs, content, ct);
-            await File.WriteAllTextAsync(tempTsconfig,
-                """{"compilerOptions":{"target":"ES2020","module":"commonjs","allowJs":true,"jsx":"preserve"},"include":["**/*.ts","**/*.tsx","**/*.js","**/*.jsx"]}""",
-                ct);
-
             var response = await _server.ExtractProjectAsync(new ExtractProjectRequest
             {
                 RepositoryName = context.RepositoryName,
                 RootPath = tempDir,
-                TsconfigPath = tempTsconfig,
-                IncludedFiles = [relative, Path.GetFileName(tempTsconfig)],
+                TsconfigPath = "", // The sidecar supports its default configuration without synthetic input.
+                IncludedFiles = [relative],
                 MaxFileSizeKb = context.TypeScriptSourceLimits.MaxFileSizeKb,
                 MaxFileSizeKbByExtension = context.TypeScriptSourceLimits.MaxFileSizeKbByExtension,
                 MaxAnalysisTextKb = context.TypeScriptSourceLimits.MaxAnalysisTextKb,

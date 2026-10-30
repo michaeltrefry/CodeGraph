@@ -51,7 +51,7 @@ export class BoundedTextReader {
   }
   private limit(value: number | undefined, fallback: number): number {
     if (value === undefined) return fallback * 1024;
-    if (!Number.isSafeInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER / 4096) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > Number.MAX_SAFE_INTEGER / 4096) {
       this.refuse(this.root ?? '', 'invalid source text budget'); return fallback * 1024;
     }
     return value * 1024;

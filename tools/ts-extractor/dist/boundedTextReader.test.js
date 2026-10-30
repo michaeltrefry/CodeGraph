@@ -49,6 +49,43 @@ function fixture(files) {
     }
     return { root, file: (name) => path.join(root, name), dispose: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
+(0, node_test_1.test)('zero defaults and unrelated zero overrides allow positively admitted frontend extensions', () => {
+    const f = fixture({ 'app.jsx': 'export function App(){return <main/>}' });
+    try {
+        const cases = [
+            { maxFileSizeKb: 0, maxFileSizeKbByExtension: { '.jsx': 1 } },
+            { maxFileSizeKb: 1, maxFileSizeKbByExtension: { '.sql': 0 } },
+        ];
+        for (const limits of cases) {
+            const result = (0, extractor_1.extractProject)('ZeroLimits', f.root, '', () => { }, ['app.jsx'], limits);
+            assert_1.strict.equal(result.complete, true, result.diagnostics?.join('\n'));
+            assert_1.strict.deepEqual(result.processedFiles, ['app.jsx']);
+            assert_1.strict.ok(result.nodes.some(node => node.name === 'App'));
+        }
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.test)('zero text limits accept empty text and refuse nonempty matching inputs', () => {
+    const f = fixture({ 'empty.jsx': '', 'app.jsx': 'export const value=1;' });
+    try {
+        const empty = new boundedTextReader_1.BoundedTextReader(f.root, undefined, { maxFileSizeKb: 0, maxAnalysisTextKb: 0 });
+        assert_1.strict.equal(empty.complete, true);
+        assert_1.strict.equal(empty.read(f.file('empty.jsx'), true), '');
+        assert_1.strict.equal(empty.complete, true);
+        assert_1.strict.equal(empty.read(f.file('app.jsx'), true), undefined);
+        assert_1.strict.equal(empty.complete, false);
+        const result = (0, extractor_1.extractProject)('ZeroLimits', f.root, '', () => { }, ['app.jsx'], {
+            maxFileSizeKb: 1, maxFileSizeKbByExtension: { '.jsx': 0 },
+        });
+        assert_1.strict.equal(result.complete, false);
+        assert_1.strict.deepEqual(result.processedFiles, []);
+    }
+    finally {
+        f.dispose();
+    }
+});
 (0, node_test_1.test)('file limits match decoded UTF16 units, including multibyte text and case-insensitive extension overrides', () => {
     const f = fixture({ 'bmp.txt': 'é'.repeat(1024), 'emoji.txt': '🌳'.repeat(512), 'too-long.txt': 'é'.repeat(1025), 'large.TSX': 'a'.repeat(1800) });
     try {
