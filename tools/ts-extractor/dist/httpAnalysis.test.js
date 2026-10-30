@@ -255,3 +255,52 @@ const routes = (result, owner) => result.edges.filter(e => e.sourceQN === owner)
     assert_1.strict.equal(result.coverage.unresolved, 1);
     assert_1.strict.equal(result.coverage.direct, 1);
 });
+(0, node_test_1.test)('unrelated branching UI/helper graphs never consume the HTTP wrapper expansion budget', () => {
+    const noise = Array.from({ length: 40 }, (_, index) => index === 39
+        ? `function noise${index}(value){return value;}`
+        : `function noise${index}(value){noise${index + 1}(value+'a');return noise${index + 1}(value+'b');}`).join('\n');
+    const result = fixture({ 'noise.ts': `${noise}\nexport function load(){return fetch('/api/v1/items');}` });
+    assert_1.strict.equal(result.coverage.complete, true);
+    assert_1.strict.equal(result.coverage.bounded, 0);
+    assert_1.strict.deepEqual(routes(result, 'Demo:noise.ts#load'), ['route:*:GET:/api/v1/items']);
+    const stats = JSON.parse(result.diagnostics.find(message => message.startsWith('HTTP analysis:')).slice('HTTP analysis:'.length));
+    assert_1.strict.equal(stats.relevant_roots, 1);
+    assert_1.strict.equal(stats.summaries, 1);
+});
+(0, node_test_1.test)('wrapper memoization ignores unrelated caller parameters but retains explicit substitutions', () => {
+    const callers = Array.from({ length: 100 }, (_, index) => `export function caller${index}(unrelated){return request('/api/v1/items');}`).join('\n');
+    const result = fixture({ 'memo.ts': `function request(path){return fetch(path);}\n${callers}` });
+    assert_1.strict.equal(result.coverage.complete, true);
+    assert_1.strict.equal(result.coverage.wrapped, 100);
+    const stats = JSON.parse(result.diagnostics.find(message => message.startsWith('HTTP analysis:')).slice('HTTP analysis:'.length));
+    assert_1.strict.equal(stats.summaries, 102); // 100 callers, unknown request root, one shared known request.
+    assert_1.strict.equal(stats.cache_hits, 99);
+});
+(0, node_test_1.test)('projected HTTP environments retain lexical URL and method captures, including destructured bindings', () => {
+    const result = fixture({ 'captures.ts': `
+    function wrap({path,method}){const inner=()=>fetch(path,{method});return inner();}
+    export function load(){wrap({path:'/api/v1/first',method:'GET'});return wrap({path:'/api/v1/second',method:'DELETE'});}
+  ` });
+    assert_1.strict.equal(result.coverage.complete, true);
+    assert_1.strict.deepEqual(routes(result, 'Demo:captures.ts#load'), ['route:*:DELETE:/api/v1/second', 'route:*:GET:/api/v1/first']);
+    assert_1.strict.deepEqual(routes(result, 'Demo:captures.ts#wrap.inner'), []);
+});
+(0, node_test_1.test)('standalone nested callable analysis never assumes an unbound outer parameter default', () => {
+    const result = fixture({ 'default-capture.ts': `
+    function wrap(path='/api/v1/default'){const inner=()=>fetch(path);return inner();}
+    export function load(){return wrap('/api/v1/actual');}
+  ` });
+    assert_1.strict.deepEqual(routes(result, 'Demo:default-capture.ts#load'), ['route:*:GET:/api/v1/actual']);
+    assert_1.strict.deepEqual(routes(result, 'Demo:default-capture.ts#wrap.inner'), []);
+});
+(0, node_test_1.test)('diamond wrapper paths retain endpoint scope with one deterministic transport witness', () => {
+    const result = fixture({ 'diamond.ts': `
+    function request(){return fetch('/api/v1/items');}
+    function left(){return request();}function right(){return request();}
+    export function load(){left();right();}
+  ` });
+    const load = result.edges.find(edge => edge.sourceQN === 'Demo:diamond.ts#load');
+    assert_1.strict.deepEqual(load.properties?.wrapper_chain, ['Demo:diamond.ts#left', 'Demo:diamond.ts#request']);
+    assert_1.strict.equal(result.coverage.wrapped, 3);
+    assert_1.strict.equal(result.coverage.complete, true);
+});
