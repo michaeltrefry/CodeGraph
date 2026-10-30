@@ -65,8 +65,16 @@ class SemanticModel {
         this.callables = new Map();
         this.byPath = new Map();
         this.byQN = new Map();
+        this.relativePaths = new Map();
+        this.importBySource = new Map();
+        this.resolvedModules = new Map();
         for (const file of files)
             this.byPath.set(this.relative(file), file);
+        for (const imported of imports) {
+            const key = `${imported.filePath}\0${imported.importedNamespace}`;
+            if (!this.importBySource.has(key))
+                this.importBySource.set(key, imported);
+        }
         for (const file of files) {
             file.forEachDescendant(node => {
                 if (ts_morph_1.Node.isClassDeclaration(node) || ts_morph_1.Node.isInterfaceDeclaration(node) || ts_morph_1.Node.isEnumDeclaration(node) || ts_morph_1.Node.isVariableDeclaration(node)) {
@@ -80,7 +88,15 @@ class SemanticModel {
             });
         }
     }
-    relative(node) { return path.relative(this.root, node.getSourceFile().getFilePath()).replace(/\\/g, '/'); }
+    relative(node) {
+        const file = node.getSourceFile();
+        let relative = this.relativePaths.get(file);
+        if (relative === undefined) {
+            relative = path.relative(this.root, file.getFilePath()).replace(/\\/g, '/');
+            this.relativePaths.set(file, relative);
+        }
+        return relative;
+    }
     fileQN(node) { return `${this.repository}:${this.relative(node)}`; }
     identify(node, qn) { this.declarations.set(node, qn); this.byQN.set(qn, node); }
     qn(node) {
@@ -160,8 +176,13 @@ class SemanticModel {
         return this.fileQN(node);
     }
     module(from, specifier) {
-        const resolved = this.imports.find(item => item.filePath === this.relative(from) && item.importedNamespace === specifier);
-        return resolved?.resolvedFilePath ? this.byPath.get(resolved.resolvedFilePath) : undefined;
+        const key = `${this.relative(from)}\0${specifier}`;
+        if (this.resolvedModules.has(key))
+            return this.resolvedModules.get(key);
+        const resolved = this.importBySource.get(key);
+        const module = resolved?.resolvedFilePath ? this.byPath.get(resolved.resolvedFilePath) : undefined;
+        this.resolvedModules.set(key, module);
+        return module;
     }
     exported(file, name, seen = new Set()) {
         const key = `${this.relative(file)}:${name}`;

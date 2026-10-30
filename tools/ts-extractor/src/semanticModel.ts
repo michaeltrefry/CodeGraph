@@ -25,9 +25,16 @@ export class SemanticModel {
   readonly callables = new Map<Node, string>();
   readonly byPath = new Map<string, SourceFile>();
   readonly byQN = new Map<string, Node>();
+  private readonly relativePaths = new Map<SourceFile, string>();
+  private readonly importBySource = new Map<string, ResolvedImportDto>();
+  private readonly resolvedModules = new Map<string, SourceFile | undefined>();
   constructor(readonly repository: string, readonly root: string, readonly files: SourceFile[],
     readonly imports: ResolvedImportDto[], readonly diagnostic: (message: string) => void) {
     for (const file of files) this.byPath.set(this.relative(file), file);
+    for (const imported of imports) {
+      const key = `${imported.filePath}\0${imported.importedNamespace}`;
+      if (!this.importBySource.has(key)) this.importBySource.set(key, imported);
+    }
     for (const file of files) {
       file.forEachDescendant(node => {
         if (Node.isClassDeclaration(node) || Node.isInterfaceDeclaration(node) || Node.isEnumDeclaration(node) || Node.isVariableDeclaration(node)) {
@@ -41,7 +48,15 @@ export class SemanticModel {
       });
     }
   }
-  relative(node: Node): string { return path.relative(this.root, node.getSourceFile().getFilePath()).replace(/\\/g, '/'); }
+  relative(node: Node): string {
+    const file = node.getSourceFile();
+    let relative = this.relativePaths.get(file);
+    if (relative === undefined) {
+      relative = path.relative(this.root, file.getFilePath()).replace(/\\/g, '/');
+      this.relativePaths.set(file, relative);
+    }
+    return relative;
+  }
   fileQN(node: Node): string { return `${this.repository}:${this.relative(node)}`; }
   private identify(node: Node, qn: string): void { this.declarations.set(node, qn); this.byQN.set(qn, node); }
   private qn(node: Node): string {
@@ -100,8 +115,12 @@ export class SemanticModel {
     return this.fileQN(node);
   }
   module(from: Node, specifier: string): SourceFile | undefined {
-    const resolved = this.imports.find(item => item.filePath === this.relative(from) && item.importedNamespace === specifier);
-    return resolved?.resolvedFilePath ? this.byPath.get(resolved.resolvedFilePath) : undefined;
+    const key = `${this.relative(from)}\0${specifier}`;
+    if (this.resolvedModules.has(key)) return this.resolvedModules.get(key);
+    const resolved = this.importBySource.get(key);
+    const module = resolved?.resolvedFilePath ? this.byPath.get(resolved.resolvedFilePath) : undefined;
+    this.resolvedModules.set(key, module);
+    return module;
   }
   exported(file: SourceFile, name: string, seen = new Set<string>()): Node | undefined {
     const key = `${this.relative(file)}:${name}`;
