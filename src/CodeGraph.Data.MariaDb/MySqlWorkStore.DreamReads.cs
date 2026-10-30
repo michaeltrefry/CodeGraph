@@ -36,7 +36,7 @@ public sealed partial class MySqlWorkStore
         var externalEvents=events.Where(row=>!CompletedDreamOutput(row,"session_id")).ToArray();
         var externalChallenges=challenges.Where(row=>!CompletedDreamOutput(row,"author_session_id")||row.resolved_at is not null).ToArray();
         var nodes=(await connection.QueryAsync(new CommandDefinition("SELECT k.entry_id,k.node_id,n.repository,n.qualified_name,n.file_path FROM knowledge_entry_nodes k JOIN knowledge_entries e ON e.id=k.entry_id LEFT JOIN nodes n ON n.id=k.node_id WHERE e.project_id=@projectId ORDER BY k.entry_id,k.node_id",new {projectId},cancellationToken:ct))).ToArray();
-        var externalProposals=proposals.Where(row=>row.reviewed_at is not null||!Guid.TryParse(row.run_id.ToString(),out Guid id)||!completedRuns.Contains(id)).ToArray();
+        var externalProposals=proposals.Where(row=>row.reviewed_at is not null||!Guid.TryParse(Convert.ToString((object?)row.run_id),out var id)||!completedRuns.Contains(id)).ToArray();
         var fingerprint=HashUrl(JsonSerializer.Serialize(new {revisions,events=externalEvents.Select(row=>new {correction_id=row.correction_id.ToString(),event_hash=(string)row.event_hash,created_at=(DateTime)row.created_at}),reviews,challenges=externalChallenges,proposals=externalProposals,trail,activity,
             freshness=freshness.Select(row=>new {entry_id=row.entry_id.ToString(),repository_name=(string)row.repository_name,path=(string)row.path,current_hash=(string?)row.current_hash}),nodes}));
 
