@@ -308,9 +308,9 @@ task-scoped lesson ──► rule ───────────────�
 **Recurrence is information, not a trigger.** Every briefing logs which rules it served, so the Lessons page can show:
 - a lesson that recurred while its rule was **not** served → its applies-when or ranking is probably wrong;
 - a lesson that recurred while its rule **was** served → text alone is not working; a candidate for a local fix (skill, hook, test).
-CodeGraph does not act on either; it shows them.
+CodeGraph shows both signals. The single exception is the scheduled knowledge-dreaming pass (epic 27962, decision D29), which calls its configured model out of band under a budget, an attributed run report and server-enforced write policy. Write-time capture, classification and deduplication remain model-free. See `knowledge-dreaming.md`.
 
-**Skills are manual.** CodeGraph does not generate or edit skills or instruction files. It supplies the input: `recall(kind: lesson, …)` grouped by applies-when, recurrence and source, so you and an agent can update a skill together. A lesson can then be marked `addressed_by: skill <name> @ <commit>`, which takes it out of briefings for sessions that load that skill.
+**Skills are applied externally.** The dreaming pass may draft a skill, hook or test proposal for review; CodeGraph does not apply it or edit skills or instruction files. It supplies the input: `recall(kind: lesson, …)` grouped by applies-when, recurrence and source, so you and an agent can update a skill together. A lesson can then be marked `addressed_by: skill <name> @ <commit>`, which takes it out of briefings for sessions that load that skill.
 
 **Human role: review later, never a gate** (P14). Rule challenges, lessons proposed for rule status, and decisions agents made on their own land in a **review queue**, deduplicated and ranked by priority then recurrence. Nothing in it waits on you: lessons become rules through recurrence, a challenged rule stays active until you get to it, and an agent's decision stands until you overturn it. Approving is one click; rejecting with a reason records why so the same candidate is not re-proposed.
 

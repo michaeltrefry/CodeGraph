@@ -9,8 +9,8 @@ public sealed record DreamSettings(bool Enabled = true, string DefaultProvider =
 public sealed record DreamEvidence(string Kind, string Reference, string Summary);
 public sealed record DreamAction(string Tool, JsonElement Arguments, JsonElement Result, IReadOnlyList<DreamEvidence> Evidence, DateTime CreatedAt);
 public sealed record DreamRun(Guid Id, Guid ProjectId, string Trigger, WorkActor Initiator, string Status, DateTime StartedAt,
-    DateTime? EndedAt, string Provider, string Model, long InputTokens, long OutputTokens, decimal EstimatedCost,
-    int BaseInstructionRevision, int ProjectInstructionRevision, string? SignalFingerprint, IReadOnlyList<DreamAction> Actions,
+    [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] DateTime? EndedAt, string Provider, string Model, long InputTokens, long OutputTokens, decimal EstimatedCost,
+    int BaseInstructionRevision, int ProjectInstructionRevision, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] string? SignalFingerprint, IReadOnlyList<DreamAction> Actions,
     string? Report = null, string? Reason = null);
 public sealed record DreamInstructionRevision(int Revision, string Content, string EditedBy, DateTime CreatedAt);
 public sealed record DreamInstructions(string Slug, string Content, int Revision, IReadOnlyList<DreamInstructionRevision> History);
