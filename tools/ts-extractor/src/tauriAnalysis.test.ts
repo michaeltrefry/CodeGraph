@@ -88,3 +88,37 @@ test('re-exported native imports retain provenance through named and namespace b
   assert.ok(result.nodes.some(node => node.properties.tauri_name === 'catalog_command'));
   assert.ok(result.nodes.some(node => node.properties.tauri_name === 'engine://stream'));
 });
+
+test('closure wrapper memoization isolates captured commands across callers and declaration order', () => {
+  for (const reverse of [false, true]) {
+    const callers = [
+      `export function first() { return wrap('first_command'); }`,
+      `export function second() { return wrap('second_command'); }`,
+    ];
+    const result = analyze({ 'src/closure.ts': `import { invoke } from '@tauri-apps/api/core';
+      function wrap(command: string) { const inner = () => invoke(command); return inner(); }
+      ${reverse ? callers.reverse().join('\n') : callers.join('\n')}` });
+    for (const caller of ['first', 'second']) {
+      const references = result.nodes.filter(node => node.properties.tauri_caller === `App:src/closure.ts#${caller}` && node.properties.kind === 'tauri_command_reference');
+      assert.deepEqual(references.map(node => node.properties.tauri_name), [`${caller}_command`]);
+      assert.ok(result.edges.some(edge => edge.sourceQN === `App:src/closure.ts#${caller}` && edge.targetQN === references[0].qualifiedName));
+    }
+  }
+});
+
+test('captured command dependencies follow local aliases and sibling closure calls', () => {
+  const result = analyze({ 'src/closure.ts': `import { invoke } from '@tauri-apps/api/core';
+    function wrap(command: string, irrelevant: string) {
+      const alias = command;
+      const read = () => alias;
+      const leaf = () => invoke(read());
+      const inner = () => leaf();
+      return inner();
+    }
+    export function first() { return wrap('first_command', 'first_noise'); }
+    export function second() { return wrap('second_command', 'second_noise'); }` });
+  for (const caller of ['first', 'second']) {
+    assert.deepEqual(result.nodes.filter(node => node.properties.tauri_caller === `App:src/closure.ts#${caller}`)
+      .map(node => node.properties.tauri_name), [`${caller}_command`]);
+  }
+});

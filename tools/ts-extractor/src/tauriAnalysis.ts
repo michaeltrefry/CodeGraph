@@ -77,6 +77,37 @@ export function analyzeTauri(model: SemanticModel, nodes: GraphNodeDto[], edges:
   const queue = [...reachable];
   for (let cursor = 0; cursor < queue.length; cursor++) for (const caller of dependents.get(queue[cursor]) ?? [])
     if (!reachable.has(caller)) { reachable.add(caller); queue.push(caller); }
+  const captures = new Map<Node, Node[] | undefined>();
+  function capturedDeclarations(target: Node): Node[] | undefined {
+    if (captures.has(target)) return captures.get(target);
+    const pending = [target], visited = new Set<Node>(), declarations = new Set<Node>();
+    let inspected = 0;
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (visited.has(current)) continue; visited.add(current);
+      const identifiers = Node.isIdentifier(current) ? [current] : current.getDescendantsOfKind(SyntaxKind.Identifier);
+      for (const identifier of identifiers) {
+        // If dependency discovery is too large, bypass this summary cache. The existing
+        // wrapper expansion bound still applies; a partial capture set must never be a key.
+        if (++inspected > 10000) { captures.set(target, undefined); return undefined; }
+        const parent = identifier.getParent();
+        const symbol = parent && Node.isShorthandPropertyAssignment(parent) ? parent.getValueSymbol() : identifier.getSymbol();
+        for (const declaration of symbol?.getDeclarations() ?? []) {
+          if (!model.byPath.has(model.relative(declaration))) continue;
+          if (!declaration.getAncestors().includes(target)) declarations.add(declaration);
+          if (Node.isVariableDeclaration(declaration) || Node.isPropertyDeclaration(declaration) || Node.isPropertyAssignment(declaration)
+              || Node.isParameterDeclaration(declaration) || Node.isBindingElement(declaration) || Node.isEnumMember(declaration)) {
+            const initializer = declaration.getInitializer(); if (initializer) pending.push(initializer);
+          } else if (isCallable(declaration)) pending.push(declaration);
+          else if (Node.isImportSpecifier(declaration) || Node.isImportClause(declaration)) {
+            const imported = model.resolve(identifier); if (imported && imported !== declaration) pending.push(imported);
+          }
+        }
+      }
+    }
+    const result = [...declarations].sort((left, right) => model.relative(left).localeCompare(model.relative(right)) || left.getStart() - right.getStart());
+    captures.set(target, result); return result;
+  }
   function operations(call: Node, env: StaticEnvironment, active: Set<Node>): Operation[] {
     if (!Node.isCallExpression(call)) return [];
     const api = apiFor(call.getExpression());
@@ -91,8 +122,14 @@ export function analyzeTauri(model: SemanticModel, nodes: GraphNodeDto[], edges:
     const target = model.resolve(call.getExpression());
     if (!target || !isCallable(target) || !reachable.has(target) || active.has(target)) return [];
     const values = call.getArguments().map(argument => evaluator.evaluate(argument, env));
-    const key = `${model.callables.get(target)}:${values.map(staticKey).join('|')}`;
-    const cached = memo.get(key);
+    // A no-argument closure can still depend on a substituted outer parameter. Include
+    // only referenced declaration bindings, including initializer/callee dependencies,
+    // rather than copying unrelated caller environments into every summary identity.
+    const dependencies = capturedDeclarations(target);
+    const key = dependencies && JSON.stringify([model.callables.get(target), values.map(staticKey),
+      dependencies.filter(declaration => env.has(declaration)).map(declaration =>
+        [model.relative(declaration), declaration.getStart(), staticKey(env.get(declaration))])]);
+    const cached = key ? memo.get(key) : undefined;
     if (cached) return cached;
     if (active.size >= 16 || ++expanded > 20000) {
       diagnostic(`tauriTraversal: bounded wrapper expansion at ${model.relative(call)}:${call.getStartLineNumber()}`);
@@ -102,7 +139,7 @@ export function analyzeTauri(model: SemanticModel, nodes: GraphNodeDto[], edges:
     const chain = new Set(active); chain.add(target);
     const result = (callsByOwner.get(target) ?? []).flatMap(inner => operations(inner, next, chain))
       .map(operation => ({ ...operation, chain: [model.callables.get(target)!, ...operation.chain] }));
-    memo.set(key, result);
+    if (key) memo.set(key, result);
     return result;
   }
   const keys = new Set<string>();
