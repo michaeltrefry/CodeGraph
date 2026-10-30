@@ -129,6 +129,10 @@ public sealed class DreamingLiveAcceptance
             .Select(id => id.ToString("D")).ToArray();
         var before = await SnapshotAsync(connectionString, project, originalIds);
         await WriteAsync("before.json", before);
+        var proposalsBefore = await ProposalsAsync(connectionString, project);
+        await WriteAsync("proposals-before.json", proposalsBefore);
+        var pendingBeforeIds = proposalsBefore.Where(p => p.Status == "pending").Select(p => p.Id).ToHashSet();
+        IReadOnlyList<ProposalSnapshot> proposalsAfter = [];
         DreamRun? run = null;
         DreamRevertResult? revert = null;
         DreamSettings? temporarySettings = null;
@@ -158,9 +162,11 @@ public sealed class DreamingLiveAcceptance
                 }
                 var after = await SnapshotAsync(connectionString, project, originalIds);
                 await WriteAsync("after-revert.json", after);
+                proposalsAfter = await ProposalsAsync(connectionString, project);
+                await WriteAsync("proposals-after.json", proposalsAfter);
                 await WriteAsync("restoration.json", new { semantically_equal = before == after,
                     comparison = "all preexisting and active knowledge fields, scope, freshness, events, links, challenges and addressed_by; work state; excludes append-only audit, entry revision/version/updated_at and new retracted tombstones",
-                    pending_proposals = await ProposalsAsync(connectionString, project), failure });
+                    pending_proposals = proposalsAfter.Where(p => p.Status == "pending"), failure });
             }
             finally
             {
@@ -190,7 +196,6 @@ public sealed class DreamingLiveAcceptance
         var writes = run.Actions.Where(a => a.Tool is "dream_verify" or "dream_revise" or "dream_relate" or "dream_promote" or "dream_record" or "dream_challenge").ToList();
         writes.ShouldNotBeEmpty("S8 requires an actual useful direct write, not only reads");
         var proposals = run.Actions.Where(a => a.Tool == "dream_propose").ToList();
-        proposals.ShouldNotBeEmpty("S8 requires a non-binding evidence-backed proposal");
         foreach (var action in run.Actions)
             action.Result.TryGetProperty("error", out _).ShouldBeFalse("A live acceptance run must not have any refused tool calls");
         foreach (var action in writes.Concat(proposals))
@@ -199,9 +204,23 @@ public sealed class DreamingLiveAcceptance
             action.Arguments.GetProperty("prevalence").GetString().ShouldNotBeNullOrWhiteSpace();
         }
         revert.ShouldNotBeNull();
+        revert.Entries.ShouldNotBeEmpty("S8 must exercise successful reversion of an actual direct write");
         revert.Entries.ShouldAllBe(e => e.Status == "reverted");
         (await SnapshotAsync(connectionString, project, originalIds)).ShouldBe(before, $"Semantic restoration failed; inspect {artifacts}");
-        await WriteAsync("acceptance.json", new { passed = true, run_id = run.Id, direct_writes = writes.Count, proposals = proposals.Count,
+        var previousProposalIds = proposalsBefore.Select(p => p.Id).ToHashSet();
+        var newProposals = proposalsAfter.Where(p => p.RunId == run.Id && !previousProposalIds.Contains(p.Id)).ToList();
+        // Do not relabel a review-queue read as acknowledgement: record only existing proposal
+        // IDs explicitly mentioned in the model's final report, with that narrow textual basis.
+        var acknowledgedExistingIds = pendingBeforeIds.Where(id => (run.Report ?? "").Contains(id.ToString("D"), StringComparison.OrdinalIgnoreCase)).Order().ToArray();
+        await WriteAsync("acceptance.json", new { passed = true, run_id = run.Id, direct_writes = writes.Count,
+            reverted_writes = revert.Entries.Count, proposal_tool_calls = proposals.Count,
+            new_proposals = newProposals.Count, new_proposal_ids = newProposals.Select(p => p.Id),
+            existing_pending_proposals_before = pendingBeforeIds.Count,
+            existing_pending_proposal_ids_before = pendingBeforeIds.Order(),
+            existing_pending_proposals_after = proposalsAfter.Count(p => pendingBeforeIds.Contains(p.Id) && p.Status == "pending"),
+            acknowledged_existing_proposal_ids = acknowledgedExistingIds,
+            acknowledgement_basis = "existing pending proposal ID explicitly mentioned in the final model report",
+            proposal_history_count_before = proposalsBefore.Count, proposal_history_count_after = proposalsAfter.Count,
             retained = "run report, revisions, write journal, non-binding pending proposals and any retracted new-entry tombstones", artifacts });
         return;
 
@@ -221,10 +240,11 @@ public sealed class DreamingLiveAcceptance
         if (process.ExitCode != 0) throw new InvalidOperationException(error);
         return output.Trim();
     }
-    private static async Task<object> ProposalsAsync(string connectionString, Guid project)
+    private sealed record ProposalSnapshot(Guid Id, Guid RunId, string Action, Guid TargetId, string Status, string EvidenceJson, string Prevalence);
+    private static async Task<IReadOnlyList<ProposalSnapshot>> ProposalsAsync(string connectionString, Guid project)
     {
         await using var c = new MySqlConnection(connectionString);
-        return (await c.QueryAsync("SELECT id,action,target_id,status,evidence_json,prevalence FROM dream_proposals WHERE project_id=@project ORDER BY id", new { project })).ToList();
+        return (await c.QueryAsync<ProposalSnapshot>("SELECT id AS Id,run_id AS RunId,action AS Action,target_id AS TargetId,status AS Status,evidence_json AS EvidenceJson,prevalence AS Prevalence FROM dream_proposals WHERE project_id=@project ORDER BY id", new { project })).ToList();
     }
     private static async Task<string> SnapshotAsync(string connectionString, Guid project, string[] originalIds)
     {

@@ -32,8 +32,11 @@ Each timestamped evidence directory contains:
 - `environment.json`: project, source commit, instruction revisions, provider route and provenance.
 - `settings.json`, `settings-restore.json`, `usage.json`, `run.json`: exact budget, actual token usage, all calls, mutations and proposals.
 - `before.json`, `after-run.json`, `after-revert.json`: canonical state snapshots.
+- `proposals-before.json`, `proposals-after.json`: proposal history before the run and after reversion, preserving existing pending proposals separately from new proposals attributable to this run.
 - `revert.json`, `restoration.json`: inverse actions, conflicts, semantic comparison and retained proposals.
-- `acceptance.json`: written only after all checks pass, including completed status within budget, at least one actual direct write and one proposal, evidence and prevalence on both, zero tool refusals, and semantic restoration.
+- `acceptance.json`: written only after all checks pass, including completed status within budget, at least one actual direct write, a nonempty successful revert, evidence and prevalence on every actual write and proposal, zero tool refusals, and semantic/settings restoration. It reports new proposal counts and IDs separately from existing pending proposals and proposal tool calls. Existing pending proposal IDs explicitly mentioned in the final model report are recorded as textual acknowledgements.
+
+The approved S8 criterion requires evidence and prevalence on whatever writes and proposals a run makes; it does not require a new proposal in every run. A valid existing pending proposal remains non-binding and must not be duplicated just to satisfy a quota. Existing proposals are never counted as newly created by the current run. A read-only run still fails this harness because it does not exercise a useful direct write and its successful reversal. Source imports already receive a verified timestamp when recorded; the harness does not claim that they are timestamp-unverified.
 
 Semantic restoration includes all preexisting entry fields, source/scope, freshness baselines, lesson events, links, challenges, addressed-by state and operational work state. Entry revision/version/update timestamp and append-only history advance by design. New entries created by a run revert to retracted tombstones, which are retained and do not serve. Non-binding dream proposals are outside direct-write reversion and remain visible; `restoration.json` lists them. Physical row equality is therefore not asserted.
 
