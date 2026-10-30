@@ -72,7 +72,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                     object result;
                     try
                     {
-                        if(!Tools.Any(t=>t.Name==call.Name)) throw WorkException.Invalid("The dreamer may not invoke this tool.");
+                        if(!Tools.Any(t=>t.Name==call.Name)) throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may not invoke this tool.");
                         result=call.Name is "dream_search_graph" or "dream_read_source"
                             ? await sources.ExecuteAsync(projectId,call.Name,call.Arguments,ct)
                             : await actions.ExecuteToolAsync(call.Name,call.Arguments,scope.Actor,ct);

@@ -1,7 +1,5 @@
-using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using CodeGraph.Models;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Configuration;
@@ -80,6 +78,4 @@ public partial class GraphAssistant : IDreamBatchModel
         var source=await reader.ReadToEndAsync(ct);
         return new {untrusted_data=new {repository,path,node_id=nodeId,content_hash=contentHash,indexed_hash=indexHash,source}};
     }
-    internal Task<string> SearchDreamGraphAsync(string repository,string pattern,string? label,int limit) =>
-        SearchGraphAsync(JsonSerializer.SerializeToElement(new {repository,namePattern=pattern,label,limit}));
 }

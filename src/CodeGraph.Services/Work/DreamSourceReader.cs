@@ -20,14 +20,14 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
         {
             var node=await graph.FindNodeByIdAsync(id)??throw WorkException.NotFound("Graph node not found.");
             graphNode=node;
-            if(repository is not null&&!repository.Equals(node.Repository,StringComparison.OrdinalIgnoreCase)) throw WorkException.Invalid("Graph node belongs to another repository.");
+            if(repository is not null&&!repository.Equals(node.Repository,StringComparison.OrdinalIgnoreCase)) throw new WorkException(WorkErrorCodes.Forbidden,"Graph node belongs to another repository.");
             repository=node.Repository;path=node.FilePath;
         }
         if(string.IsNullOrWhiteSpace(repository)||!project.Repositories.Any(m=>m.Repository.Equals(repository,StringComparison.OrdinalIgnoreCase)))
-            throw WorkException.Invalid("The dreamer may read only the project's repositories.");
+            throw new WorkException(WorkErrorCodes.Forbidden,"The dreamer may read only the project's repositories.");
         if(tool=="dream_read_source"&&graphNode is {} metadata&&string.IsNullOrWhiteSpace(path))
         {
-            var fingerprint=DreamGraphIdentity.Fingerprint(metadata.Id,metadata.Repository,metadata.Label.ToString(),metadata.Name,metadata.QualifiedName,metadata.FilePath,metadata.StartLine,metadata.EndLine,JsonSerializer.Serialize(metadata.Properties));
+            var fingerprint=DreamGraphIdentity.Fingerprint(metadata.Id,metadata.Repository,metadata.Label.ToString(),metadata.Name,metadata.QualifiedName,metadata.FilePath??"",metadata.StartLine,metadata.EndLine,JsonSerializer.Serialize(metadata.Properties));
             scope.MarkGraphRead(metadata.Id,fingerprint);
             return new {untrusted_data=new {node=metadata,graph_fingerprint=fingerprint}};
         }
