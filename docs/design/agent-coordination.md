@@ -173,7 +173,7 @@ From a read of `~/Repos/KanbanBoard` (2026-10-29). Size: ~5k lines of domain ser
 | Plan import: all-or-nothing, cycle-checked, limits (200 items / 20 docs / 500 deps / 2 MB) | The planning half of `create_work` |
 | Change feed: ordered by committing under a named lock, cursor never skips, measured and tested | Basis of `changes` (R11a) |
 | Strict arguments: unknown/misspelt/mistyped refused `invalid_argument` listing valid args | Already P4/R10 |
-| Error codes `not_found` · `conflict` · `already_claimed` · `cycle` · `invalid_argument` · `busy` (retry-safe) | Adopt as the error vocabulary for all new tools |
+| Error codes `not_found` · `conflict` · `already_claimed` · `cycle` · `invalid_argument` · `busy` (retry-safe) · `claim_lost` · `forbidden` | Closed eight-code E1 vocabulary; `forbidden` is the epic 27962 amendment for a server-enforced actor policy refusal. Refusals change nothing. |
 | Deadlock retry (3 attempts → `busy`) and the documented lock order | Keeps the ported writes correct |
 | The concurrency tests that run against real MariaDB | Port with the code; they are the proof the patterns work |
 
@@ -362,7 +362,7 @@ The normal path is above. These are the contracts for interrupted, concurrent an
 
 ## 6. MCP tool surface (new)
 
-Sixteen tools. All writes return the resulting object. All schemas reject unknown fields with a message naming the field.
+Thirty work and knowledge tools, including the knowledge-dreaming surface (epic 27962 E5). All writes return the resulting object. MCP schemas are generated from the same request types parsed by REST and reject unknown fields at every object level with a message naming the field; mistyped arguments return `invalid_argument` with the valid arguments. `WorkTools.All` declares each tool's request type and hints, and `WorkContractTests` independently inventories all thirty names, request types and read-only/idempotent hints.
 
 | Tool | Does |
 |---|---|
@@ -375,13 +375,25 @@ Sixteen tools. All writes return the resulting object. All schemas reject unknow
 | `create_work` | One item, or a whole plan (feature + requirements + docs + items + deps), idempotent |
 | `sync_plan` | Re-plan: diff a revised plan by `ref`, return a preview, apply on confirm; may edit/close in-progress items and notifies their holders |
 | `update_work` | Patch fields, status, AC, links, claim/release, plus the save-point fields of §5.8 (`decisions`, `attempts`, `corrections`, `findings`, handoff); `expected_version` required |
-| `record` | Write a knowledge entry with no item attached (any kind in §5.3) |
+| `record` | Write a knowledge entry with no item attached (any kind in §5.3); `unmerge {id, expected_version}` reverses an exact journaled `same_as` merge as any actor |
 | `recall` | Search knowledge scoped by project / repository / paths / graph nodes / kind / source; flags stale entries |
+| `import_knowledge` | Preview native harness memory candidates, then confirm the accepted entries using the preview token |
 | `post` / `inbox` / `ack` | Send a message (to an item thread, session, channel or `human`); read since cursor with long-poll; acknowledge |
 | `changes` | Pull the project change feed since a cursor, with optional long-poll |
 | `acquire` / `renew_hold` / `release` | Resource holds with their own TTL (§5.9) |
 | `promote` | Propose (agent) or approve/reject (human) a lesson becoming a rule; mark a lesson `addressed_by` a local skill/hook/test |
 | `challenge` | Agent disputes an active rule with evidence; you uphold, amend or retract it |
+| `lessons` | Read recurrence, unaddressed rules, unmatched rules and reviews without a lesson |
+| `review_queue` | Read open challenges, proposed rules, contradictions, autonomous decisions and dream proposals |
+| `dream_run` | Run now for one project; no signal skips without a model call, and a concurrent trigger returns `busy` |
+| `dream_runs` | List runs with pagination, or read a run's full report by id |
+| `dream_settings` | Read settings and version, or replace using `expected_version`; schedule revision participates in the version |
+| `dream_instructions` | Read versioned base/project instructions, or edit a wiki page using `expected_revision` |
+| `dream_revert` | Revert a run's direct writes newest first as new revisions, listing conflicts with later edits |
+| `dream_propose` | Dreamer-only evidence-backed proposal; irreversible or prompt-sourced changes await review |
+| `dream_review` | Accept/reject a proposal with `expected_version`, attributed to the accepting actor; dreamer refused |
+
+MCP `readOnlyHint: true` applies exactly to `get_work`, `find_work`, `changes`, `recall`, `lessons`, `review_queue` and `dream_runs`. Every other tool above carries `readOnlyHint: false`, including read/write settings and instructions, `get_briefing` (heartbeat and served-rule history), and `inbox` (delivery state). `openWorldHint` is false for all thirty. These hints describe effects; the service still enforces argument validation, project scope and actor policy on every call.
 
 The existing graph tools stay. The briefing is where they start paying off: it can include "files you're likely to touch have these hotspots / these dependents" from the graph without the agent asking.
 
@@ -553,7 +565,7 @@ Import from Claude Code `~/.claude/projects/*/memory/*.md` and Codex equivalents
 - R24. A lesson from your prompt is an active rule immediately and appears in "recently learned" for edit/retract. Other lessons become rules on recurrence or approval.
 - R25. `challenge` attaches evidence to an active rule; the rule stays active, is shown with the challenge in briefings, and goes to your review queue to uphold, amend or retract.
 - R25a. Decisions marked `made_autonomously` appear in the review queue; nothing in the review queue blocks work.
-- R26. Briefings log the rules they served; the Lessons page shows recurrence with and without the rule served. CodeGraph takes no action on it.
+- R26. Briefings log the rules they served; the Lessons page shows recurrence with and without the rule served. Only the scheduled knowledge-dreaming pass may act on those signals, under its server-enforced policy (§5.7; epic 27962, D29).
 - R27. Rules have no time decay; they leave briefings only when superseded, retracted or addressed by a skill.
 - R28. CodeGraph never generates or edits skills, instructions, hooks, tests or CI; it provides grouped lesson queries and `addressed_by` links to them.
 

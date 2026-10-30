@@ -52,6 +52,9 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         merged.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
         merged.GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rule");
         (await connection.QuerySingleAsync<(string AuthorKind, string Session)>("SELECT author_kind, author_session_id AS session FROM knowledge_revisions WHERE entry_id = @id ORDER BY revision DESC LIMIT 1", new { id = sourceId })).ShouldBe(("system", run.ToString()));
+        (await connection.QuerySingleAsync<(string Name, string Kind, string Session, string? Harness, string Model, string? Host)>(
+            "SELECT author, author_kind, author_session_id, author_harness, author_model, author_host FROM lesson_merges WHERE source_id = @id",
+            new { id = sourceId })).ShouldBe(("dreamer", "system", run.ToString(), null, "scripted", null));
         var superseded = await Entry(sourceId);
         var restored = (await db.CallAsync(WorkTools.Record, new { unmerge = new { id = sourceId, expected_version = superseded.GetProperty("version").GetInt64() } }, "another-user")).GetProperty("entry");
         restored.GetProperty("status").GetString().ShouldBe("active");

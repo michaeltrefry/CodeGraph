@@ -54,10 +54,11 @@ public sealed partial class MySqlWorkStore
             new { id = snapshot.Target.Id }, transaction, cancellationToken: ct))).ToList();
         snapshot = snapshot with { ImportedLinks = after.Where(l => !prior.TryGetValue((l.EntryId, l.OtherId, l.Relation), out var old) || old.AssertionId != l.AssertionId).ToList() };
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO lesson_merges (source_id, source_version, target_id, target_revision, project_id, snapshot_json, inverse_json, author, author_kind, author_session_id, created_at) " +
-            "VALUES (@source, @version, @target, @targetRevision, @project, @snapshot, @snapshot, @author, @kind, @session, @now)",
+            "INSERT INTO lesson_merges (source_id, source_version, target_id, target_revision, project_id, snapshot_json, inverse_json, author, author_kind, author_session_id, author_harness, author_model, author_host, created_at) " +
+            "VALUES (@source, @version, @target, @targetRevision, @project, @snapshot, @snapshot, @author, @kind, @session, @harness, @model, @host, @now)",
             new { source = snapshot.Source.Id, version, target = snapshot.Target.Id, targetRevision = snapshot.Target.Revision + 1, project = snapshot.Source.ProjectId,
-                snapshot = JsonSerializer.Serialize(snapshot, WorkJson.Options), author = actor.Name, kind = actor.Kind, session = actor.SessionId, now },
+                snapshot = JsonSerializer.Serialize(snapshot, WorkJson.Options), author = actor.Name, kind = actor.Kind, session = actor.SessionId,
+                harness = actor.Harness, model = actor.Model, host = actor.Host, now },
             transaction, cancellationToken: ct));
     }
 
