@@ -101,12 +101,12 @@ function matching(edges, type, source, target) {
         assert_1.strict.ok(result.edges.filter(edge => edge.type === 'RENDERS').every(edge => edge.properties?.template_path === 'src/app.html'));
         assert_1.strict.equal(result.nodes.find(node => node.name === 'Pretender')?.label, 'Class');
         const excluded = f.extract(['src/app.ts', 'src/children.ts']);
-        assert_1.strict.equal(excluded.complete, false);
+        assert_1.strict.equal(excluded.complete, true);
         assert_1.strict.equal(matching(excluded.edges, 'RENDERS', 'App').length, 0);
         assert_1.strict.ok(excluded.diagnostics.some(message => message.startsWith('angularTemplateScope:')));
         fs.unlinkSync(path.join(f.root, 'src/app.html'));
         assert_1.strict.equal(f.extract().complete, false, 'an unreadable admitted template is incomplete');
-        assert_1.strict.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, false, 'a declaration still requiring a removed/excluded template is incomplete');
+        assert_1.strict.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, true, 'a removed/excluded template permits recomputation');
     }
     finally {
         f.dispose();

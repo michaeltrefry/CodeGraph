@@ -415,6 +415,24 @@ public sealed class FrontendBackendOperationIntegrationTests
             writes = store.ReplaceRepositoryFilesCallCount;
             await Index();
             store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
+
+            Write("src/page.html", "<child-panel/>");
+            await Index();
+            var restoredPage = store.Nodes.Single(node => node.QualifiedName == page.QualifiedName);
+            store.Edges.ShouldContain(edge => edge.Type == EdgeType.RENDERS && edge.SourceId == restoredPage.Id);
+            File.Delete(Path.Combine(root, "src/page.html"));
+            await pipeline.IndexRepositoryAsync("UI", root, changedFilesOnly: ["src/page.html"], ct: timeout.Token);
+            var pageAfterDeletion = store.Nodes.Single(node => node.QualifiedName == page.QualifiedName);
+            store.Edges.ShouldNotContain(edge => edge.Type == EdgeType.RENDERS && edge.SourceId == pageAfterDeletion.Id);
+            var fresh = new InMemoryGraphStore();
+            var freshPipeline = new IndexingPipeline(fresh, [new TreeSitterExtractor(NullLogger<TreeSitterExtractor>.Instance)],
+                Options.Create(new IndexingOptions {MaxParallelFiles=1}), new LocalFileSystem(),
+                NullLogger<IndexingPipeline>.Instance, typeScriptAnalyzer: analyzer);
+            await freshPipeline.IndexRepositoryAsync("UI", root, ct: timeout.Token);
+            ExtractionSnapshot(store).ShouldBe(ExtractionSnapshot(fresh));
+            writes = store.ReplaceRepositoryFilesCallCount;
+            await Index();
+            store.ReplaceRepositoryFilesCallCount.ShouldBe(writes);
         }
         finally { Directory.Delete(root, true); }
     }

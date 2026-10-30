@@ -63,12 +63,12 @@ test('Angular template selectors, defer blocks and static outlets use actual com
     assert.ok(result.edges.filter(edge => edge.type === 'RENDERS').every(edge => edge.properties?.template_path === 'src/app.html'));
     assert.equal(result.nodes.find(node => node.name === 'Pretender')?.label, 'Class');
     const excluded = f.extract(['src/app.ts', 'src/children.ts']);
-    assert.equal(excluded.complete, false);
+    assert.equal(excluded.complete, true);
     assert.equal(matching(excluded.edges, 'RENDERS', 'App').length, 0);
     assert.ok(excluded.diagnostics.some(message => message.startsWith('angularTemplateScope:')));
     fs.unlinkSync(path.join(f.root, 'src/app.html'));
     assert.equal(f.extract().complete, false, 'an unreadable admitted template is incomplete');
-    assert.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, false, 'a declaration still requiring a removed/excluded template is incomplete');
+    assert.equal(f.extract(['src/app.ts', 'src/children.ts']).complete, true, 'a removed/excluded template permits recomputation');
   } finally { f.dispose(); }
 });
 

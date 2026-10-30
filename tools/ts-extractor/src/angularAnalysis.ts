@@ -468,7 +468,11 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (templateUrl !== undefined) {
       const absolute = path.resolve(path.dirname(item.declaration.getSourceFile().getFilePath()), templateUrl);
       templatePath = path.relative(model.root, absolute).replace(/\\/g, '/');
-      if (templatePath.startsWith('../') || path.isAbsolute(templatePath) || (scope && !scope.includesFile(absolute))) { complete = false; diagnostic(`angularTemplateScope: refused ${templatePath.slice(0, 240)}`); continue; }
+      if (templatePath === '..' || templatePath.startsWith('../') || path.isAbsolute(templatePath)) { complete = false; diagnostic(`angularTemplateScope: refused ${templatePath.slice(0, 240)}`); continue; }
+      // Authoritative discovery absence represents deletion/exclusion, so recompute this
+      // owner's facts without reading the template. An admitted but unreadable file below
+      // remains incomplete and preserves prior facts.
+      if (scope && !scope.includesFile(absolute)) { diagnostic(`angularTemplateScope: outside admitted scope ${templatePath.slice(0, 240)}`); continue; }
       html = reader.read(absolute, true);
       if (html === undefined) { complete = false; diagnostic(`angularTemplateRead: refused ${templatePath}`); continue; }
       processedTemplates.add(templatePath);
