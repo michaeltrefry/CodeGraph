@@ -185,8 +185,8 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         target.GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
         target.GetProperty("lesson").GetProperty("priority").GetString().ShouldBe("normal");
         target.GetProperty("details").GetProperty("applies_when").GetProperty("activity").EnumerateArray().Select(a => a.GetString()).ShouldBe(["implementing", "merging"]);
-        (await connection.ExecuteScalarAsync<string>("SELECT entry_id FROM lesson_events WHERE source_ref = 'first-source'", new { })).ShouldBe(firstId);
-        (await connection.ExecuteScalarAsync<string>("SELECT entry_id FROM lesson_events WHERE source_ref = 'second-source'", new { })).ShouldBe(secondId);
+        (await connection.QuerySingleAsync<Guid>("SELECT entry_id FROM lesson_events WHERE source_ref = 'first-source'")).ShouldBe(Guid.Parse(firstId));
+        (await connection.QuerySingleAsync<Guid>("SELECT entry_id FROM lesson_events WHERE source_ref = 'second-source'")).ShouldBe(Guid.Parse(secondId));
         (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE entry_id = @targetId OR other_id = @targetId", new { targetId })).ShouldBe(0);
         (await connection.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM lesson_links WHERE other_id = @otherId", new { otherId })).ShouldBe(2);
     }
