@@ -161,6 +161,44 @@ public class TauriOperationAnalysisTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task NativeEventRenameAndRemoval_PersistExactlyTheFreshEventGraph()
+    {
+        var sources = Fixture();
+        string Producer(string? name) => "use tauri::{AppHandle, Emitter};\n#[tauri::command]\nfn get_app_overview(app: AppHandle) { "
+            + (name is null ? "" : $"app.emit(\"{name}\", ());")
+            + " }\nfn run() { tauri::Builder::default().invoke_handler(tauri::generate_handler![get_app_overview]); }";
+        var root = Path.Combine(Path.GetTempPath(), "codegraph-tauri-event-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new InMemoryGraphStore(); var pipeline = Pipeline(store);
+            foreach (var name in new string?[] { "before", "after", null })
+            {
+                sources["apps/desktop/src/lib.rs"] = Producer(name); Write(root, sources);
+                var functions = Functions(sources);
+                var buffer = new GraphBuffer(); foreach (var node in functions) buffer.AddNode(node);
+                var incremental = store.Nodes.Count > 0;
+                var changed = await Prepare(pipeline, root, sources.Keys.ToList(), buffer, incremental);
+                if (!incremental)
+                    await store.ReplaceRepositoryGraphAsync("App", buffer.AllNodes.ToList(), buffer.AllPendingEdges.ToList(), new Dictionary<string, string>(), new RepositoryEntity { Name = "App" }, null);
+                else
+                    await store.ReplaceRepositoryFilesAsync("App", changed, buffer.AllNodes.Where(node => changed.Contains(node.FilePath)).ToList(), buffer.AllPendingEdges.ToList(), new Dictionary<string, string>());
+                var fresh = TauriOperationAnalysis.Analyze("App", sources, functions, []);
+                fresh.Result.Complete.ShouldBeTrue();
+                var currentOwnNodes = store.Nodes.Where(node => node.Properties.GetValueOrDefault("extraction_owner")?.ToString() == "tauri").Select(node => node.QualifiedName).Order();
+                currentOwnNodes.ShouldBe(fresh.Result.Nodes.Select(node => node.QualifiedName).Order());
+                var byId = store.Nodes.ToDictionary(node => node.Id);
+                var currentEdges = store.Edges.Where(edge => edge.Properties.GetValueOrDefault("extraction_owner")?.ToString() == "tauri")
+                    .Select(edge => $"{byId[edge.SourceId].QualifiedName}|{edge.Type}|{byId[edge.TargetId].QualifiedName}").Order();
+                currentEdges.ShouldBe(fresh.Result.Edges.Select(edge => $"{edge.SourceQN}|{edge.Type}|{edge.TargetQN}").Order());
+                var same = new GraphBuffer(); foreach (var node in functions) same.AddNode(node);
+                (await Prepare(pipeline, root, sources.Keys.ToList(), same, true)).ShouldBeEmpty();
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static IndexingPipeline Pipeline(InMemoryGraphStore store) => new(store, [], Options.Create(new IndexingOptions()),
         new LocalFileSystem(), NullLogger<IndexingPipeline>.Instance);
     private static async Task<IReadOnlyList<string>> Prepare(IndexingPipeline pipeline, string root, IReadOnlyList<string> scope, GraphBuffer buffer, bool incremental)
