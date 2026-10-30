@@ -78,6 +78,8 @@ export interface UnresolvedCallDto {
 }
 
 export interface ExtractProjectResponse {
+  /** False means missing/failed source analysis; absence must never imply deletion. */
+  complete?: boolean;
   nodes: GraphNodeDto[];
   edges: PendingEdgeDto[];
   workspacePackages: WorkspacePackageDto[];

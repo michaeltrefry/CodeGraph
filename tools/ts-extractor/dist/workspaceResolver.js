@@ -74,7 +74,14 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
         workspacePackages,
         packagesByName: groupPackagesByName(workspacePackages),
         sourceFilesByPath,
-        moduleHost: ts.sys,
+        moduleHost: {
+            fileExists: file => sourceFilesByPath.has(normalizeAbsolute(file)) ||
+                ((!scope || scope.includesFile(normalizeAbsolute(file))) && /(?:package|[tj]sconfig[^/]*)\.json$/.test(file) && ts.sys.fileExists(file)),
+            readFile: file => (!scope || scope.includesFile(normalizeAbsolute(file))) ? ts.sys.readFile(file) : undefined,
+            directoryExists: directory => !scope ? ts.sys.directoryExists(directory) : scope.includesDirectory(toRelative(normalizedRoot, directory)),
+            realpath: file => file,
+            getCurrentDirectory: () => normalizedRoot,
+        },
         diagnostics,
     };
     const nodes = buildWorkspacePackageNodes(workspacePackages);
@@ -121,9 +128,9 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
     };
 }
 function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests, scope) {
-    const discovered = findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
+    const discovered = [...findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1), ...findManifests(rootPath, 'jsconfig.json', MAX_TSCONFIGS + 1)];
     const normalizedRequested = normalizeAbsolute(requestedTsconfigPath);
-    if (!discovered.includes(normalizedRequested) && fs.existsSync(normalizedRequested)) {
+    if (!discovered.includes(normalizedRequested) && (!scope || scope.includesFile(normalizedRequested)) && fs.existsSync(normalizedRequested)) {
         discovered.unshift(normalizedRequested);
     }
     if (discovered.length > MAX_TSCONFIGS) {
@@ -141,7 +148,7 @@ function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests,
             dir: path.dirname(normalizedRequested),
             relativePath: toRelative(rootPath, normalizedRequested),
             options: {
-                allowJs: false,
+                allowJs: true,
                 skipLibCheck: true,
                 noResolve: true,
                 moduleResolution: ts.ModuleResolutionKind.NodeJs,
@@ -157,8 +164,8 @@ function parseTsConfig(configPath, rootPath, diag, scope) {
     const host = {
         useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
         getCurrentDirectory: ts.sys.getCurrentDirectory,
-        fileExists: ts.sys.fileExists,
-        readFile: ts.sys.readFile,
+        fileExists: file => (!scope || scope.includesFile(normalizeAbsolute(file))) && ts.sys.fileExists(file),
+        readFile: file => (!scope || scope.includesFile(normalizeAbsolute(file))) ? ts.sys.readFile(file) : undefined,
         // With a discovery scope, include/exclude globs see the admitted files; without one the
         // config's file list is never walked (sources are discovered separately).
         readDirectory: scope ? scopedReadDirectory(scope) : () => [],
@@ -167,7 +174,7 @@ function parseTsConfig(configPath, rootPath, diag, scope) {
     const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {
         noResolve: true,
         skipLibCheck: true,
-        allowJs: false,
+        allowJs: true,
         types: [],
     }, host);
     if (!parsed)
@@ -408,7 +415,7 @@ function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, s
     const localPackage = findWorkspacePackageBySpecifier(ctx.packagesByName, spec.specifier, importerPath);
     if (!resolved && localPackage) {
         const exportedPath = resolveWorkspacePackageExport(localPackage, spec.specifier);
-        const exportedFilePath = exportedPath && isInside(ctx.rootPath, exportedPath)
+        const exportedFilePath = exportedPath && ctx.sourceFilesByPath.has(normalizeAbsolute(exportedPath)) && isInside(ctx.rootPath, exportedPath)
             ? toRelative(ctx.rootPath, exportedPath)
             : undefined;
         return {
@@ -428,7 +435,7 @@ function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, s
     }
     if (!resolved) {
         const diagnostic = `unresolved import '${spec.specifier}' from ${filePath}`;
-        const classification = looksLikeAlias(config, spec.specifier) ? 'unresolved_alias' : 'external_npm_package';
+        const classification = spec.specifier.startsWith('.') || spec.specifier.startsWith('/') || looksLikeAlias(config, spec.specifier) ? 'unresolved_alias' : 'external_npm_package';
         if (classification === 'external_npm_package') {
             const packageName = getPackageNameFromSpecifier(spec.specifier);
             return {

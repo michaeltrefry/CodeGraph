@@ -11,6 +11,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { analyzeWorkspaceImports } from './workspaceResolver';
 import { DiscoveryScope } from './discoveryScope';
+import { SemanticModel } from './semanticModel';
+import { analyzeReact } from './reactAnalysis';
 import type {
   GraphNodeDto,
   PendingEdgeDto,
@@ -64,7 +66,9 @@ export function extractProject(
   // (e.g. node_modules/@tc/*) which can stall for minutes on large repos.
   const project = new Project({
     compilerOptions: {
-      allowJs: false,
+      allowJs: true,
+      jsx: 1 /* Preserve */,
+      types: [],
       skipLibCheck: true,
       noResolve: true,
       experimentalDecorators: true,
@@ -72,7 +76,14 @@ export function extractProject(
     },
     skipAddingFilesFromTsConfig: true,
   });
-  const diag = (msg: string) => { log(msg); diagnostics.push(msg); };
+  const diagnosticCounts = new Map<string, number>();
+  const diag = (msg: string) => {
+    const category = msg.split(':', 1)[0];
+    const count = diagnosticCounts.get(category) ?? 0;
+    diagnosticCounts.set(category, count + 1);
+    if (count < 25) { log(msg); diagnostics.push(msg); }
+    else if (count === 25) { const notice = `${category}: further samples omitted`; log(notice); diagnostics.push(notice); }
+  };
 
   // CodeGraph passes the files its discovery admits; the sidecar then never reads outside them.
   const scope = includedFiles ? new DiscoveryScope(rootPath, includedFiles) : undefined;
@@ -80,12 +91,32 @@ export function extractProject(
 
   let t0 = Date.now();
   const tsFiles = scope
-    ? scope.absoluteFiles(file => isTsSourceFile(file) && !file.split('/').some(segment => SKIP_DIRS.has(segment)))
+    ? scope.absoluteFiles(file => /\.[jt]sx?$/.test(file) && !file.split('/').some(segment => SKIP_DIRS.has(segment)))
     : findTsFiles(rootPath);
   diag(`findTsFiles: ${tsFiles.length} files in ${Date.now() - t0}ms`);
 
   t0 = Date.now();
-  for (const f of tsFiles) project.addSourceFileAtPath(f);
+  let complete = true;
+  for (const f of tsFiles) {
+    try { project.addSourceFileAtPath(f); }
+    catch (error) { complete = false; diag(`sourceRead: ${path.relative(rootPath, f)}: ${String(error)}`); }
+  }
+  if (scope) for (const file of scope.absoluteFiles(relative => /(?:^|\/)(?:package|[tj]sconfig[^/]*)\.json$/.test(relative))) {
+    try {
+      const text = fs.readFileSync(file, 'utf8');
+      if (path.basename(file) === 'package.json') JSON.parse(text);
+      // TypeScript config errors (including extends) are surfaced by workspace resolution below.
+    } catch (error) { complete = false; diag(`configRead: ${path.relative(rootPath, file)}: ${String(error)}`); }
+  }
+  const invalidFiles = new Set<string>();
+  for (const source of project.getSourceFiles()) {
+    const errors = project.getProgram().compilerObject.getSyntacticDiagnostics(source.compilerNode);
+    if (errors.length) {
+      complete = false;
+      invalidFiles.add(source.getFilePath());
+      for (const error of errors.slice(0, 5)) diag(`sourceParse: ${path.relative(rootPath, source.getFilePath())}: ${typeof error.messageText === 'string' ? error.messageText : error.messageText.messageText}`);
+    }
+  }
   diag(`addSourceFiles: ${Date.now() - t0}ms`);
 
   t0 = Date.now();
@@ -96,16 +127,37 @@ export function extractProject(
   const contractMap = buildApiContractMap(project, rootPath);
   diag(`buildApiContractMap: ${Date.now() - t0}ms`);
 
-  const serviceName = readBackendServiceName(rootPath);
+  const serviceName = !scope || scope.includesFile(path.join(rootPath, 'package.json')) ? readBackendServiceName(rootPath) : null;
   diag(`contractMap: ${contractMap.size} entries, serviceName: ${serviceName ?? '(none)'}`);
   diag(`staticStringCache: ${_staticStringCache.size} entries`);
 
   t0 = Date.now();
-  const sourceFiles = project.getSourceFiles();
+  const parsedFiles = project.getSourceFiles().filter(source => !invalidFiles.has(source.getFilePath()));
+  const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !source.getFilePath().includes('.generated.'));
   diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
 
+  t0 = Date.now();
+  const workspaceResolution = analyzeWorkspaceImports(
+    repositoryName,
+    rootPath,
+    tsconfigPath,
+    sourceFiles,
+    log,
+    scope,
+  );
+  nodes.push(...workspaceResolution.nodes);
+  edges.push(...workspaceResolution.edges);
+  workspacePackages.push(...workspaceResolution.workspacePackages);
+  resolvedImports.push(...workspaceResolution.resolvedImports);
+  unresolvedImports.push(...workspaceResolution.unresolvedImports);
+  diagnostics.push(...workspaceResolution.diagnostics);
+  diag(`workspaceResolution: ${workspaceResolution.resolvedImports.length} imports in ${Date.now() - t0}ms`);
+
+
   let filesProcessed = 0;
-  const processedFiles: string[] = [];
+  // Admitted declaration/spec/generated files are intentionally empty semantic slices, but
+  // only successful read+parse permits their hash to advance or fallback to be suppressed.
+  const processedFiles = parsedFiles.map(source => path.relative(rootPath, source.getFilePath()).replace(/\\/g, '/'));
   for (const sourceFile of sourceFiles) {
     const absPath = sourceFile.getFilePath();
     const filePath = path.relative(rootPath, absPath).replace(/\\/g, '/');
@@ -128,35 +180,31 @@ export function extractProject(
     extractAngularRoutes(sourceFile, repositoryName, filePath, nodes, edges);
 
     const fileMs = Date.now() - fileT0;
-    processedFiles.push(filePath);
     filesProcessed++;
     if (fileMs > 500) diag(`SLOW file (${fileMs}ms): ${filePath}`);
   }
   diag(`extractionLoop: ${filesProcessed} files in ${Date.now() - t0}ms`);
 
-  t0 = Date.now();
-  const workspaceResolution = analyzeWorkspaceImports(
-    repositoryName,
-    rootPath,
-    tsconfigPath,
-    sourceFiles,
-    log,
-    scope,
-  );
-  nodes.push(...workspaceResolution.nodes);
-  edges.push(...workspaceResolution.edges);
-  workspacePackages.push(...workspaceResolution.workspacePackages);
-  resolvedImports.push(...workspaceResolution.resolvedImports);
-  unresolvedImports.push(...workspaceResolution.unresolvedImports);
-  diagnostics.push(...workspaceResolution.diagnostics);
-  diag(`workspaceResolution: ${workspaceResolution.resolvedImports.length} imports in ${Date.now() - t0}ms`);
+  const semantic = new SemanticModel(repositoryName, rootPath, sourceFiles, workspaceResolution.resolvedImports, diag);
+  semantic.extract(nodes, edges, unresolvedCalls);
+  analyzeReact(semantic, nodes, edges, diag);
+  // Reconcile legacy Angular targets using declaration identities, never rendered type strings.
+  semantic.reconcileAngular(nodes, edges);
+  for (const node of nodes) node.properties.extraction_owner = 'typescript';
+  for (const edge of edges) edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
+
+  if (workspaceResolution.diagnostics.some(message =>
+    (message.startsWith('tsconfig ') && !message.includes('No inputs were found')) ||
+    message.includes('stopped after') || message.includes('limited from'))) complete = false;
+
+  if (diagnosticCounts.has('contextTraversal')) complete = false;
 
   // Edge type summary
   const edgeTypes: Record<string, number> = {};
   for (const e of edges) edgeTypes[e.type] = (edgeTypes[e.type] || 0) + 1;
   diagnostics.push(`Edge types: ${JSON.stringify(edgeTypes)}`);
 
-  return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, processedFiles, diagnostics };
+  return { nodes, edges, workspacePackages, resolvedImports, unresolvedImports, unresolvedCalls, processedFiles, diagnostics, complete };
 }
 
 // ── Imports ───────────────────────────────────────────────────────────────────
@@ -201,7 +249,7 @@ function extractClass(
   serviceName: string | null,
   typeRoots: string[],
 ): void {
-  const name = cls.getName();
+  const name = cls.getName() ?? (cls.isDefaultExport() ? 'default' : undefined);
   if (!name) return;
 
   const qn = buildQN(filePath, name);
@@ -222,6 +270,7 @@ function extractClass(
 
   if (isComponent) {
     label = 'Component';
+    properties.framework = 'angular';
     const dec = cls.getDecorator('Component');
     if (dec) {
       const args = dec.getArguments();
@@ -246,11 +295,8 @@ function extractClass(
   });
 
   // INHERITS
-  const baseClass = cls.getBaseClass();
-  if (baseClass) {
-    const baseName = baseClass.getName() ?? 'unknown';
-    edges.push({ sourceQN: qn, targetQN: baseName, type: 'INHERITS' });
-  }
+  const base = cls.getExtends();
+  if (base) edges.push({ sourceQN: qn, targetQN: base.getExpression().getText(), type: 'INHERITS' });
 
   // IMPLEMENTS
   for (const iface of cls.getImplements()) {
@@ -642,7 +688,7 @@ function extractApiContractCalls(
 
 function buildQN(filePath: string, name: string): string {
   // src/app/wallet/wallet.component.ts → app.wallet.wallet.component.WalletComponent
-  const withoutExt = filePath.replace(/\.ts$/, '').replace(/\\/g, '/');
+  const withoutExt = filePath.replace(/\.(?:tsx?|jsx?)$/, '').replace(/\\/g, '/');
   const parts = withoutExt.split('/').filter(p => p !== 'src' && p !== '');
   return [...parts, name].join('.');
 }
@@ -726,7 +772,7 @@ function isFrameworkType(typeName: string): boolean {
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'cypress', 'e2e', '.git', '.angular']);
 
 function isTsSourceFile(fileName: string): boolean {
-  return fileName.endsWith('.ts') && !fileName.endsWith('.d.ts') && !fileName.endsWith('.spec.ts');
+  return /\.(?:tsx?|jsx?)$/.test(fileName) && !/\.d\.ts$|\.spec\.[jt]sx?$/.test(fileName);
 }
 
 // ── Type text ─────────────────────────────────────────────────────────────────
