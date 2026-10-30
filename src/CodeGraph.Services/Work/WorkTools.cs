@@ -40,6 +40,8 @@ public static class WorkTools
     public const string DreamSettings = "dream_settings";
     public const string DreamInstructions = "dream_instructions";
     public const string DreamRevert = "dream_revert";
+    public const string DreamPropose = "dream_propose";
+    public const string DreamReview = "dream_review";
 
     private const string SavePoints =
         " Save points: decisions, attempts, corrections (lessons) and findings (facts, gotchas, constraints) are stored as entries of the project's knowledge " +
@@ -258,6 +260,10 @@ public static class WorkTools
             "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. Filters activity and source; " +
             "pages of limit with next_cursor. Each lesson row carries its author." + Sessions + Errors,
             ReadOnly: true, Idempotent: true),
+        new(DreamPropose, "Dream Proposal", typeof(DreamProposalRequest),
+            "Dreamer only: propose retract, supersede, merge, skill_draft, hook_draft or test_draft, scoped to its active run and project. Requires rationale, prevalence and server-resolved evidence. Targets remain active and stale until accepted. Rejected same-action/target proposals stay suppressed until new evidence arrives. Draft text is stored for external application.", false, true),
+        new(DreamReview, "Review Dream Proposal", typeof(DreamReviewRequest),
+            "Accept or reject a dream_proposal using its id and expected_version, in project. Reject needs reason. Accept applies the exact proposed target versions atomically as the accepting actor; stale versions refuse conflict. Draft acceptance only records the draft for external application. The dreamer cannot accept or reject.", false, false),
         new(ReviewQueue, "Review Queue", typeof(ReviewQueueRequest),
             "Read the project's review queue: open challenges of rules (one item per rule), lessons proposed for rule status, contradicting lessons (one item per " +
             "pair) and decisions agents made autonomously not yet acknowledged (record acknowledge), ranked by priority, then recurrence, then age. Informational: " +

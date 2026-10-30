@@ -1254,6 +1254,8 @@ public sealed partial class MySqlWorkStore
             $"AND e.reviewed_at IS NULL ORDER BY e.created_at LIMIT {MaxReviewCandidates}", new { projectId }, cancellationToken: ct)))
             items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt), Author: AuthorOf(row)));
 
+        await AddDreamProposalQueueAsync(connection, projectId, items, ct);
+
         // Ranked by priority, then recurrence, then the oldest first.
         var ranked = items
             .OrderBy(item => LessonSimilarity.PriorityRank(item.Priority))

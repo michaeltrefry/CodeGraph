@@ -412,6 +412,7 @@ public static class ReviewKinds
     public const string ProposedRule = "proposed_rule";
     public const string Contradiction = "contradiction";
     public const string AutonomousDecision = "autonomous_decision";
+    public const string DreamProposal = "dream_proposal";
 }
 
 /// <summary>One entry of the review queue. Informational: nothing waits on it (E6).</summary>
@@ -426,7 +427,8 @@ public sealed record ReviewItem(
     int? MoreChallenges = null,
     // Who recorded the entry, and the other entry of a contradiction (E3).
     WorkActor? Author = null,
-    WorkActor? OtherAuthor = null);
+    WorkActor? OtherAuthor = null,
+    DreamProposalView? Proposal = null);
 
 public sealed record ReviewQueueResult(IReadOnlyList<ReviewItem> Items, string? NextCursor = null);
 

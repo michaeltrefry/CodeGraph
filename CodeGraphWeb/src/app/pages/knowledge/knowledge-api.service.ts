@@ -66,6 +66,12 @@ export class KnowledgeApiService {
     return this.http.post<LessonsResult>(`${this.base}/knowledge/lessons`, filters);
   }
 
+  reviewDreamProposal(id: string, project: string, expectedVersion: number, action: 'accept' | 'reject', reason?: string): Observable<unknown> {
+    return this.http.post(`${this.base}/knowledge/dream-proposals/${encodeURIComponent(id)}/review`, {
+      project, expected_version: expectedVersion, action, ...(reason ? { reason } : {})
+    });
+  }
+
   /** review_queue: project, limit and cursor as query parameters. */
   reviewQueue(project: string, limit: number, cursor?: string): Observable<ReviewQueueResult> {
     let params = new HttpParams().set('project', project).set('limit', limit);

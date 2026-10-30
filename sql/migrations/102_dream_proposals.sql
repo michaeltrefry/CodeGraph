@@ -1,0 +1,29 @@
+-- Non-blocking, evidence-backed dreaming proposals. Target content is untouched until acceptance.
+CREATE TABLE IF NOT EXISTS dream_proposals (
+    id CHAR(36) NOT NULL PRIMARY KEY,
+    project_id CHAR(36) NOT NULL,
+    run_id CHAR(36) NOT NULL,
+    action VARCHAR(24) NOT NULL,
+    target_id CHAR(36) NOT NULL,
+    target_version BIGINT NOT NULL,
+    other_id CHAR(36) NULL,
+    other_version BIGINT NULL,
+    rationale TEXT NOT NULL,
+    prevalence VARCHAR(1000) NOT NULL,
+    evidence_json LONGTEXT NOT NULL,
+    replacement_json LONGTEXT NULL,
+    replacement_input_json LONGTEXT NULL,
+    draft MEDIUMTEXT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending',
+    version BIGINT NOT NULL DEFAULT 1,
+    author_json TEXT NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    review_reason VARCHAR(1000) NULL,
+    reviewed_by_json TEXT NULL,
+    reviewed_at DATETIME(6) NULL,
+    KEY ix_dream_proposal_queue (project_id, status, created_at),
+    KEY ix_dream_proposal_rejection (project_id, target_id, action, status, reviewed_at),
+    CONSTRAINT fk_dream_proposal_project FOREIGN KEY (project_id) REFERENCES work_projects(id) ON DELETE CASCADE,
+    CONSTRAINT fk_dream_proposal_target FOREIGN KEY (target_id) REFERENCES knowledge_entries(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+

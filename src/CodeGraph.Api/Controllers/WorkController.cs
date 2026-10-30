@@ -65,6 +65,12 @@ public sealed partial class WorkController(IWorkService work, IMcpHubStore hub, 
     [HttpPost("knowledge/lessons")]
     public Task<IActionResult> Lessons() => RunBodyAsync(WorkTools.Lessons);
 
+    [HttpPost("knowledge/dream-proposals")]
+    public Task<IActionResult> DreamPropose() => RunBodyAsync(WorkTools.DreamPropose);
+
+    [HttpPost("knowledge/dream-proposals/{id}/review")]
+    public Task<IActionResult> DreamReview(string id) => RunWithPathIdAsync(WorkTools.DreamReview, "id", id);
+
     /// <summary>review_queue (S9): project, limit, cursor and session_id as query parameters.</summary>
     [HttpGet("knowledge/review-queue")]
     public async Task<IActionResult> ReviewQueue()

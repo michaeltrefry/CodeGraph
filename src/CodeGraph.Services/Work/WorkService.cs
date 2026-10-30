@@ -111,6 +111,8 @@ public sealed partial class WorkService(
             WorkTools.Challenge => WorkJson.Parse<ChallengeRequest>(arguments, tool),
             WorkTools.Lessons => WorkJson.Parse<LessonsRequest>(arguments, tool),
             WorkTools.ReviewQueue => WorkJson.Parse<ReviewQueueRequest>(arguments, tool),
+            WorkTools.DreamPropose => WorkJson.Parse<DreamProposalRequest>(arguments, tool),
+            WorkTools.DreamReview => WorkJson.Parse<DreamReviewRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
 
@@ -184,6 +186,8 @@ public sealed partial class WorkService(
             ChallengeRequest challenge => await ChallengeAsync(challenge, actor, session, ct),
             LessonsRequest lessons => await LessonsAsync(lessons, session, ct),
             ReviewQueueRequest review => await ReviewQueueAsync(review, session, ct),
+            DreamProposalRequest proposal => await DreamProposeAsync(proposal, actor, session, ct),
+            DreamReviewRequest proposal => await DreamReviewAsync(proposal, actor, session, ct),
             _ => throw new InvalidOperationException($"No handler for {request.GetType().Name}.")
         };
 
