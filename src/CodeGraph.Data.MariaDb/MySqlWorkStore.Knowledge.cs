@@ -663,11 +663,11 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
         IReadOnlyList<KnowledgeRevisionView>? revisions = null;
         if (withRevisions)
         {
-            revisions = (await connection.QueryAsync<(int Revision, string Action, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt)>(new CommandDefinition(
-                    "SELECT revision, action, author, author_kind, author_session_id, created_at FROM knowledge_revisions WHERE entry_id = @entryId ORDER BY revision DESC",
+            revisions = (await connection.QueryAsync<(int Revision, string Action, string Author, string AuthorKind, string? AuthorSessionId, DateTime CreatedAt, string? Harness, string? Model, string? Host)>(new CommandDefinition(
+                    "SELECT r.revision,r.action,r.author,r.author_kind,r.author_session_id,r.created_at,COALESCE(r.author_harness,s.harness),COALESCE(r.author_model,s.model),COALESCE(r.author_host,s.host) FROM knowledge_revisions r LEFT JOIN work_sessions s ON s.id=r.author_session_id WHERE r.entry_id=@entryId ORDER BY r.revision DESC",
                     new { entryId }, transaction, cancellationToken: ct)))
                 .Select(revision => new KnowledgeRevisionView(revision.Revision, revision.Action,
-                    new WorkActor(revision.Author, revision.AuthorKind, revision.AuthorSessionId), Utc(revision.CreatedAt)))
+                    new WorkActor(revision.Author, revision.AuthorKind, revision.AuthorSessionId, revision.Harness, revision.Model, revision.Host), Utc(revision.CreatedAt)))
                 .ToList();
         }
 
