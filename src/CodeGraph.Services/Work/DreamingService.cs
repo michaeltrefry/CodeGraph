@@ -1,11 +1,12 @@
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
+using Microsoft.Extensions.Logging;
 
 namespace CodeGraph.Services.Work;
 
 public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnowledgeDreamActions actions,
-    IDreamBatchModel model, IDreamSourceReader sources, TimeProvider? timeProvider = null) : IDreamingService
+    IDreamBatchModel model, IDreamSourceReader sources, TimeProvider? timeProvider = null, ILogger<DreamingService>? logger = null) : IDreamingService
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     public Task<DreamRun?> GetRunAsync(Guid projectId, Guid runId, CancellationToken ct = default) => store.GetRunAsync(projectId,runId,ct);
@@ -57,16 +58,27 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                 var remaining=settings.MaxTokensPerRun-run.InputTokens-run.OutputTokens;
                 if(remaining<=0) return await FinishAsync(run,"budget_exhausted","token_budget",ct);
                 var system=instructions.Base.Content+"\n\n"+instructions.Project.Content;
+                var request=new DreamModelRequest(settings.DefaultProvider,settings.DefaultModel,system,messages,Tools,(int)Math.Min(remaining,8192));
+                var prepared=await model.PrepareAsync(request,ct);
                 var inputReserve=ConservativeInputBudget(system,messages,Tools);
-                if(remaining<=inputReserve)return await FinishAsync(run,"budget_exhausted","input_budget",ct);
-                var response=await model.CompleteAsync(new(settings.DefaultProvider,settings.DefaultModel,
-                    system,messages,Tools,(int)Math.Min(remaining-inputReserve,8192)),ct);
+                var counted=prepared is null?null:await prepared.CountInputTokensAsync(ct);
+                var validCount=counted is >0;
+                var source=prepared is null?"conservative_bytes":validCount?"provider_count":"uncertain_count_byte_fallback";
+                if(validCount)inputReserve=AddTokens(counted!.Value,InputFramingBudget(messages,Tools));
+                var outputAllowance=remaining>inputReserve?Math.Min(remaining-inputReserve,8192):0;
+                logger?.LogInformation("Dreaming run {RunId} turn {Turn}: input count {InputCount}, reserve {Reserve}, source {Source}, remaining {Remaining}, output allowance {OutputAllowance}",
+                    run.Id,turn+1,counted,inputReserve,source,remaining,outputAllowance);
+                if(remaining<=inputReserve)return await FinishAsync(run,"budget_exhausted",prepared is not null&&!validCount?"input_count_uncertain":"input_budget",ct);
+                var outputLimit=(int)outputAllowance;
+                var response=prepared is null?await model.CompleteAsync(request with {MaxTokens=outputLimit},ct):await prepared.CompleteAsync(outputLimit,ct);
                 if(response.InputTokens<0||response.OutputTokens<0) throw new InvalidOperationException("Provider returned invalid token usage.");
-                run=run with {InputTokens=run.InputTokens+response.InputTokens,OutputTokens=run.OutputTokens+response.OutputTokens,
-                    EstimatedCost=((run.InputTokens+response.InputTokens)*settings.InputCostPerMillion+(run.OutputTokens+response.OutputTokens)*settings.OutputCostPerMillion)/1000000m,
+                var inputTotal=AddTokens(run.InputTokens,response.InputTokens);
+                var outputTotal=AddTokens(run.OutputTokens,response.OutputTokens);
+                run=run with {InputTokens=inputTotal,OutputTokens=outputTotal,
+                    EstimatedCost=(inputTotal*settings.InputCostPerMillion+outputTotal*settings.OutputCostPerMillion)/1000000m,
                     Report=response.Text??run.Report};
                 await store.SaveRunAsync(run,ct);
-                if(run.InputTokens+run.OutputTokens>=settings.MaxTokensPerRun) return await FinishAsync(run,"budget_exhausted","token_budget",ct);
+                if(AddTokens(run.InputTokens,run.OutputTokens)>=settings.MaxTokensPerRun) return await FinishAsync(run,"budget_exhausted","token_budget",ct);
                 if(response.ToolCalls.Count==0) return await FinishAsync(run,"completed",null,ct);
                 messages.Add(new("assistant",response.Text,response.ToolCalls));
                 foreach(var call in response.ToolCalls)
@@ -100,8 +112,10 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
         var framedMessages=messages.Select(m=>new {role=m.Role,content=m.Content,tool_call_id=m.ToolCallId,
             tool_calls=m.ToolCalls?.Select(t=>new {id=t.Id,type="function",function=new {name=t.Name,arguments=t.Arguments.GetRawText()}})});
         var bytes=System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(new {system,messages=framedMessages,tools}));
-        return (long)bytes+4096L+128L*(messages.Count+tools.Count);
+        return bytes+InputFramingBudget(messages,tools);
     }
+    internal static long InputFramingBudget(IReadOnlyList<DreamModelMessage> messages,IReadOnlyList<DreamToolDefinition> tools) => 4096L+128L*((long)messages.Count+tools.Count);
+    internal static long AddTokens(long left,long right) => left>long.MaxValue-right?long.MaxValue:left+right;
     private static IReadOnlyList<DreamEvidence> ReadActionEvidence(JsonElement args)
     {
         // This is observational logging of possibly refused input, never a second parser.

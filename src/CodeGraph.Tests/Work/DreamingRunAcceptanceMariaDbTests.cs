@@ -622,6 +622,8 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) :
     {
         private readonly Func<DreamModelRequest, CancellationToken, Task<DreamModelResponse>> next;
         public List<DreamModelRequest> Requests { get; } = [];
+        public long? InputCount { get; init; }
+        public int CountRequests { get; private set; }
         public ScriptedModel(params DreamModelResponse[] responses)
         {
             var queue = new Queue<DreamModelResponse>(responses);
@@ -629,7 +631,14 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests(WorkDatabase db) :
         }
         public ScriptedModel(Func<DreamModelRequest, CancellationToken, Task<DreamModelResponse>> next) => this.next = next;
         public bool SupportsTools(string provider) => provider == "scripted";
+        public Task<IDreamPreparedTurn?> PrepareAsync(DreamModelRequest request, CancellationToken ct = default) =>
+            Task.FromResult<IDreamPreparedTurn?>(InputCount is null ? null : new CountedTurn(this, request));
         public Task<DreamModelResponse> CompleteAsync(DreamModelRequest request, CancellationToken ct = default)
         { Requests.Add(request with { Messages = request.Messages.ToArray() }); return next(request, ct); }
+        private sealed class CountedTurn(ScriptedModel owner, DreamModelRequest request) : IDreamPreparedTurn
+        {
+            public Task<long?> CountInputTokensAsync(CancellationToken ct = default) { owner.CountRequests++; return Task.FromResult(owner.InputCount); }
+            public Task<DreamModelResponse> CompleteAsync(int maxTokens, CancellationToken ct = default) => owner.CompleteAsync(request with { MaxTokens = maxTokens }, ct);
+        }
     }
 }

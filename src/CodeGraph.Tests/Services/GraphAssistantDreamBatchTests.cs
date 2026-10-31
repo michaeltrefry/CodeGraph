@@ -13,7 +13,7 @@ using Xunit.Abstractions;
 
 namespace CodeGraph.Tests.Services;
 
-public sealed class GraphAssistantDreamBatchTests(ITestOutputHelper output)
+public sealed partial class GraphAssistantDreamBatchTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData("https://api.anthropic.com", "https://api.anthropic.com/v1/messages", "https://api.anthropic.com/v1/messages/batches")]
@@ -269,7 +269,7 @@ public sealed class GraphAssistantDreamBatchTests(ITestOutputHelper output)
         ((long)actual).ShouldBeLessThanOrEqualTo(reserved);
     }
 
-    private sealed class HttpFactory(CaptureHandler handler) : IHttpClientFactory
+    private sealed class HttpFactory(HttpMessageHandler handler) : IHttpClientFactory
     {public HttpClient CreateClient(string name)=>new(handler,disposeHandler:false);}
     private sealed class FixedAnthropicConfig(string? endpoint) : IDbBackedLlmProviderConfigResolver
     {

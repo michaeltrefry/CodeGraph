@@ -24,4 +24,14 @@ public interface IDreamBatchModel
 {
     bool SupportsTools(string provider);
     Task<DreamModelResponse> CompleteAsync(DreamModelRequest request, CancellationToken ct = default);
+    Task<IDreamPreparedTurn?> PrepareAsync(DreamModelRequest request, CancellationToken ct = default) => Task.FromResult<IDreamPreparedTurn?>(null);
+}
+
+/// <summary>An immutable provider/configuration/input snapshot shared by admission and generation.
+/// The count is a provider estimate, not actual/billable usage or a guaranteed bound. Null means
+/// unavailable; callers must independently admit the conservative fallback and charge actual usage.</summary>
+public interface IDreamPreparedTurn
+{
+    Task<long?> CountInputTokensAsync(CancellationToken ct = default);
+    Task<DreamModelResponse> CompleteAsync(int maxTokens, CancellationToken ct = default);
 }
