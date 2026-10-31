@@ -10,6 +10,7 @@ const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIO
  * resolved admitted body must lead to a recognized transport. All caches are per run. */
 function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
     const evaluator = new staticEvaluation_1.StaticEvaluator(model, diagnostic);
+    const isHttpClient = createHttpClientClassifier(model);
     const coverage = { direct: 0, wrapped: 0, unresolved: 0, ambiguous: 0, bounded: 0, complete: true };
     const cache = new Map();
     const calls = new Map();
@@ -38,7 +39,7 @@ function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
             else if (ts_morph_1.Node.isPropertyAccessExpression(expression)) {
                 const operation = expression.getName().toUpperCase();
                 // Check the operation before asking the type checker about a receiver.
-                if ((METHODS.has(operation) || operation === 'REQUEST') && isHttpClient(expression.getExpression(), model))
+                if ((METHODS.has(operation) || operation === 'REQUEST') && isHttpClient(expression.getExpression()))
                     transports.set(call, 'httpclient');
                 else if (operation === 'SEND') {
                     const args = call.getArguments();
@@ -158,7 +159,7 @@ function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
                         // Preserve the legacy HttpMethods.post contract form without requiring its dependency.
                         if ((0, staticEvaluation_1.isUnknown)(method)) {
                             const methodNode = decorator.getArguments()[0];
-                            const property = methodNode && ts_morph_1.Node.isObjectLiteralExpression(methodNode) ? methodNode.getProperty('httpMethod') : undefined;
+                            const property = methodNode && ts_morph_1.Node.isObjectLiteralExpression(methodNode) ? model.objectProperty(methodNode, 'httpMethod') : undefined;
                             const initializer = property && ts_morph_1.Node.isPropertyAssignment(property) ? property.getInitializer() : undefined;
                             if (initializer && ts_morph_1.Node.isPropertyAccessExpression(initializer))
                                 method = initializer.getName();
@@ -335,19 +336,27 @@ function isFetch(node, evaluator, seen = new Set()) {
 }
 /** Angular ownership from imports and declaration types works even without node_modules.
  * Common property names such as http are intentionally insufficient evidence. */
-function isHttpClient(receiver, model) {
+function createHttpClientClassifier(model) {
+    const tokens = new Map();
+    const declarationsChecked = new Map();
+    const imported = (node, packageName, name) => {
+        model.work.charge();
+        const direct = model.importedApi(node, packageName);
+        if (direct !== undefined)
+            return direct === name;
+        const provenance = model.externalReference(node)?.properties;
+        return provenance?.import_path === packageName && provenance.export_name === name && !provenance.member_path;
+    };
     const isAngularToken = (node) => {
-        for (const imp of node.getSourceFile().getImportDeclarations()) {
-            if (imp.getModuleSpecifierValue() !== '@angular/common/http')
-                continue;
-            if (imp.getNamedImports().some(spec => spec.getName() === 'HttpClient' && (0, semanticModel_1.sameSymbol)(node, spec.getAliasNode() ?? spec.getNameNode())))
-                return true;
-            if (ts_morph_1.Node.isPropertyAccessExpression(node) && node.getName() === 'HttpClient' && (0, semanticModel_1.sameSymbol)(node.getExpression(), imp.getNamespaceImport()))
-                return true;
-        }
-        return false;
+        model.work.charge();
+        if (tokens.has(node))
+            return tokens.get(node);
+        const value = imported(node, '@angular/common/http', 'HttpClient');
+        tokens.set(node, value);
+        return value;
     };
     const check = (node) => {
+        model.work.charge();
         if (!node)
             return false;
         if (ts_morph_1.Node.isTypeReference(node))
@@ -355,19 +364,43 @@ function isHttpClient(receiver, model) {
         if (ts_morph_1.Node.isNewExpression(node))
             return isAngularToken(node.getExpression());
         if (ts_morph_1.Node.isCallExpression(node)) {
-            const expression = node.getExpression();
-            const inject = node.getSourceFile().getImportDeclarations().filter(imp => imp.getModuleSpecifierValue() === '@angular/core').some(imp => imp.getNamedImports().some(spec => spec.getName() === 'inject' && (0, semanticModel_1.sameSymbol)(expression, spec.getAliasNode() ?? spec.getNameNode())) ||
-                ts_morph_1.Node.isPropertyAccessExpression(expression) && expression.getName() === 'inject' && (0, semanticModel_1.sameSymbol)(expression.getExpression(), imp.getNamespaceImport()));
-            return inject && node.getArguments().some(isAngularToken);
+            if (!imported(node.getExpression(), '@angular/core', 'inject'))
+                return false;
+            model.work.charge(node.compilerNode.arguments.length + 1);
+            for (const argument of node.getArguments()) {
+                model.work.charge();
+                if (isAngularToken(argument))
+                    return true;
+            }
         }
         return false;
     };
-    const declarations = receiver.getSymbol()?.getDeclarations() ?? [];
-    for (const declaration of declarations) {
-        if ((ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration)) &&
-            (check(declaration.getTypeNode()) || check(declaration.getInitializer())))
-            return true;
-    }
-    // A typed receiver from a dependency declaration is safe only with Angular's symbol provenance.
-    return receiver.getType().getSymbol()?.getDeclarations().some(d => d.getSourceFile().getFilePath().replace(/\\/g, '/').includes('/@angular/common/http/')) ?? false;
+    return receiver => {
+        model.work.charge();
+        const symbol = receiver.getSymbol();
+        model.work.charge((symbol?.compilerSymbol.declarations?.length ?? 0) + 1);
+        for (const declaration of symbol?.getDeclarations() ?? []) {
+            model.work.charge();
+            if (!(ts_morph_1.Node.isParameterDeclaration(declaration) || ts_morph_1.Node.isPropertyDeclaration(declaration) || ts_morph_1.Node.isVariableDeclaration(declaration)))
+                continue;
+            let value = declarationsChecked.get(declaration);
+            if (value === undefined) {
+                value = check(declaration.getTypeNode()) || check(declaration.getInitializer());
+                declarationsChecked.set(declaration, value);
+            }
+            if (value)
+                return true;
+        }
+        // The fallback is evaluated at this receiver, not cached across flow-sensitive locations.
+        model.work.charge(receiver.getFullWidth() + 1);
+        const typeSymbol = receiver.getType().getSymbol();
+        model.work.charge((typeSymbol?.compilerSymbol.declarations?.length ?? 0) + 1);
+        for (const declaration of typeSymbol?.getDeclarations() ?? []) {
+            const file = declaration.getSourceFile().getFilePath();
+            model.work.charge(file.length + 1);
+            if (file.replace(/\\/g, '/').includes('/@angular/common/http/'))
+                return true;
+        }
+        return false;
+    };
 }

@@ -37,7 +37,6 @@ exports.analyzeAngular = analyzeAngular;
 const ts_morph_1 = require("ts-morph");
 const boundedTextReader_1 = require("./boundedTextReader");
 const path = __importStar(require("path"));
-const semanticModel_1 = require("./semanticModel");
 /** Derive Angular links exclusively from admitted declarations and imported framework APIs.
  * Provider tables remain scoped: overrides never leak into a sibling application's injector.
  */
@@ -49,25 +48,21 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
     const classes = [];
     const interfaces = [];
     const importsByFile = new Map();
-    const importsByPackage = new Map();
     const angularFiles = new Set();
+    const externalPackagesByFile = new Map();
     for (const file of model.files) {
         charge(file.getFullWidth() + 1);
         classes.push(...file.getClasses());
         interfaces.push(...file.getInterfaces());
-        const imports = file.getImportDeclarations();
+        const imports = model.importDeclarations(file);
         importsByFile.set(file, imports);
-        const packages = new Map();
         for (const imp of imports) {
-            charge(imp.getFullWidth() + 1);
+            // Full declaration text was reserved by the shared immutable import index.
+            charge();
             const name = imp.getModuleSpecifierValue();
-            const bucket = packages.get(name) ?? [];
-            bucket.push(imp);
-            packages.set(name, bucket);
             if (name.startsWith('@angular/'))
                 angularFiles.add(file);
         }
-        importsByPackage.set(file, packages);
     }
     // Local barrels, provider/config imports and inherited framework types retain
     // Angular evidence. A React file with no such path never needs framework API scans.
@@ -77,6 +72,11 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         const file = model.byPath.get(imported.filePath);
         if (!file)
             continue;
+        if (imported.classification === 'external_npm_package' && imported.importKind === 'static') {
+            if (!externalPackagesByFile.has(file))
+                externalPackagesByFile.set(file, new Set());
+            externalPackagesByFile.get(file).add(imported.importedNamespace);
+        }
         if (imported.importedNamespace.startsWith('@angular/'))
             angularFiles.add(file);
         const target = imported.resolvedFilePath ? model.byPath.get(imported.resolvedFilePath) : undefined;
@@ -176,25 +176,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (cached?.has(packageName))
             return cached.get(packageName);
         charge(packageName.length + 1);
-        let name;
-        for (const imp of importsByPackage.get(node.getSourceFile())?.get(packageName) ?? []) {
-            charge(imp.getFullWidth() + 1);
-            if (ts_morph_1.Node.isIdentifier(node)) {
-                const item = imp.getNamedImports().find(item => (0, semanticModel_1.sameSymbol)(node, item.getAliasNode() ?? item.getNameNode()));
-                if (item) {
-                    name = item.getName();
-                    break;
-                }
-            }
-            if (ts_morph_1.Node.isPropertyAccessExpression(node) && (0, semanticModel_1.sameSymbol)(node.getExpression(), imp.getNamespaceImport())) {
-                name = node.getName();
-                break;
-            }
-            if (ts_morph_1.Node.isQualifiedName(node) && (0, semanticModel_1.sameSymbol)(node.getLeft(), imp.getNamespaceImport())) {
-                name = node.getRight().getText();
-                break;
-            }
-        }
+        let name = model.importedApi(node, packageName);
         if (!name && angularFiles.has(node.getSourceFile())) {
             // Reuse admitted package provenance for named/namespace barrels and const
             // aliases; spelling alone cannot identify a framework API.
@@ -215,7 +197,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         return value && ts_morph_1.Node.isObjectLiteralExpression(value) ? value : undefined;
     }
     function property(object, name) {
-        const member = object?.getProperty(name);
+        const member = object ? model.objectProperty(object, name) : undefined;
         return member && ts_morph_1.Node.isPropertyAssignment(member) ? member.getInitializer() : undefined;
     }
     function classOf(node) { return ts_morph_1.Node.isClassDeclaration(node) ? node : node.getFirstAncestorByKind(ts_morph_1.SyntaxKind.ClassDeclaration); }
@@ -256,13 +238,25 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         let identity;
         if (ts_morph_1.Node.isStringLiteral(node))
             identity = `angular-token:literal:${node.getLiteralText()}`;
-        for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
-            const resolution = model.imports.find(item => item.filePath === model.relative(node) && item.importedNamespace === imp.getModuleSpecifierValue());
+        for (const origin of model.importOrigins(node)) {
+            charge(origin.specifier.length + 1);
+            const resolution = model.importResolution(node, origin.specifier);
             if (resolution?.classification !== 'external_npm_package')
                 continue;
-            const name = imported(node, imp.getModuleSpecifierValue());
+            const name = imported(node, origin.specifier);
             if (name)
-                identity = `angular-token:${imp.getModuleSpecifierValue()}:${name}`;
+                identity = `angular-token:${origin.specifier}:${name}`;
+        }
+        // Preserve the prior admitted-barrel fallback without scanning unrelated imports.
+        if (!identity && angularFiles.has(node.getSourceFile())) {
+            if (!externalIdentities.has(node))
+                externalIdentities.set(node, model.externalReference(node));
+            const external = externalIdentities.get(node)?.properties;
+            if (typeof external?.import_path === 'string' && externalPackagesByFile.get(node.getSourceFile())?.has(external.import_path)) {
+                const name = imported(node, external.import_path);
+                if (name)
+                    identity = `angular-token:${external.import_path}:${name}`;
+            }
         }
         if (!identity)
             return undefined;
@@ -277,10 +271,11 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (seen.has(cls))
             return undefined;
         seen.add(cls);
-        const field = cls.getProperty(name) ?? cls.getConstructors().flatMap(ctor => ctor.getParameters()).find(parameter => parameter.getName() === name);
+        charge();
+        const field = model.classProperty(cls, name) ?? model.constructorParameter(cls, name);
         if (field)
             return field;
-        const parent = reference(cls.getExtends()?.getExpression());
+        const parent = reference(model.baseExpression(cls));
         return parent && ts_morph_1.Node.isClassDeclaration(parent) ? classField(parent, name, seen) : undefined;
     }
     function values(node, seen = new Set()) {
@@ -436,12 +431,12 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
                     add(value);
             }
         };
-        for (const impl of cls.getImplements()) {
-            const value = reference(impl.getExpression());
+        for (const expression of model.implementedExpressions(cls)) {
+            const value = reference(expression);
             if (value && ts_morph_1.Node.isInterfaceDeclaration(value))
                 add(value);
         }
-        const base = reference(cls.getExtends()?.getExpression());
+        const base = reference(model.baseExpression(cls));
         if (base && ts_morph_1.Node.isClassDeclaration(base))
             for (const item of contracts(base, seen))
                 add(item);
@@ -451,10 +446,11 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         if (seen.has(cls))
             return undefined;
         seen.add(cls);
-        const method = cls.getMethod(name);
+        charge();
+        const method = model.classMethod(cls, name);
         if (method)
             return qn(method);
-        const prop = cls.getProperty(name)?.getInitializer();
+        const prop = model.classProperty(cls, name)?.getInitializer();
         if (prop) {
             if (ts_morph_1.Node.isArrowFunction(prop) || ts_morph_1.Node.isFunctionExpression(prop))
                 return model.callables.get(prop);
@@ -462,7 +458,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             if (callable && model.callables.has(callable))
                 return model.callables.get(callable);
         }
-        const base = reference(cls.getExtends()?.getExpression());
+        const base = reference(model.baseExpression(cls));
         return base && ts_morph_1.Node.isClassDeclaration(base) ? implementationMethod(base, name, seen) : undefined;
     }
     for (const cls of classes)
@@ -834,28 +830,23 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
         let declaration = classField(owner, names[0]);
         if (!declaration) {
             const file = owner.getSourceFile();
-            declaration = file.getClasses().find(cls => cls.getName() === names[0]) ?? file.getVariableDeclaration(names[0]);
-            for (const imp of importsByFile.get(file) ?? []) {
-                const named = imp.getNamedImports().find(item => (item.getAliasNode()?.getText() ?? item.getName()) === names[0]);
-                if (named) {
-                    const target = model.module(imp, imp.getModuleSpecifierValue());
-                    declaration = target ? model.exported(target, named.getName()) : undefined;
+            declaration = model.localValueDeclaration(file, names[0]);
+            for (const binding of model.templateImports(file, names[0])) {
+                const target = model.module(file, binding.specifier);
+                if (binding.kind === 'namespace') {
+                    if (names.length > 1) {
+                        declaration = target ? model.exported(target, names[1]) : undefined;
+                        names.splice(1, 1);
+                    }
                 }
-                if (imp.getDefaultImport()?.getText() === names[0]) {
-                    const target = model.module(imp, imp.getModuleSpecifierValue());
-                    declaration = target ? model.exported(target, 'default') : undefined;
-                }
-                if (imp.getNamespaceImport()?.getText() === names[0] && names.length > 1) {
-                    const target = model.module(imp, imp.getModuleSpecifierValue());
-                    declaration = target ? model.exported(target, names[1]) : undefined;
-                    names.splice(1, 1);
-                }
+                else
+                    declaration = target ? model.exported(target, binding.name) : undefined;
             }
         }
         let value = reference(declaration);
         for (const name of names.slice(1)) {
             if (value && ts_morph_1.Node.isClassDeclaration(value))
-                value = reference(value.getProperty(name));
+                value = reference(model.classProperty(value, name));
             else if (value && ts_morph_1.Node.isObjectLiteralExpression(value))
                 value = reference(property(value, name));
             else

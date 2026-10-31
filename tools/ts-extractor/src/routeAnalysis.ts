@@ -1,7 +1,7 @@
 import { ts, Node, SourceFile, SyntaxKind, Project } from 'ts-morph';
 import * as path from 'path';
 import { BoundedTextReader } from './boundedTextReader';
-import { SemanticModel, sameSymbol } from './semanticModel';
+import { SemanticModel } from './semanticModel';
 import { DiscoveryScope } from './discoveryScope';
 import type { GraphNodeDto, PendingEdgeDto } from './protocol';
 
@@ -20,7 +20,6 @@ class RouteAnalysis {
   private readonly inputs: string[];
   private readonly appRoots = new Map<string, string>();
   private readonly markerDirectories = new Set<string>();
-  private readonly frameworkImports = new Map<SourceFile, Map<string, { named: Map<string, Node[]>; namespaces: Node[] }>>();
   private readonly parsedConfigs = new Project({ useInMemoryFileSystem: true });
   constructor(private readonly model: SemanticModel, private readonly nodes: GraphNodeDto[],
     private readonly edges: PendingEdgeDto[], private readonly scope: DiscoveryScope | undefined,
@@ -128,32 +127,8 @@ class RouteAnalysis {
   private joinPath(prefix: string, segment: string): string {
     this.model.work.charge((prefix.length + segment.length) * 2 + 8); return joinPath(prefix, segment);
   }
-  private imported(node: Node, packageName: string, name: string): boolean {
-    this.model.work.charge(packageName.length + name.length + 1);
-    const file = node.getSourceFile(); let packages = this.frameworkImports.get(file);
-    if (!packages) {
-      packages = new Map(); this.frameworkImports.set(file, packages);
-      for (const imp of file.getImportDeclarations()) {
-        this.model.work.charge(imp.getModuleSpecifier().getFullWidth() + 1);
-        const specifier = imp.getModuleSpecifierValue();
-        let bindings = packages.get(specifier);
-        if (!bindings) { bindings = { named: new Map(), namespaces: [] }; packages.set(specifier, bindings); }
-        for (const item of imp.getNamedImports()) {
-          this.model.work.charge(item.getFullWidth() + 1);
-          const exportedName = item.getName();
-          if (!bindings.named.has(exportedName)) bindings.named.set(exportedName, []);
-          bindings.named.get(exportedName)!.push(item.getAliasNode() ?? item.getNameNode());
-        }
-        const namespace = imp.getNamespaceImport(); if (namespace) bindings.namespaces.push(namespace);
-      }
-    }
-    const bindings = packages.get(packageName); if (!bindings) return false;
-    if (Node.isIdentifier(node)) for (const binding of bindings.named.get(name) ?? []) { this.model.work.charge(); if (sameSymbol(node, binding)) return true; }
-    if (Node.isPropertyAccessExpression(node)) {
-      this.model.work.charge(node.getNameNode().getFullWidth() + 1);
-      if (node.getName() === name) for (const namespace of bindings.namespaces) { this.model.work.charge(); if (sameSymbol(node.getExpression(), namespace)) return true; }
-    }
-    return false;
+  private imported(node:Node,packageName:string,name:string):boolean {
+    this.model.work.charge(name.length+1); return this.model.importedApi(node,packageName)===name;
   }
   private edge(source: string, target: string, type: string, owner: Node, extra: Record<string, unknown> = {}): void {
     this.model.work.charge();
@@ -411,9 +386,25 @@ class RouteAnalysis {
   private next(): void {
     const configs = this.inputs.filter(file => /(?:^|\/)next\.config\.(?:ts|js|mjs|cjs)$/.test(file));
     const configByRoot = new Map<string, { base?: string; file: string }>();
+    const sources:Array<{config:string;source:SourceFile;admitted:boolean}>=[]; let auxiliaryUnits=0;
     for (const config of configs) {
       const text = this.read(config); if (text === undefined) continue;
-      const source = this.model.byPath.get(config) ?? this.model.work.parse(text,()=>this.parsedConfigs.createSourceFile(`/${config}`,text,{overwrite:true}),source=>source.compilerNode,(node,visit)=>ts.forEachChild(node as ts.Node,child=>{visit(child);}));
+      const admitted=this.model.byPath.get(config);
+      const source = admitted ?? this.model.work.parse(text,()=>this.parsedConfigs.createSourceFile(`/${config}`,text,{overwrite:true}),source=>source.compilerNode,(node,visit)=>ts.forEachChild(node as ts.Node,child=>{visit(child);}));
+      this.model.work.charge(); sources.push({config,source,admitted:!!admitted}); if(!admitted) auxiliaryUnits+=source.getFullWidth()+config.length+1;
+    }
+    // Adding a file resets ts-morph's Program. Validate only after the retained set is final.
+    this.model.work.charge(auxiliaryUnits+1); const syntaxProgram=auxiliaryUnits?this.parsedConfigs.getProgram().compilerObject:undefined;
+    for(const {config,source,admitted} of sources) {
+      if(!admitted) {
+        this.model.work.charge(source.getFullWidth()+1);
+        const errors=syntaxProgram!.getSyntacticDiagnostics(source.compilerNode);
+        if(errors.length) {
+          this.complete=false; configByRoot.set(path.posix.dirname(config),{base:undefined,file:config});
+          for(const error of errors.slice(0,5)) { const message=typeof error.messageText==='string'?error.messageText:error.messageText.messageText; this.model.work.charge(config.length+message.length+1); this.diagnostic(`routeParse: ${config}: ${message}`); }
+          continue;
+        }
+      }
       let expression: Node | undefined = source.getExportAssignments()[0]?.getExpression();
       if (!expression) expression = source.getDescendantsOfKind(SyntaxKind.BinaryExpression).find(node => node.getLeft().getText() === 'module.exports')?.getRight();
       const variables=new Map<string,Node>(); this.model.work.charge(source.compilerNode.statements.length+1);
@@ -444,7 +435,7 @@ class RouteAnalysis {
       this.model.work.charge(text.length + 1);
       try { const pkg = JSON.parse(text); if (pkg.dependencies?.next || pkg.devDependencies?.next) nextRoots.add(path.posix.dirname(input)); } catch { /* Workspace discovery owns malformed manifests. */ }
     }
-    for (const file of this.model.files) if (file.getImportDeclarations().some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue()))) nextRoots.add(this.appRoot(this.relative(file)));
+    for (const file of this.model.files) if (this.model.importDeclarations(file).some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue()))) nextRoots.add(this.appRoot(this.relative(file)));
     const rootAtDirectory=new Map<string,string|undefined>();
     const nearestRoot=(relative:string):string|undefined=>{
       this.model.work.charge(relative.length+1); let directory=path.posix.dirname(relative); const trail:string[]=[];

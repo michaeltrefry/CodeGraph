@@ -1,4 +1,4 @@
-import { Node, SourceFile, SyntaxKind, CallExpression, ExportDeclaration, ExportSpecifier, VariableDeclaration } from 'ts-morph';
+import { Node, SourceFile, SyntaxKind, CallExpression, ClassDeclaration, ExportDeclaration, ExportSpecifier, VariableDeclaration } from 'ts-morph';
 import * as path from 'path';
 import { addNpmExportMetadata } from './packageExports';
 import { ExtractionWorkBudget, ExtractionWorkControl } from './extractionWork';
@@ -48,7 +48,10 @@ export class SemanticModel {
   private readonly publicNameSets = new Map<SourceFile, Set<string>>();
   private readonly starNameSources = new Map<SourceFile, Map<string, SourceFile[]>>();
   private readonly returnExpressions = new Map<Node, Node[]>();
-  private readonly reactImportBindings = new Map<SourceFile, { names: Map<object, string>; receivers: Set<object> }>();
+  private readonly importFacts = new Map<SourceFile, { packages: Map<string,{names:Map<object,string>;namespaces:Set<object>;defaults:Set<object>}>; declarations:ReturnType<SourceFile['getImportDeclarations']>; namespaceModules:Map<object,string>; origins:Map<object,Array<{specifier:string;name:string;kind:'named'|'namespace'|'default'}>>; locals:Map<string,Array<{specifier:string;name:string;kind:'named'|'namespace'|'default'}>> }>();
+  private readonly classFacts = new Map<ClassDeclaration, { implemented:Map<string,Node>; methods:Map<string,ReturnType<ClassDeclaration['getMethods']>[number]>; properties:Map<string,ReturnType<ClassDeclaration['getProperties']>[number]>; parameters:Map<string,ReturnType<ReturnType<ClassDeclaration['getConstructors']>[number]['getParameters']>[number]>; expressions:Node[]; base?:Node }>();
+  private readonly localValues = new Map<SourceFile,{classes:Map<string,ClassDeclaration>;variables:Map<string,VariableDeclaration>}>();
+  private readonly objectMembers = new Map<Node,Map<string,Node>>();
   private readonly resolvedRoots = new Map<Node, Node | undefined>();
   private readonly allVariables: VariableDeclaration[] = [];
   private readonly writeTargets: Node[] = [];
@@ -155,6 +158,85 @@ export class SemanticModel {
       if (callable) return callable;
     }
     return this.fileQN(node);
+  }
+  private importsFor(file:SourceFile) {
+    this.work.charge(); const prior=this.importFacts.get(file); if(prior) return prior;
+    const packages=new Map<string,{names:Map<object,string>;namespaces:Set<object>;defaults:Set<object>}>(); const namespaceModules=new Map<object,string>(); const locals=new Map<string,Array<{specifier:string;name:string;kind:'named'|'namespace'|'default'}>>(); const origins=new Map<object,Array<{specifier:string;name:string;kind:'named'|'namespace'|'default'}>>();
+    const origin=(symbol:object,specifier:string,name:string,kind:'named'|'namespace'|'default',local:string,includeLocal=true)=>{ const value={specifier,name,kind}; if(!origins.has(symbol)) origins.set(symbol,[]); origins.get(symbol)!.push(value); if(includeLocal) { if(!locals.has(local)) locals.set(local,[]); locals.get(local)!.push(value); } };
+    this.work.charge(file.compilerNode.statements.length+1);
+    const declarations=file.getImportDeclarations();
+    for(const declaration of declarations) {
+      this.work.charge(declaration.getFullWidth()+1); const name=declaration.getModuleSpecifierValue();
+      if(!packages.has(name)) packages.set(name,{names:new Map(),namespaces:new Set(),defaults:new Set()}); const facts=packages.get(name)!; const namedLocals=new Set<string>();
+      for(const item of declaration.getNamedImports()) {
+        this.work.charge(item.getFullWidth()+1); const symbol=(item.getAliasNode()??item.getNameNode()).getSymbol()?.compilerSymbol;
+        if(symbol) { const importedName=item.getName(); if(!facts.names.has(symbol)) facts.names.set(symbol,importedName); const local=(item.getAliasNode()??item.getNameNode()).getText(); origin(symbol,name,importedName,'named',local,!namedLocals.has(local)); namedLocals.add(local); }
+      }
+      const namespace=declaration.getNamespaceImport()?.getSymbol()?.compilerSymbol;
+      if(namespace) { origin(namespace,name,'*','namespace',declaration.getNamespaceImport()!.getText()); facts.namespaces.add(namespace); if(!namespaceModules.has(namespace)) namespaceModules.set(namespace,name); }
+      const defaultSymbol=declaration.getDefaultImport()?.getSymbol()?.compilerSymbol; if(defaultSymbol) { facts.defaults.add(defaultSymbol); origin(defaultSymbol,name,'default','default',declaration.getDefaultImport()!.getText()); }
+    }
+    const facts={packages,declarations,namespaceModules,origins,locals}; this.importFacts.set(file,facts); return facts;
+  }
+  /** Actual local import symbols only; caller-specific values and argument environments are never cached. */
+  private importedName(node:Node,facts:{names:Map<object,string>;namespaces:Set<object>;defaults:Set<object>},defaultNamespace:boolean):string|undefined {
+    if(Node.isIdentifier(node)) { const symbol=node.getSymbol()?.compilerSymbol; return symbol?facts.names.get(symbol):undefined; }
+    const receiver=Node.isPropertyAccessExpression(node)?node.getExpression():Node.isQualifiedName(node)?node.getLeft():undefined;
+    if(receiver) { const symbol=receiver.getSymbol()?.compilerSymbol; if(symbol&&(facts.namespaces.has(symbol)||defaultNamespace&&facts.defaults.has(symbol))) {
+      const name=Node.isPropertyAccessExpression(node)?node.getNameNode():Node.isQualifiedName(node)?node.getRight():undefined;
+      if(name) { this.work.charge(name.getFullWidth()+1); return name.getText(); }
+    } }
+    return undefined;
+  }
+  importedApi(node:Node,packageName:string,defaultNamespace=false):string|undefined {
+    this.work.charge(packageName.length+1); const facts=this.importsFor(node.getSourceFile()).packages.get(packageName);
+    return facts?this.importedName(node,facts,defaultNamespace):undefined;
+  }
+  importDeclarations(file:SourceFile) { return this.importsFor(file).declarations; }
+  importOrigins(node:Node):readonly {specifier:string;name:string;kind:'named'|'namespace'|'default'}[] {
+    this.work.charge(); const receiver=Node.isPropertyAccessExpression(node)?node.getExpression():Node.isQualifiedName(node)?node.getLeft():node;
+    const symbol=receiver.getSymbol()?.compilerSymbol; const origins=symbol?this.importsFor(node.getSourceFile()).origins.get(symbol):undefined;
+    this.work.charge((origins?.length??0)+1); return origins??[];
+  }
+  templateImports(file:SourceFile,name:string) { this.work.text(name); const values=this.importsFor(file).locals.get(name); this.work.charge((values?.length??0)+1); return values??[]; }
+  localValueDeclaration(file:SourceFile,name:string):Node|undefined {
+    this.work.text(name); let values=this.localValues.get(file);
+    if(!values) { const classes=new Map<string,ClassDeclaration>(); const variables=new Map<string,VariableDeclaration>(); this.work.charge(file.compilerNode.statements.length*2+1);
+      for(const value of file.getClasses()) { this.work.charge((value.getNameNode()?.getFullWidth()??0)+1); const name=value.getName(); if(name&&!classes.has(name)) classes.set(name,value); }
+      for(const value of file.getVariableDeclarations()) { this.work.charge(value.getNameNode().getFullWidth()+1); const name=value.getName(); if(!variables.has(name)) variables.set(name,value); }
+      values={classes,variables}; this.localValues.set(file,values);
+    }
+    return values.classes.get(name)??values.variables.get(name);
+  }
+  importResolution(from:Node,specifier:string):ResolvedImportDto|undefined {
+    this.work.charge(this.relative(from).length+specifier.length+1); return this.importBySource.get(`${this.relative(from)}\0${specifier}`);
+  }
+  private classIndex(cls:ClassDeclaration) {
+    this.work.charge(); const prior=this.classFacts.get(cls); if(prior) return prior;
+    this.work.charge(cls.getFullWidth()+cls.compilerNode.members.length+1);
+    const implemented=new Map<string,Node>(); const expressions:Node[]=[]; const methods=new Map<string,ReturnType<ClassDeclaration['getMethods']>[number]>();
+    const properties=new Map<string,ReturnType<ClassDeclaration['getProperties']>[number]>(); const parameters=new Map<string,ReturnType<ReturnType<ClassDeclaration['getConstructors']>[number]['getParameters']>[number]>();
+    for(const item of cls.getImplements()) { const expression=item.getExpression(); this.work.charge(expression.getFullWidth()+1); const text=expression.getText(); if(!implemented.has(text)) { implemented.set(text,expression); expressions.push(expression); } }
+    for(const method of cls.getMethods()) { this.work.charge(method.getNameNode().getFullWidth()+1); const name=method.getName(); if(!methods.has(name)) methods.set(name,method); }
+    for(const property of cls.getProperties()) { this.work.charge(property.getNameNode().getFullWidth()+1); const name=property.getName(); if(!properties.has(name)) properties.set(name,property); }
+    for(const constructor of cls.getConstructors()) { this.work.charge(constructor.compilerNode.parameters.length+1); for(const parameter of constructor.getParameters()) {
+      this.work.charge(parameter.getNameNode().getFullWidth()+1); const name=parameter.getName(); if(!parameters.has(name)) parameters.set(name,parameter);
+    } }
+    const facts={implemented,methods,properties,parameters,expressions,base:cls.getExtends()?.getExpression()}; this.classFacts.set(cls,facts); return facts;
+  }
+  classProperty(cls:ClassDeclaration,name:string) { this.work.text(name); return this.classIndex(cls).properties.get(name); }
+  classMethod(cls:ClassDeclaration,name:string) { this.work.text(name); return this.classIndex(cls).methods.get(name); }
+  constructorParameter(cls:ClassDeclaration,name:string) { this.work.text(name); return this.classIndex(cls).parameters.get(name); }
+  implementedExpression(cls:ClassDeclaration,text:string) { this.work.text(text); return this.classIndex(cls).implemented.get(text); }
+  implementedExpressions(cls:ClassDeclaration):readonly Node[] { const values=this.classIndex(cls).expressions; this.work.charge(values.length+1); return values; }
+  baseExpression(cls:ClassDeclaration) { return this.classIndex(cls).base; }
+  objectProperty(object:import('ts-morph').ObjectLiteralExpression,name:string):Node|undefined {
+    this.work.text(name); let members=this.objectMembers.get(object);
+    if(!members) { members=new Map(); this.work.charge(object.compilerNode.properties.length+1);
+      for(const member of object.getProperties()) { this.work.charge(member.getFullWidth()+1); if(Node.isSpreadAssignment(member)) continue; const key=member.getName(); if(!members.has(key)) members.set(key,member); }
+      this.objectMembers.set(object,members);
+    }
+    return members.get(name);
   }
   module(from: Node, specifier: string): SourceFile | undefined {
     this.work.charge(this.relative(from).length + specifier.length + 1);
@@ -278,7 +360,7 @@ export class SemanticModel {
           if (rootDeclaration) link(from, key(rootDeclaration));
         }
       }
-      for (const file of this.files) for (const imported of file.getImportDeclarations()) {
+      for (const file of this.files) for (const imported of this.importDeclarations(file)) {
         this.work.charge(imported.getModuleSpecifier().getFullWidth() + 1);
         const specifier = imported.getModuleSpecifierValue();
         for (const named of imported.getNamedImports()) {
@@ -501,16 +583,13 @@ export class SemanticModel {
     if (Node.isPropertyAccessExpression(node)) {
       const receiver = node.getExpression();
       if (Node.isIdentifier(receiver)) {
-        for (const imp of node.getSourceFile().getImportDeclarations()) {
-          if (!sameSymbol(receiver, imp.getNamespaceImport())) continue;
-          const file = this.module(node, imp.getModuleSpecifierValue());
-          if (file) return this.exported(file, node.getName(), seen);
-        }
+        const symbol=receiver.getSymbol()?.compilerSymbol; const specifier=symbol?this.importsFor(node.getSourceFile()).namespaceModules.get(symbol):undefined;
+        if(specifier!==undefined) { const file=this.module(node,specifier); if(file) return this.exported(file,node.getName(),seen); }
       }
       const target = this.resolve(receiver, seen);
-      if (target && Node.isClassDeclaration(target)) return target.getMethod(node.getName()) ?? target.getProperty(node.getName());
+      if (target && Node.isClassDeclaration(target)) return this.classMethod(target,node.getName()) ?? this.classProperty(target,node.getName());
       if (target && Node.isObjectLiteralExpression(target)) {
-        const prop = target.getProperty(node.getName());
+        const prop = this.objectProperty(target,node.getName());
         if (prop && Node.isPropertyAssignment(prop)) return this.resolve(prop.getInitializer(), seen);
         if (prop && Node.isShorthandPropertyAssignment(prop)) return this.resolve(prop.getValueSymbol()?.getDeclarations()[0], seen);
         if (prop && Node.isMethodDeclaration(prop)) return prop;
@@ -524,33 +603,8 @@ export class SemanticModel {
     const resolved = this.resolve(node);
     return resolved ? this.declarations.get(resolved) : undefined;
   }
-  /** Import facts are immutable for this model. Symbol identity preserves aliases and shadows,
-   * and is safe while constructor declaration indexing is still in progress. */
-  reactApi(call: CallExpression): string | undefined {
-    this.work.charge(); const file = call.getSourceFile(); let bindings = this.reactImportBindings.get(file);
-    if (!bindings) {
-      const names = new Map<object, string>(); const receivers = new Set<object>();
-      this.work.charge(file.compilerNode.statements.length + 1);
-      for (const imported of file.getImportDeclarations()) {
-        this.work.charge(imported.getFullWidth() + 1); if (imported.getModuleSpecifierValue() !== 'react') continue;
-        for (const named of imported.getNamedImports()) {
-          const symbol = (named.getAliasNode() ?? named.getNameNode()).getSymbol()?.compilerSymbol;
-          if (symbol) names.set(symbol, named.getName());
-        }
-        for (const receiver of [imported.getDefaultImport(), imported.getNamespaceImport()]) {
-          const symbol = receiver?.getSymbol()?.compilerSymbol; if (symbol) receivers.add(symbol);
-        }
-      }
-      bindings = { names, receivers }; this.reactImportBindings.set(file, bindings);
-    }
-    const expression = call.getExpression();
-    if (Node.isIdentifier(expression)) { const symbol = expression.getSymbol()?.compilerSymbol; return symbol ? bindings.names.get(symbol) : undefined; }
-    if (Node.isPropertyAccessExpression(expression)) {
-      const symbol = expression.getExpression().getSymbol()?.compilerSymbol;
-      if (symbol && bindings.receivers.has(symbol)) { this.work.charge(expression.getNameNode().getFullWidth() + 1); return expression.getName(); }
-    }
-    return undefined;
-  }
+  /** This source-only import lookup is safe during constructor declaration indexing. */
+  reactApi(call:CallExpression):string|undefined { this.work.charge(); const facts=this.importsFor(call.getSourceFile()).packages.get('react'); return facts?this.importedName(call.getExpression(),facts,true):undefined; }
   extract(nodes: GraphNodeDto[], edges: PendingEdgeDto[], unresolved: UnresolvedCallDto[]): void {
     const existing = new Map(nodes.map(node => [node.qualifiedName, node]));
     const callableQNs = new Set(this.callables.values());
@@ -606,30 +660,34 @@ export class SemanticModel {
     addNpmExportMetadata(this, nodes);
   }
   reconcileAngular(nodes: GraphNodeDto[], edges: PendingEdgeDto[]): void {
-    const angular = new Set(['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES']);
-    for (let index = edges.length - 1; index >= 0; index--) {
-      const edge = edges[index]; if (!angular.has(edge.type) || edge.properties?.framework === 'react') continue;
-      const source = this.byQN.get(edge.sourceQN);
-      let expression: Node | undefined;
-      if (source && Node.isClassDeclaration(source)) {
-        if (edge.type === 'INHERITS') expression = source.getExtends()?.getExpression();
-        if (edge.type === 'IMPLEMENTS') expression = source.getImplements().find(item => item.getExpression().getText() === edge.targetQN)?.getExpression();
-        if (edge.type === 'INJECTS') {
-          const parameter = source.getConstructors().flatMap(ctor => ctor.getParameters()).find(param => param.getName() === edge.properties?.parameter_name);
-          expression = parameter?.getTypeNode();
-          if (!expression) {
-            const init = source.getProperty(String(edge.properties?.parameter_name))?.getInitializer();
-            if (init && Node.isCallExpression(init)) expression = init.getArguments()[0];
-          }
+    const angular=new Set(['INHERITS','IMPLEMENTS','INJECTS','HANDLES']); const remove=new Set<PendingEdgeDto>();
+    const routes=new Map<string,GraphNodeDto>(); const components=new Map<SourceFile,Map<string,Node>>();
+    for(const node of nodes) { this.work.text(node.qualifiedName); if(!routes.has(node.qualifiedName)) routes.set(node.qualifiedName,node); }
+    const componentExpression=(file:SourceFile,text:string):Node|undefined=>{
+      this.work.text(text); let index=components.get(file);
+      if(!index) { index=new Map(); this.work.charge(file.getFullWidth()+1);
+        for(const property of file.getDescendantsOfKind(SyntaxKind.PropertyAssignment)) {
+          this.work.charge(property.getNameNode().getFullWidth()+1); if(property.getName()!=='component') continue;
+          const value=property.getInitializer(); if(!value) continue; this.work.charge(value.getFullWidth()+1); const key=value.getText(); if(!index.has(key)) index.set(key,value);
+        }
+        components.set(file,index);
+      }
+      return index.get(text);
+    };
+    for(let index=edges.length-1;index>=0;index--) {
+      this.work.charge(); const edge=edges[index]; if(!angular.has(edge.type)||edge.properties?.framework==='react') continue;
+      this.work.text(edge.sourceQN); const source=this.byQN.get(edge.sourceQN); let expression:Node|undefined;
+      if(source&&Node.isClassDeclaration(source)) {
+        if(edge.type==='INHERITS') expression=this.baseExpression(source);
+        if(edge.type==='IMPLEMENTS') expression=this.implementedExpression(source,edge.targetQN);
+        if(edge.type==='INJECTS') {
+          const rawName=edge.properties?.parameter_name; const name=String(rawName); expression=typeof rawName==='string'?this.constructorParameter(source,rawName)?.getTypeNode():undefined;
+          if(!expression) { const initializer=this.classProperty(source,name)?.getInitializer(); if(initializer&&Node.isCallExpression(initializer)) expression=initializer.getArguments()[0]; }
         }
       }
-      if (edge.type === 'HANDLES') {
-        const route = nodes.find(node => node.qualifiedName === edge.sourceQN);
-        const file = route ? this.byPath.get(route.filePath) : undefined;
-        expression = file?.getDescendantsOfKind(SyntaxKind.PropertyAssignment).find(prop => prop.getName() === 'component' && prop.getInitializer()?.getText() === edge.targetQN)?.getInitializer();
-      }
-      const target = this.target(expression);
-      if (target) edge.targetQN = target; else edges.splice(index, 1);
+      if(edge.type==='HANDLES') { const route=routes.get(edge.sourceQN); const file=route?this.byPath.get(route.filePath):undefined; if(file) expression=componentExpression(file,edge.targetQN); }
+      const target=this.target(expression); if(target) edge.targetQN=target; else remove.add(edge);
     }
+    if(remove.size) { let write=0; for(const edge of edges) { this.work.charge(); if(!remove.has(edge)) edges[write++]=edge; } edges.length=write; }
   }
 }

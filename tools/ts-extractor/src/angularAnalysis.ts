@@ -1,7 +1,7 @@
 import { Node, SyntaxKind, ClassDeclaration, InterfaceDeclaration, ObjectLiteralExpression } from 'ts-morph';
 import { BoundedTextReader } from './boundedTextReader';
 import * as path from 'path';
-import { SemanticModel, sameSymbol } from './semanticModel';
+import { SemanticModel } from './semanticModel';
 import { DiscoveryScope } from './discoveryScope';
 import type { GraphNodeDto, PendingEdgeDto } from './protocol';
 
@@ -25,20 +25,17 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   type SourceFile = import('ts-morph').SourceFile;
   type ImportDeclaration = import('ts-morph').ImportDeclaration;
   const importsByFile = new Map<SourceFile, ImportDeclaration[]>();
-  const importsByPackage = new Map<SourceFile, Map<string, ImportDeclaration[]>>();
-  const angularFiles = new Set<SourceFile>();
+  const angularFiles = new Set<SourceFile>(); const externalPackagesByFile=new Map<SourceFile,Set<string>>();
   for (const file of model.files) {
     charge(file.getFullWidth() + 1);
     classes.push(...file.getClasses()); interfaces.push(...file.getInterfaces());
-    const imports = file.getImportDeclarations(); importsByFile.set(file, imports);
-    const packages = new Map<string, ImportDeclaration[]>();
+    const imports = model.importDeclarations(file); importsByFile.set(file, imports);
     for (const imp of imports) {
-      charge(imp.getFullWidth() + 1);
+      // Full declaration text was reserved by the shared immutable import index.
+      charge();
       const name = imp.getModuleSpecifierValue();
-      const bucket = packages.get(name) ?? []; bucket.push(imp); packages.set(name, bucket);
       if (name.startsWith('@angular/')) angularFiles.add(file);
     }
-    importsByPackage.set(file, packages);
   }
   // Local barrels, provider/config imports and inherited framework types retain
   // Angular evidence. A React file with no such path never needs framework API scans.
@@ -46,6 +43,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   for (const imported of model.imports) {
     charge(imported.filePath.length + imported.importedNamespace.length + (imported.resolvedFilePath?.length ?? 0) + 1);
     const file = model.byPath.get(imported.filePath); if (!file) continue;
+    if(imported.classification==='external_npm_package'&&imported.importKind==='static') { if(!externalPackagesByFile.has(file)) externalPackagesByFile.set(file,new Set()); externalPackagesByFile.get(file)!.add(imported.importedNamespace); }
     if (imported.importedNamespace.startsWith('@angular/')) angularFiles.add(file);
     const target = imported.resolvedFilePath ? model.byPath.get(imported.resolvedFilePath) : undefined;
     if (target) { const parents = importers.get(target) ?? new Set<SourceFile>(); parents.add(file); importers.set(target, parents); }
@@ -121,16 +119,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     const cached = apiIdentities.get(node);
     if (cached?.has(packageName)) return cached.get(packageName);
     charge(packageName.length + 1);
-    let name: string | undefined;
-    for (const imp of importsByPackage.get(node.getSourceFile())?.get(packageName) ?? []) {
-      charge(imp.getFullWidth() + 1);
-      if (Node.isIdentifier(node)) {
-        const item = imp.getNamedImports().find(item => sameSymbol(node, item.getAliasNode() ?? item.getNameNode()));
-        if (item) { name = item.getName(); break; }
-      }
-      if (Node.isPropertyAccessExpression(node) && sameSymbol(node.getExpression(), imp.getNamespaceImport())) { name = node.getName(); break; }
-      if (Node.isQualifiedName(node) && sameSymbol(node.getLeft(), imp.getNamespaceImport())) { name = node.getRight().getText(); break; }
-    }
+    let name=model.importedApi(node,packageName);
     if (!name && angularFiles.has(node.getSourceFile())) {
       // Reuse admitted package provenance for named/namespace barrels and const
       // aliases; spelling alone cannot identify a framework API.
@@ -148,7 +137,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     return value && Node.isObjectLiteralExpression(value) ? value : undefined;
   }
   function property(object: ObjectLiteralExpression | undefined, name: string): Node | undefined {
-    const member = object?.getProperty(name);
+    const member = object ? model.objectProperty(object,name) : undefined;
     return member && Node.isPropertyAssignment(member) ? member.getInitializer() : undefined;
   }
   function classOf(node: Node): ClassDeclaration | undefined { return Node.isClassDeclaration(node) ? node : node.getFirstAncestorByKind(SyntaxKind.ClassDeclaration); }
@@ -184,11 +173,17 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (!node) return undefined;
     let identity: string | undefined;
     if (Node.isStringLiteral(node)) identity = `angular-token:literal:${node.getLiteralText()}`;
-    for (const imp of importsByFile.get(node.getSourceFile()) ?? []) {
-      const resolution = model.imports.find(item => item.filePath === model.relative(node) && item.importedNamespace === imp.getModuleSpecifierValue());
-      if (resolution?.classification !== 'external_npm_package') continue;
-      const name = imported(node, imp.getModuleSpecifierValue());
-      if (name) identity = `angular-token:${imp.getModuleSpecifierValue()}:${name}`;
+    for (const origin of model.importOrigins(node)) {
+      charge(origin.specifier.length+1); const resolution=model.importResolution(node,origin.specifier);
+      if(resolution?.classification!=='external_npm_package') continue;
+      const name=imported(node,origin.specifier); if(name) identity=`angular-token:${origin.specifier}:${name}`;
+    }
+    // Preserve the prior admitted-barrel fallback without scanning unrelated imports.
+    if(!identity&&angularFiles.has(node.getSourceFile())) {
+      if(!externalIdentities.has(node)) externalIdentities.set(node,model.externalReference(node)); const external=externalIdentities.get(node)?.properties;
+      if(typeof external?.import_path==='string'&&externalPackagesByFile.get(node.getSourceFile())?.has(external.import_path)) {
+        const name=imported(node,external.import_path); if(name) identity=`angular-token:${external.import_path}:${name}`;
+      }
     }
     if (!identity) return undefined;
     const previous = tokenIdentities.get(identity);
@@ -197,9 +192,9 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   }
   function classField(cls: ClassDeclaration, name: string, seen = new Set<Node>()): Node | undefined {
     if (seen.has(cls)) return undefined; seen.add(cls);
-    const field = cls.getProperty(name) ?? cls.getConstructors().flatMap(ctor => ctor.getParameters()).find(parameter => parameter.getName() === name);
+    charge(); const field = model.classProperty(cls,name) ?? model.constructorParameter(cls,name);
     if (field) return field;
-    const parent = reference(cls.getExtends()?.getExpression());
+    const parent = reference(model.baseExpression(cls));
     return parent && Node.isClassDeclaration(parent) ? classField(parent, name, seen) : undefined;
   }
   function values(node: Node | undefined, seen = new Set<Node>()): Node[] {
@@ -309,22 +304,22 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
       if (result.has(iface)) return; result.add(iface);
       for (const parent of iface.getExtends()) { const value = reference(parent.getExpression()); if (value && Node.isInterfaceDeclaration(value)) add(value); }
     };
-    for (const impl of cls.getImplements()) { const value = reference(impl.getExpression()); if (value && Node.isInterfaceDeclaration(value)) add(value); }
-    const base = reference(cls.getExtends()?.getExpression());
+    for (const expression of model.implementedExpressions(cls)) { const value = reference(expression); if (value && Node.isInterfaceDeclaration(value)) add(value); }
+    const base = reference(model.baseExpression(cls));
     if (base && Node.isClassDeclaration(base)) for (const item of contracts(base, seen)) add(item);
     return result;
   }
   function implementationMethod(cls: ClassDeclaration, name: string, seen = new Set<Node>()): string | undefined {
     if (seen.has(cls)) return undefined; seen.add(cls);
-    const method = cls.getMethod(name);
+    charge(); const method = model.classMethod(cls,name);
     if (method) return qn(method);
-    const prop = cls.getProperty(name)?.getInitializer();
+    const prop = model.classProperty(cls,name)?.getInitializer();
     if (prop) {
       if (Node.isArrowFunction(prop) || Node.isFunctionExpression(prop)) return model.callables.get(prop);
       const callable = reference(prop);
       if (callable && model.callables.has(callable)) return model.callables.get(callable);
     }
-    const base = reference(cls.getExtends()?.getExpression());
+    const base = reference(model.baseExpression(cls));
     return base && Node.isClassDeclaration(base) ? implementationMethod(base, name, seen) : undefined;
   }
   for (const cls of classes) for (const iface of contracts(cls)) {
@@ -571,17 +566,16 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     let declaration: Node | undefined = classField(owner, names[0]);
     if (!declaration) {
       const file = owner.getSourceFile();
-      declaration = file.getClasses().find(cls => cls.getName() === names[0]) ?? file.getVariableDeclaration(names[0]);
-      for (const imp of importsByFile.get(file) ?? []) {
-        const named = imp.getNamedImports().find(item => (item.getAliasNode()?.getText() ?? item.getName()) === names[0]);
-        if (named) { const target = model.module(imp, imp.getModuleSpecifierValue()); declaration = target ? model.exported(target, named.getName()) : undefined; }
-        if (imp.getDefaultImport()?.getText() === names[0]) { const target = model.module(imp, imp.getModuleSpecifierValue()); declaration = target ? model.exported(target, 'default') : undefined; }
-        if (imp.getNamespaceImport()?.getText() === names[0] && names.length > 1) { const target = model.module(imp, imp.getModuleSpecifierValue()); declaration = target ? model.exported(target, names[1]) : undefined; names.splice(1, 1); }
+      declaration = model.localValueDeclaration(file,names[0]);
+      for(const binding of model.templateImports(file,names[0])) {
+        const target=model.module(file,binding.specifier);
+        if(binding.kind==='namespace') { if(names.length>1) { declaration=target?model.exported(target,names[1]):undefined; names.splice(1,1); } }
+        else declaration=target?model.exported(target,binding.name):undefined;
       }
     }
     let value = reference(declaration);
     for (const name of names.slice(1)) {
-      if (value && Node.isClassDeclaration(value)) value = reference(value.getProperty(name));
+      if (value && Node.isClassDeclaration(value)) value = reference(model.classProperty(value,name));
       else if (value && Node.isObjectLiteralExpression(value)) value = reference(property(value, name));
       else value = undefined;
     }

@@ -256,7 +256,7 @@ function fixture(files) {
     const f = fixture({ 'app.jsx': `export const App=()=> <main/>; /*${'x'.repeat(1500)}*/` });
     const app = (0, app_1.buildApp)(f.file('logs'));
     try {
-        assert_1.strict.equal((await app.inject({ method: 'GET', url: '/health' })).json().sourceBoundsVersion, 5);
+        assert_1.strict.equal((await app.inject({ method: 'GET', url: '/health' })).json().sourceBoundsVersion, 6);
         const payload = { repositoryName: 'Budget', rootPath: f.root, tsconfigPath: f.file('tsconfig.json'), includedFiles: ['app.jsx'], maxFileSizeKb: 1 };
         const refused = await app.inject({ method: 'POST', url: '/extract-project', payload });
         assert_1.strict.equal(refused.statusCode, 200);

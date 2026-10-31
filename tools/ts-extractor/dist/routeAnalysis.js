@@ -37,7 +37,6 @@ exports.analyzeRoutes = analyzeRoutes;
 const ts_morph_1 = require("ts-morph");
 const path = __importStar(require("path"));
 const boundedTextReader_1 = require("./boundedTextReader");
-const semanticModel_1 = require("./semanticModel");
 /** Browser routes are distinct from backend endpoints. Resolve modules through the admitted model,
  * parse configuration as source, and give every synthetic fact a stable source slice owner. */
 function analyzeRoutes(model, nodes, edges, scope, diagnostic = model.diagnostic, reader = new boundedTextReader_1.BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)) {
@@ -57,7 +56,6 @@ class RouteAnalysis {
         this.jsxCache = new Map();
         this.appRoots = new Map();
         this.markerDirectories = new Set();
-        this.frameworkImports = new Map();
         this.parsedConfigs = new ts_morph_1.Project({ useInMemoryFileSystem: true });
         this.inputs = scope ? scope.absoluteFiles().map(file => path.relative(model.root, file).replace(/\\/g, '/')) : model.files.map(file => model.relative(file));
         if (!scope) {
@@ -201,51 +199,8 @@ class RouteAnalysis {
         return joinPath(prefix, segment);
     }
     imported(node, packageName, name) {
-        this.model.work.charge(packageName.length + name.length + 1);
-        const file = node.getSourceFile();
-        let packages = this.frameworkImports.get(file);
-        if (!packages) {
-            packages = new Map();
-            this.frameworkImports.set(file, packages);
-            for (const imp of file.getImportDeclarations()) {
-                this.model.work.charge(imp.getModuleSpecifier().getFullWidth() + 1);
-                const specifier = imp.getModuleSpecifierValue();
-                let bindings = packages.get(specifier);
-                if (!bindings) {
-                    bindings = { named: new Map(), namespaces: [] };
-                    packages.set(specifier, bindings);
-                }
-                for (const item of imp.getNamedImports()) {
-                    this.model.work.charge(item.getFullWidth() + 1);
-                    const exportedName = item.getName();
-                    if (!bindings.named.has(exportedName))
-                        bindings.named.set(exportedName, []);
-                    bindings.named.get(exportedName).push(item.getAliasNode() ?? item.getNameNode());
-                }
-                const namespace = imp.getNamespaceImport();
-                if (namespace)
-                    bindings.namespaces.push(namespace);
-            }
-        }
-        const bindings = packages.get(packageName);
-        if (!bindings)
-            return false;
-        if (ts_morph_1.Node.isIdentifier(node))
-            for (const binding of bindings.named.get(name) ?? []) {
-                this.model.work.charge();
-                if ((0, semanticModel_1.sameSymbol)(node, binding))
-                    return true;
-            }
-        if (ts_morph_1.Node.isPropertyAccessExpression(node)) {
-            this.model.work.charge(node.getNameNode().getFullWidth() + 1);
-            if (node.getName() === name)
-                for (const namespace of bindings.namespaces) {
-                    this.model.work.charge();
-                    if ((0, semanticModel_1.sameSymbol)(node.getExpression(), namespace))
-                        return true;
-                }
-        }
-        return false;
+        this.model.work.charge(name.length + 1);
+        return this.model.importedApi(node, packageName) === name;
     }
     edge(source, target, type, owner, extra = {}) {
         this.model.work.charge();
@@ -638,11 +593,37 @@ class RouteAnalysis {
     next() {
         const configs = this.inputs.filter(file => /(?:^|\/)next\.config\.(?:ts|js|mjs|cjs)$/.test(file));
         const configByRoot = new Map();
+        const sources = [];
+        let auxiliaryUnits = 0;
         for (const config of configs) {
             const text = this.read(config);
             if (text === undefined)
                 continue;
-            const source = this.model.byPath.get(config) ?? this.model.work.parse(text, () => this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true }), source => source.compilerNode, (node, visit) => ts_morph_1.ts.forEachChild(node, child => { visit(child); }));
+            const admitted = this.model.byPath.get(config);
+            const source = admitted ?? this.model.work.parse(text, () => this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true }), source => source.compilerNode, (node, visit) => ts_morph_1.ts.forEachChild(node, child => { visit(child); }));
+            this.model.work.charge();
+            sources.push({ config, source, admitted: !!admitted });
+            if (!admitted)
+                auxiliaryUnits += source.getFullWidth() + config.length + 1;
+        }
+        // Adding a file resets ts-morph's Program. Validate only after the retained set is final.
+        this.model.work.charge(auxiliaryUnits + 1);
+        const syntaxProgram = auxiliaryUnits ? this.parsedConfigs.getProgram().compilerObject : undefined;
+        for (const { config, source, admitted } of sources) {
+            if (!admitted) {
+                this.model.work.charge(source.getFullWidth() + 1);
+                const errors = syntaxProgram.getSyntacticDiagnostics(source.compilerNode);
+                if (errors.length) {
+                    this.complete = false;
+                    configByRoot.set(path.posix.dirname(config), { base: undefined, file: config });
+                    for (const error of errors.slice(0, 5)) {
+                        const message = typeof error.messageText === 'string' ? error.messageText : error.messageText.messageText;
+                        this.model.work.charge(config.length + message.length + 1);
+                        this.diagnostic(`routeParse: ${config}: ${message}`);
+                    }
+                    continue;
+                }
+            }
             let expression = source.getExportAssignments()[0]?.getExpression();
             if (!expression)
                 expression = source.getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression).find(node => node.getLeft().getText() === 'module.exports')?.getRight();
@@ -707,7 +688,7 @@ class RouteAnalysis {
             catch { /* Workspace discovery owns malformed manifests. */ }
         }
         for (const file of this.model.files)
-            if (file.getImportDeclarations().some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue())))
+            if (this.model.importDeclarations(file).some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue())))
                 nextRoots.add(this.appRoot(this.relative(file)));
         const rootAtDirectory = new Map();
         const nearestRoot = (relative) => {

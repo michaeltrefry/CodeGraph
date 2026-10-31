@@ -75,7 +75,10 @@ class SemanticModel {
         this.publicNameSets = new Map();
         this.starNameSources = new Map();
         this.returnExpressions = new Map();
-        this.reactImportBindings = new Map();
+        this.importFacts = new Map();
+        this.classFacts = new Map();
+        this.localValues = new Map();
+        this.objectMembers = new Map();
         this.resolvedRoots = new Map();
         this.allVariables = [];
         this.writeTargets = [];
@@ -206,6 +209,190 @@ class SemanticModel {
                 return callable;
         }
         return this.fileQN(node);
+    }
+    importsFor(file) {
+        this.work.charge();
+        const prior = this.importFacts.get(file);
+        if (prior)
+            return prior;
+        const packages = new Map();
+        const namespaceModules = new Map();
+        const locals = new Map();
+        const origins = new Map();
+        const origin = (symbol, specifier, name, kind, local, includeLocal = true) => { const value = { specifier, name, kind }; if (!origins.has(symbol))
+            origins.set(symbol, []); origins.get(symbol).push(value); if (includeLocal) {
+            if (!locals.has(local))
+                locals.set(local, []);
+            locals.get(local).push(value);
+        } };
+        this.work.charge(file.compilerNode.statements.length + 1);
+        const declarations = file.getImportDeclarations();
+        for (const declaration of declarations) {
+            this.work.charge(declaration.getFullWidth() + 1);
+            const name = declaration.getModuleSpecifierValue();
+            if (!packages.has(name))
+                packages.set(name, { names: new Map(), namespaces: new Set(), defaults: new Set() });
+            const facts = packages.get(name);
+            const namedLocals = new Set();
+            for (const item of declaration.getNamedImports()) {
+                this.work.charge(item.getFullWidth() + 1);
+                const symbol = (item.getAliasNode() ?? item.getNameNode()).getSymbol()?.compilerSymbol;
+                if (symbol) {
+                    const importedName = item.getName();
+                    if (!facts.names.has(symbol))
+                        facts.names.set(symbol, importedName);
+                    const local = (item.getAliasNode() ?? item.getNameNode()).getText();
+                    origin(symbol, name, importedName, 'named', local, !namedLocals.has(local));
+                    namedLocals.add(local);
+                }
+            }
+            const namespace = declaration.getNamespaceImport()?.getSymbol()?.compilerSymbol;
+            if (namespace) {
+                origin(namespace, name, '*', 'namespace', declaration.getNamespaceImport().getText());
+                facts.namespaces.add(namespace);
+                if (!namespaceModules.has(namespace))
+                    namespaceModules.set(namespace, name);
+            }
+            const defaultSymbol = declaration.getDefaultImport()?.getSymbol()?.compilerSymbol;
+            if (defaultSymbol) {
+                facts.defaults.add(defaultSymbol);
+                origin(defaultSymbol, name, 'default', 'default', declaration.getDefaultImport().getText());
+            }
+        }
+        const facts = { packages, declarations, namespaceModules, origins, locals };
+        this.importFacts.set(file, facts);
+        return facts;
+    }
+    /** Actual local import symbols only; caller-specific values and argument environments are never cached. */
+    importedName(node, facts, defaultNamespace) {
+        if (ts_morph_1.Node.isIdentifier(node)) {
+            const symbol = node.getSymbol()?.compilerSymbol;
+            return symbol ? facts.names.get(symbol) : undefined;
+        }
+        const receiver = ts_morph_1.Node.isPropertyAccessExpression(node) ? node.getExpression() : ts_morph_1.Node.isQualifiedName(node) ? node.getLeft() : undefined;
+        if (receiver) {
+            const symbol = receiver.getSymbol()?.compilerSymbol;
+            if (symbol && (facts.namespaces.has(symbol) || defaultNamespace && facts.defaults.has(symbol))) {
+                const name = ts_morph_1.Node.isPropertyAccessExpression(node) ? node.getNameNode() : ts_morph_1.Node.isQualifiedName(node) ? node.getRight() : undefined;
+                if (name) {
+                    this.work.charge(name.getFullWidth() + 1);
+                    return name.getText();
+                }
+            }
+        }
+        return undefined;
+    }
+    importedApi(node, packageName, defaultNamespace = false) {
+        this.work.charge(packageName.length + 1);
+        const facts = this.importsFor(node.getSourceFile()).packages.get(packageName);
+        return facts ? this.importedName(node, facts, defaultNamespace) : undefined;
+    }
+    importDeclarations(file) { return this.importsFor(file).declarations; }
+    importOrigins(node) {
+        this.work.charge();
+        const receiver = ts_morph_1.Node.isPropertyAccessExpression(node) ? node.getExpression() : ts_morph_1.Node.isQualifiedName(node) ? node.getLeft() : node;
+        const symbol = receiver.getSymbol()?.compilerSymbol;
+        const origins = symbol ? this.importsFor(node.getSourceFile()).origins.get(symbol) : undefined;
+        this.work.charge((origins?.length ?? 0) + 1);
+        return origins ?? [];
+    }
+    templateImports(file, name) { this.work.text(name); const values = this.importsFor(file).locals.get(name); this.work.charge((values?.length ?? 0) + 1); return values ?? []; }
+    localValueDeclaration(file, name) {
+        this.work.text(name);
+        let values = this.localValues.get(file);
+        if (!values) {
+            const classes = new Map();
+            const variables = new Map();
+            this.work.charge(file.compilerNode.statements.length * 2 + 1);
+            for (const value of file.getClasses()) {
+                this.work.charge((value.getNameNode()?.getFullWidth() ?? 0) + 1);
+                const name = value.getName();
+                if (name && !classes.has(name))
+                    classes.set(name, value);
+            }
+            for (const value of file.getVariableDeclarations()) {
+                this.work.charge(value.getNameNode().getFullWidth() + 1);
+                const name = value.getName();
+                if (!variables.has(name))
+                    variables.set(name, value);
+            }
+            values = { classes, variables };
+            this.localValues.set(file, values);
+        }
+        return values.classes.get(name) ?? values.variables.get(name);
+    }
+    importResolution(from, specifier) {
+        this.work.charge(this.relative(from).length + specifier.length + 1);
+        return this.importBySource.get(`${this.relative(from)}\0${specifier}`);
+    }
+    classIndex(cls) {
+        this.work.charge();
+        const prior = this.classFacts.get(cls);
+        if (prior)
+            return prior;
+        this.work.charge(cls.getFullWidth() + cls.compilerNode.members.length + 1);
+        const implemented = new Map();
+        const expressions = [];
+        const methods = new Map();
+        const properties = new Map();
+        const parameters = new Map();
+        for (const item of cls.getImplements()) {
+            const expression = item.getExpression();
+            this.work.charge(expression.getFullWidth() + 1);
+            const text = expression.getText();
+            if (!implemented.has(text)) {
+                implemented.set(text, expression);
+                expressions.push(expression);
+            }
+        }
+        for (const method of cls.getMethods()) {
+            this.work.charge(method.getNameNode().getFullWidth() + 1);
+            const name = method.getName();
+            if (!methods.has(name))
+                methods.set(name, method);
+        }
+        for (const property of cls.getProperties()) {
+            this.work.charge(property.getNameNode().getFullWidth() + 1);
+            const name = property.getName();
+            if (!properties.has(name))
+                properties.set(name, property);
+        }
+        for (const constructor of cls.getConstructors()) {
+            this.work.charge(constructor.compilerNode.parameters.length + 1);
+            for (const parameter of constructor.getParameters()) {
+                this.work.charge(parameter.getNameNode().getFullWidth() + 1);
+                const name = parameter.getName();
+                if (!parameters.has(name))
+                    parameters.set(name, parameter);
+            }
+        }
+        const facts = { implemented, methods, properties, parameters, expressions, base: cls.getExtends()?.getExpression() };
+        this.classFacts.set(cls, facts);
+        return facts;
+    }
+    classProperty(cls, name) { this.work.text(name); return this.classIndex(cls).properties.get(name); }
+    classMethod(cls, name) { this.work.text(name); return this.classIndex(cls).methods.get(name); }
+    constructorParameter(cls, name) { this.work.text(name); return this.classIndex(cls).parameters.get(name); }
+    implementedExpression(cls, text) { this.work.text(text); return this.classIndex(cls).implemented.get(text); }
+    implementedExpressions(cls) { const values = this.classIndex(cls).expressions; this.work.charge(values.length + 1); return values; }
+    baseExpression(cls) { return this.classIndex(cls).base; }
+    objectProperty(object, name) {
+        this.work.text(name);
+        let members = this.objectMembers.get(object);
+        if (!members) {
+            members = new Map();
+            this.work.charge(object.compilerNode.properties.length + 1);
+            for (const member of object.getProperties()) {
+                this.work.charge(member.getFullWidth() + 1);
+                if (ts_morph_1.Node.isSpreadAssignment(member))
+                    continue;
+                const key = member.getName();
+                if (!members.has(key))
+                    members.set(key, member);
+            }
+            this.objectMembers.set(object, members);
+        }
+        return members.get(name);
     }
     module(from, specifier) {
         this.work.charge(this.relative(from).length + specifier.length + 1);
@@ -423,7 +610,7 @@ class SemanticModel {
                 }
             }
             for (const file of this.files)
-                for (const imported of file.getImportDeclarations()) {
+                for (const imported of this.importDeclarations(file)) {
                     this.work.charge(imported.getModuleSpecifier().getFullWidth() + 1);
                     const specifier = imported.getModuleSpecifierValue();
                     for (const named of imported.getNamedImports()) {
@@ -729,19 +916,19 @@ class SemanticModel {
         if (ts_morph_1.Node.isPropertyAccessExpression(node)) {
             const receiver = node.getExpression();
             if (ts_morph_1.Node.isIdentifier(receiver)) {
-                for (const imp of node.getSourceFile().getImportDeclarations()) {
-                    if (!sameSymbol(receiver, imp.getNamespaceImport()))
-                        continue;
-                    const file = this.module(node, imp.getModuleSpecifierValue());
+                const symbol = receiver.getSymbol()?.compilerSymbol;
+                const specifier = symbol ? this.importsFor(node.getSourceFile()).namespaceModules.get(symbol) : undefined;
+                if (specifier !== undefined) {
+                    const file = this.module(node, specifier);
                     if (file)
                         return this.exported(file, node.getName(), seen);
                 }
             }
             const target = this.resolve(receiver, seen);
             if (target && ts_morph_1.Node.isClassDeclaration(target))
-                return target.getMethod(node.getName()) ?? target.getProperty(node.getName());
+                return this.classMethod(target, node.getName()) ?? this.classProperty(target, node.getName());
             if (target && ts_morph_1.Node.isObjectLiteralExpression(target)) {
-                const prop = target.getProperty(node.getName());
+                const prop = this.objectProperty(target, node.getName());
                 if (prop && ts_morph_1.Node.isPropertyAssignment(prop))
                     return this.resolve(prop.getInitializer(), seen);
                 if (prop && ts_morph_1.Node.isShorthandPropertyAssignment(prop))
@@ -760,48 +947,8 @@ class SemanticModel {
         const resolved = this.resolve(node);
         return resolved ? this.declarations.get(resolved) : undefined;
     }
-    /** Import facts are immutable for this model. Symbol identity preserves aliases and shadows,
-     * and is safe while constructor declaration indexing is still in progress. */
-    reactApi(call) {
-        this.work.charge();
-        const file = call.getSourceFile();
-        let bindings = this.reactImportBindings.get(file);
-        if (!bindings) {
-            const names = new Map();
-            const receivers = new Set();
-            this.work.charge(file.compilerNode.statements.length + 1);
-            for (const imported of file.getImportDeclarations()) {
-                this.work.charge(imported.getFullWidth() + 1);
-                if (imported.getModuleSpecifierValue() !== 'react')
-                    continue;
-                for (const named of imported.getNamedImports()) {
-                    const symbol = (named.getAliasNode() ?? named.getNameNode()).getSymbol()?.compilerSymbol;
-                    if (symbol)
-                        names.set(symbol, named.getName());
-                }
-                for (const receiver of [imported.getDefaultImport(), imported.getNamespaceImport()]) {
-                    const symbol = receiver?.getSymbol()?.compilerSymbol;
-                    if (symbol)
-                        receivers.add(symbol);
-                }
-            }
-            bindings = { names, receivers };
-            this.reactImportBindings.set(file, bindings);
-        }
-        const expression = call.getExpression();
-        if (ts_morph_1.Node.isIdentifier(expression)) {
-            const symbol = expression.getSymbol()?.compilerSymbol;
-            return symbol ? bindings.names.get(symbol) : undefined;
-        }
-        if (ts_morph_1.Node.isPropertyAccessExpression(expression)) {
-            const symbol = expression.getExpression().getSymbol()?.compilerSymbol;
-            if (symbol && bindings.receivers.has(symbol)) {
-                this.work.charge(expression.getNameNode().getFullWidth() + 1);
-                return expression.getName();
-            }
-        }
-        return undefined;
-    }
+    /** This source-only import lookup is safe during constructor declaration indexing. */
+    reactApi(call) { this.work.charge(); const facts = this.importsFor(call.getSourceFile()).packages.get('react'); return facts ? this.importedName(call.getExpression(), facts, true) : undefined; }
     extract(nodes, edges, unresolved) {
         const existing = new Map(nodes.map(node => [node.qualifiedName, node]));
         const callableQNs = new Set(this.callables.values());
@@ -874,37 +1021,80 @@ class SemanticModel {
     }
     reconcileAngular(nodes, edges) {
         const angular = new Set(['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES']);
+        const remove = new Set();
+        const routes = new Map();
+        const components = new Map();
+        for (const node of nodes) {
+            this.work.text(node.qualifiedName);
+            if (!routes.has(node.qualifiedName))
+                routes.set(node.qualifiedName, node);
+        }
+        const componentExpression = (file, text) => {
+            this.work.text(text);
+            let index = components.get(file);
+            if (!index) {
+                index = new Map();
+                this.work.charge(file.getFullWidth() + 1);
+                for (const property of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.PropertyAssignment)) {
+                    this.work.charge(property.getNameNode().getFullWidth() + 1);
+                    if (property.getName() !== 'component')
+                        continue;
+                    const value = property.getInitializer();
+                    if (!value)
+                        continue;
+                    this.work.charge(value.getFullWidth() + 1);
+                    const key = value.getText();
+                    if (!index.has(key))
+                        index.set(key, value);
+                }
+                components.set(file, index);
+            }
+            return index.get(text);
+        };
         for (let index = edges.length - 1; index >= 0; index--) {
+            this.work.charge();
             const edge = edges[index];
             if (!angular.has(edge.type) || edge.properties?.framework === 'react')
                 continue;
+            this.work.text(edge.sourceQN);
             const source = this.byQN.get(edge.sourceQN);
             let expression;
             if (source && ts_morph_1.Node.isClassDeclaration(source)) {
                 if (edge.type === 'INHERITS')
-                    expression = source.getExtends()?.getExpression();
+                    expression = this.baseExpression(source);
                 if (edge.type === 'IMPLEMENTS')
-                    expression = source.getImplements().find(item => item.getExpression().getText() === edge.targetQN)?.getExpression();
+                    expression = this.implementedExpression(source, edge.targetQN);
                 if (edge.type === 'INJECTS') {
-                    const parameter = source.getConstructors().flatMap(ctor => ctor.getParameters()).find(param => param.getName() === edge.properties?.parameter_name);
-                    expression = parameter?.getTypeNode();
+                    const rawName = edge.properties?.parameter_name;
+                    const name = String(rawName);
+                    expression = typeof rawName === 'string' ? this.constructorParameter(source, rawName)?.getTypeNode() : undefined;
                     if (!expression) {
-                        const init = source.getProperty(String(edge.properties?.parameter_name))?.getInitializer();
-                        if (init && ts_morph_1.Node.isCallExpression(init))
-                            expression = init.getArguments()[0];
+                        const initializer = this.classProperty(source, name)?.getInitializer();
+                        if (initializer && ts_morph_1.Node.isCallExpression(initializer))
+                            expression = initializer.getArguments()[0];
                     }
                 }
             }
             if (edge.type === 'HANDLES') {
-                const route = nodes.find(node => node.qualifiedName === edge.sourceQN);
+                const route = routes.get(edge.sourceQN);
                 const file = route ? this.byPath.get(route.filePath) : undefined;
-                expression = file?.getDescendantsOfKind(ts_morph_1.SyntaxKind.PropertyAssignment).find(prop => prop.getName() === 'component' && prop.getInitializer()?.getText() === edge.targetQN)?.getInitializer();
+                if (file)
+                    expression = componentExpression(file, edge.targetQN);
             }
             const target = this.target(expression);
             if (target)
                 edge.targetQN = target;
             else
-                edges.splice(index, 1);
+                remove.add(edge);
+        }
+        if (remove.size) {
+            let write = 0;
+            for (const edge of edges) {
+                this.work.charge();
+                if (!remove.has(edge))
+                    edges[write++] = edge;
+            }
+            edges.length = write;
         }
     }
 }
