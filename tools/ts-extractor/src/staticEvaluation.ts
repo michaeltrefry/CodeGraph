@@ -1,4 +1,4 @@
-import { Node, SyntaxKind } from 'ts-morph';
+import { Node, SyntaxKind, ArrayLiteralExpression, ArrayBindingPattern, ObjectBindingPattern, ObjectLiteralExpression } from 'ts-morph';
 import { SemanticModel } from './semanticModel';
 
 export type StaticValue = string | number | boolean | null | undefined | UnknownValue | ObjectValue;
@@ -21,12 +21,73 @@ export class StaticEvaluator {
   private readonly aliasParents = new Map<object, object>();
   private memberWrites: Map<object, { names: Set<string>; all: boolean; deep: boolean }> | undefined;
   private readonly writtenBindings = new Set<object>();
+  private readonly arrays = new Map<ArrayLiteralExpression, { elements: readonly Node[]; spread: boolean }>();
+  private readonly patterns = new Map<ArrayBindingPattern | ObjectBindingPattern, { elements: readonly Node[]; positions: Map<Node, number> }>();
+  private readonly objects = new Map<ObjectLiteralExpression, { properties: readonly Node[]; members: Map<string, { property: Node; position: number }>; unknownPosition: number; spread: boolean }>();
+  private readonly returns = new Map<Node, readonly Node[]>();
+  /** Cache source structure only. Values and identity resolution still use each caller's environment. */
+  private arrayStructure(node: ArrayLiteralExpression) {
+    this.model.work.charge();
+    const cached = this.arrays.get(node); if (cached) return cached;
+    this.model.work.reserveArrayReferences(node.compilerNode.elements.length);
+    const elements = node.getElements(); let spread = false;
+    for (const element of elements) { this.model.work.charge(); spread ||= Node.isSpreadElement(element); }
+    const result = { elements, spread }; this.arrays.set(node, result); return result;
+  }
+  private patternStructure(node: ArrayBindingPattern | ObjectBindingPattern) {
+    this.model.work.charge();
+    const cached = this.patterns.get(node); if (cached) return cached;
+    const count = node.compilerNode.elements.length;
+    this.model.work.reserveArrayReferences(count * 2);
+    const elements = node.getElements(), positions = new Map<Node, number>();
+    for (let index = 0; index < elements.length; index++) { this.model.work.charge(); positions.set(elements[index], index); }
+    const result = { elements, positions }; this.patterns.set(node, result); return result;
+  }
+  private memberName(node: Node): string | undefined {
+    this.model.work.charge(node.getFullWidth() + 1);
+    if (Node.isComputedPropertyName(node)) {
+      const expression = node.getExpression();
+      return Node.isStringLiteral(expression) || Node.isNoSubstitutionTemplateLiteral(expression) ? expression.getLiteralText() : Node.isNumericLiteral(expression) ? String(expression.getLiteralValue()) : undefined;
+    }
+    return Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : Node.isNumericLiteral(node) ? String(node.getLiteralValue()) : node.getText();
+  }
+  private objectStructure(node: ObjectLiteralExpression) {
+    this.model.work.charge();
+    const cached = this.objects.get(node); if (cached) return cached;
+    this.model.work.reserveArrayReferences(node.compilerNode.properties.length * 2);
+    const properties = node.getProperties(), members = new Map<string, { property: Node; position: number }>();
+    let unknownPosition = -1, spread = false;
+    for (let position = 0; position < properties.length; position++) {
+      const property = properties[position]; this.model.work.charge();
+      if (Node.isSpreadAssignment(property)) spread = true;
+      else if (Node.isPropertyAssignment(property) || Node.isShorthandPropertyAssignment(property)) {
+        const key = this.memberName(property.getNameNode());
+        if (key === undefined) unknownPosition = position;
+        else members.set(key, { property, position }); // Last source property wins.
+      }
+    }
+    const result = { properties, members, unknownPosition, spread }; this.objects.set(node, result); return result;
+  }
+  private ownedReturns(callable: Node, body: Node): readonly Node[] {
+    this.model.work.charge();
+    const cached = this.returns.get(callable); if (cached) return cached;
+    this.model.work.charge(body.getFullWidth() + 1);
+    const output: Node[] = [];
+    body.forEachDescendant(node => {
+      this.model.work.charge();
+      if (Node.isReturnStatement(node) && this.model.owner(node) === this.model.callables.get(callable)) {
+        this.model.work.reserveArrayReferences(1); output.push(node);
+      }
+    });
+    this.returns.set(callable, output); return output;
+  }
   constructor(readonly model: SemanticModel, readonly diagnostic: (message: string) => void) {}
 
   evaluate(node: Node | undefined, env: StaticEnvironment = new Map(), seen = new Set<Node>()): StaticValue {
+    this.model.work.charge();
     if (!node) return undefined;
     if (seen.has(node) || seen.size > 60) return unknown();
-    seen = new Set(seen); seen.add(node);
+    this.model.work.charge(seen.size + 1); seen = new Set(seen); seen.add(node);
     const ev = (value: Node | undefined) => this.evaluate(value, env, seen);
     // Bound arguments are still mutable inside the callee. Check writes before an
     // environment hit can return a stale object/method supplied by its caller.
@@ -70,7 +131,8 @@ export class StaticEvaluator {
     }
     if (Node.isObjectLiteralExpression(node)) {
       const result = emptyObject();
-      for (const prop of node.getProperties()) {
+      for (const prop of this.objectStructure(node).properties) {
+        this.model.work.charge();
         if (Node.isSpreadAssignment(prop)) {
           const spread = ev(prop.getExpression());
           if (isObject(spread)) {
@@ -128,8 +190,11 @@ export class StaticEvaluator {
       if (callable && (Node.isFunctionDeclaration(callable) || Node.isFunctionExpression(callable) || Node.isArrowFunction(callable) || Node.isMethodDeclaration(callable))) {
         const next = this.bind(callable, node.getArguments().map(ev), env);
         const body = callable.getBody();
-        const values = !body ? [] : Node.isBlock(body) ? body.getDescendantsOfKind(SyntaxKind.ReturnStatement)
-          .filter(r => this.model.owner(r) === this.model.callables.get(callable)).map(r => this.evaluate(r.getExpression(), next, seen)) : [this.evaluate(body, next, seen)];
+        const values: StaticValue[] = [];
+        if (body && Node.isBlock(body)) for (const statement of this.ownedReturns(callable, body)) {
+          this.model.work.reserveArrayReferences(1);
+          values.push(this.evaluate(Node.isReturnStatement(statement) ? statement.getExpression() : undefined, next, seen));
+        } else if (body) { this.model.work.reserveArrayReferences(1); values.push(this.evaluate(body, next, seen)); }
         if (values.length && values.every(v => staticKey(v) === staticKey(values[0]))) return values[0];
       }
       return unknown();
@@ -160,7 +225,8 @@ export class StaticEvaluator {
       const value = values[index] === undefined && parameter.getInitializer() ? this.evaluate(parameter.getInitializer(), env) : values[index];
       env.set(parameter, value);
       const name = parameter.getNameNode();
-      if (Node.isObjectBindingPattern(name)) for (const element of name.getElements()) {
+      if (Node.isObjectBindingPattern(name)) for (const element of this.patternStructure(name).elements) {
+        this.model.work.charge(); if (!Node.isBindingElement(element)) continue;
         const key = element.getPropertyNameNode()?.getText() ?? element.getName();
         let property = isObject(value) ? value.properties.has(key) ? value.properties.get(key) : value.unknownKeys ? unknown(key) : undefined : unknown(key);
         if (property === undefined && element.getInitializer()) property = this.evaluate(element.getInitializer(), env);
@@ -186,10 +252,11 @@ export class StaticEvaluator {
   }
   private aliasKey(node: Node): object { return node.getSymbol()?.compilerSymbol ?? node; }
   private aliasRoot(key: object): object {
+    this.model.work.charge();
     if (!this.aliasParents.has(key)) { this.aliasParents.set(key,key); return key; }
     let root=key;
-    while (this.aliasParents.get(root)! !== root) root=this.aliasParents.get(root)!;
-    while (key !== root) { const parent=this.aliasParents.get(key)!; this.aliasParents.set(key,root); key=parent; }
+    while (this.aliasParents.get(root)! !== root) { this.model.work.charge(); root=this.aliasParents.get(root)!; }
+    while (key !== root) { this.model.work.charge(); const parent=this.aliasParents.get(key)!; this.aliasParents.set(key,root); key=parent; }
     return root;
   }
   private joinAliases(left: object, right: object): void {
@@ -199,13 +266,17 @@ export class StaticEvaluator {
    * per evaluated binding. Static aliases share a conservative mutable root; symbols
    * and explicit import resolution keep unrelated names and modules independent. */
   private indexWrites(): void {
+    this.model.work.charge();
     if (this.memberWrites) return;
     const writes: Array<{ target: Node; member: boolean; objectTarget?: true }> = [];
     const aliases: Node[] = [];
     for (const file of this.model.files) {
+      this.model.work.charge(file.getFullWidth() + 1);
       for (const imp of file.getImportDeclarations()) {
+        this.model.work.charge(imp.getFullWidth() + 1);
         const target = this.model.module(file, imp.getModuleSpecifierValue()); if (!target) continue;
         for (const named of imp.getNamedImports()) {
+          this.model.work.charge(named.getFullWidth() + 1);
           const exported = this.model.exported(target,named.getName());
           if (exported) this.joinAliases(this.aliasKey(named.getAliasNode() ?? named.getNameNode()),this.aliasKey(exported));
         }
@@ -213,54 +284,57 @@ export class StaticEvaluator {
         if (local && exported) this.joinAliases(this.aliasKey(local),this.aliasKey(exported));
       }
       file.forEachDescendant(node => {
-        if (this.isBinding(node)) aliases.push(node);
-        if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) writes.push({target:node.getLeft(),member:!Node.isIdentifier(node.getLeft())});
-        else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken,SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) writes.push({target:node.getOperand(),member:!Node.isIdentifier(node.getOperand())});
-        else if (Node.isDeleteExpression(node)) writes.push({target:node.getExpression(),member:!Node.isIdentifier(node.getExpression())});
-        else if (Node.isCallExpression(node) && node.getExpression().getText()==='Object.assign' && node.getArguments()[0]) writes.push({target:node.getArguments()[0],member:true,objectTarget:true});
+        this.model.work.charge();
+        if (this.isBinding(node)) { this.model.work.reserveArrayReferences(1); aliases.push(node); }
+        if (Node.isBinaryExpression(node) && node.getOperatorToken().getKind() >= SyntaxKind.FirstAssignment && node.getOperatorToken().getKind() <= SyntaxKind.LastAssignment) { this.model.work.reserveArrayReferences(1); writes.push({target:node.getLeft(),member:!Node.isIdentifier(node.getLeft())}); }
+        else if ((Node.isPrefixUnaryExpression(node) || Node.isPostfixUnaryExpression(node)) && [SyntaxKind.PlusPlusToken,SyntaxKind.MinusMinusToken].includes(node.getOperatorToken())) { this.model.work.reserveArrayReferences(1); writes.push({target:node.getOperand(),member:!Node.isIdentifier(node.getOperand())}); }
+        else if (Node.isDeleteExpression(node)) { this.model.work.reserveArrayReferences(1); writes.push({target:node.getExpression(),member:!Node.isIdentifier(node.getExpression())}); }
+        else if (Node.isCallExpression(node)) {
+          this.model.work.charge(node.getExpression().getFullWidth() + 1);
+          if (node.getExpression().getText()==='Object.assign') {
+            this.model.work.charge(node.getFullWidth() + 1); const target = node.getArguments()[0];
+            if (target) { this.model.work.reserveArrayReferences(1); writes.push({target,member:true,objectTarget:true}); }
+          }
+        }
       });
     }
     const identities = new Map<Node, Node>();
     const restSources = new Map<Node, Node>();
     const uncertainIdentities = new Set<Node>();
-    const memberName = (node: Node): string | undefined => {
-      if (Node.isComputedPropertyName(node)) {
-        const expression=node.getExpression();
-        return Node.isStringLiteral(expression) || Node.isNoSubstitutionTemplateLiteral(expression) ? expression.getLiteralText() : Node.isNumericLiteral(expression) ? String(expression.getLiteralValue()) : undefined;
-      }
-      return Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node) ? node.getLiteralText() : Node.isNumericLiteral(node) ? String(node.getLiteralValue()) : node.getText();
-    };
     const selectedMember = (receiver: Node, name: string, seen: Set<Node>): {node: Node; uncertain?: true} | undefined => {
+      this.model.work.charge(seen.size + 1);
       const source=identity(receiver,seen);
       if (uncertainIdentities.has(receiver)) return {node:source,uncertain:true};
       if (seen.has(source)) return undefined;
-      seen=new Set(seen); seen.add(source);
+      this.model.work.charge(seen.size + 1); seen=new Set(seen); seen.add(source);
       if (Node.isSourceFile(source)) { const member=this.model.exported(source,name); return member ? {node:member} : undefined; }
+      this.model.work.charge(name.length + 1);
       if (Node.isArrayLiteralExpression(source)) {
-        const elements=source.getElements();
-        // A spread changes subsequent indices and may have unknown length. Retain
-        // the receiver identity so a write covers every statically contained source.
-        if (elements.some(Node.isSpreadElement)) return {node:source,uncertain:true};
-        const member=/^(?:0|[1-9]\d*)$/.test(name) ? elements[Number(name)] : undefined;
-        return member ? {node:member} : undefined;
+        const structure = this.arrayStructure(source);
+        // Keep the original all-indices uncertainty whenever any spread is present.
+        if (structure.spread) return { node: source, uncertain: true };
+        const member = /^(?:0|[1-9]\d*)$/.test(name) ? structure.elements[Number(name)] : undefined;
+        return member ? { node: member } : undefined;
       }
-      if (Node.isClassDeclaration(source)) { const member=source.getProperty(name); return member ? {node:member} : undefined; }
+      if (Node.isClassDeclaration(source)) { const member = this.model.classProperty(source, name); return member ? { node: member } : undefined; }
       if (!Node.isObjectLiteralExpression(source)) return undefined;
-      // An unresolved spread/computed override may select any contained object.
-      // Keep the container as the conservative identity instead of picking one child.
-      if (source.getProperties().some(Node.isSpreadAssignment)) return {node:source,uncertain:true};
-      for (const property of source.getProperties().reverse()) {
-        if (Node.isPropertyAssignment(property)) {
-          const key=memberName(property.getNameNode());
-          if (key===undefined) return {node:source,uncertain:true};
-          if (key===name) { const member=property.getInitializer(); return member ? {node:member} : undefined; }
-        } else if (Node.isShorthandPropertyAssignment(property) && property.getName()===name) { const member=property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration)); return member ? {node:member} : undefined; }
+      const structure = this.objectStructure(source);
+      if (structure.spread) return { node: source, uncertain: true };
+      const selected = structure.members.get(name);
+      if (structure.unknownPosition >= (selected?.position ?? -1)) return structure.unknownPosition >= 0 ? { node: source, uncertain: true } : undefined;
+      const property = selected?.property;
+      if (property && Node.isPropertyAssignment(property)) { const member = property.getInitializer(); return member ? { node: member } : undefined; }
+      if (property && Node.isShorthandPropertyAssignment(property)) {
+        this.model.work.charge(property.getFullWidth() + 1);
+        const member = property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration));
+        return member ? { node: member } : undefined;
       }
       return undefined;
     };
     // Resolve declaration/member identity, not runtime values. A parameter remains a
     // stable identity even when no invocation value exists in the indexed AST.
     const identity = (node: Node, seen = new Set<Node>()): Node => {
+      this.model.work.charge(seen.size + 1);
       if (seen.has(node) || seen.size >= 60) return node;
       const cached=identities.get(node); if (cached) return cached;
       seen=new Set(seen); seen.add(node);
@@ -270,16 +344,18 @@ export class StaticEvaluator {
       else if (Node.isBindingElement(node)) {
         const path: Array<string | undefined>=[]; let element=node; let source: Node | undefined; let rest=false;
         for (;;) {
+          this.model.work.charge();
           const pattern=element.getParentOrThrow();
           const name=element.getPropertyNameNode() ?? element.getNameNode();
           if (element.getDotDotDotToken()) rest=true;
-          else path.unshift(Node.isArrayBindingPattern(pattern) ? String(pattern.getElements().indexOf(element)) : memberName(name));
+          else { this.model.work.reserveArrayReferences(1); path.push(Node.isArrayBindingPattern(pattern) ? String(this.patternStructure(pattern).positions.get(element) ?? -1) : this.memberName(name)); }
           const owner=pattern.getParentOrThrow();
           if (Node.isBindingElement(owner)) { element=owner; continue; }
           if (Node.isVariableDeclaration(owner)) source=owner.getInitializer();
           break; // Destructured parameters retain separate invocation-bound identities.
         }
-        for (const name of path) {
+        for (let index = path.length - 1; index >= 0; index--) {
+          this.model.work.charge(seen.size + 1); const name = path[index];
           if (!source) break;
           const receiver=source;
           const selected=name===undefined ? undefined : selectedMember(receiver,name,new Set(seen));
@@ -312,32 +388,40 @@ export class StaticEvaluator {
       identities.set(node,result); return result;
     };
     for (const alias of aliases) {
+      this.model.work.charge();
       const target=identity(alias); this.joinAliases(this.aliasKey(alias),this.aliasKey(target));
       if ((Node.isParameterDeclaration(alias) || Node.isBindingElement(alias)) && alias.getInitializer()) this.joinAliases(this.aliasKey(alias),this.aliasKey(identity(alias.getInitializer()!)));
     }
     // Containment is directional: writes through a container may affect referenced
     // children, but writing one child cannot mutate the container's other values.
-    const contained = (container: Node): Node[] => {
-      const rest=restSources.get(container); if (rest) return [rest];
-      if (Node.isArrayLiteralExpression(container)) return container.getElements().map(element=>Node.isSpreadElement(element) ? element.getExpression() : element);
-      if (!Node.isObjectLiteralExpression(container)) return [];
-      return container.getProperties().flatMap(property=> {
-        if (Node.isPropertyAssignment(property)) { const value=property.getInitializer(); return value ? [value] : []; }
-        if (Node.isShorthandPropertyAssignment(property)) { const value=property.getValueSymbol()?.getDeclarations().find(declaration=>this.admitted(declaration)); return value ? [value] : []; }
-        return Node.isSpreadAssignment(property) ? [property.getExpression()] : [];
-      });
+    const forEachContained = (container: Node, visit: (child: Node) => void): void => {
+      this.model.work.charge();
+      const rest = restSources.get(container); if (rest) { visit(rest); return; }
+      if (Node.isArrayLiteralExpression(container)) {
+        for (const element of this.arrayStructure(container).elements) {
+          this.model.work.charge(); visit(Node.isSpreadElement(element) ? element.getExpression() : element);
+        }
+      } else if (Node.isObjectLiteralExpression(container)) for (const property of this.objectStructure(container).properties) {
+        this.model.work.charge();
+        if (Node.isPropertyAssignment(property)) { const value = property.getInitializer(); if (value) visit(value); }
+        else if (Node.isShorthandPropertyAssignment(property)) {
+          const value = property.getValueSymbol()?.getDeclarations().find(declaration => this.admitted(declaration)); if (value) visit(value);
+        } else if (Node.isSpreadAssignment(property)) visit(property.getExpression());
+      }
     };
     this.memberWrites=new Map();
     const record = (reference: Node, name: string | undefined, deep: boolean, seen = new Set<Node>()): void => {
+      this.model.work.charge();
       const source=identity(reference), key=this.aliasRoot(this.aliasKey(source));
       const entry=this.memberWrites!.get(key) ?? {names:new Set<string>(),all:false,deep:false};
       if (name===undefined) entry.all=true; else entry.names.add(name);
       entry.deep ||= deep; this.memberWrites!.set(key,entry);
       if (!deep || seen.has(source)) return;
       seen.add(source);
-      for (const child of contained(source)) record(child,name,true,seen);
+      forEachContained(source, child => record(child,name,true,seen));
     };
     for (const {target,member,objectTarget} of writes) {
+      this.model.work.charge();
       // Rebinding changes the binding; an exact member write changes its receiver's
       // property. Ordinary ancestors and captured child values are not mutated.
       if (!member) { this.writtenBindings.add(this.aliasKey(target)); continue; }
