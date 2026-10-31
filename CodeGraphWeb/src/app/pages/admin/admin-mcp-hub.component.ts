@@ -241,7 +241,8 @@ export class AdminMcpHubComponent implements OnInit {
     { providerKey: 'shortcut', credentialKey: 'apiToken', value: '' },
     { providerKey: 'rabbitmq', credentialKey: 'username', value: '' },
     { providerKey: 'rabbitmq', credentialKey: 'password', value: '' },
-    { providerKey: 'mysql', credentialKey: 'connectionString', value: '' }
+    { providerKey: 'mysql', credentialKey: 'connectionString', value: '' },
+    { providerKey: 'kanban', credentialKey: 'apiToken', value: '' }
   ];
 
   configRows = [

@@ -26,6 +26,9 @@ public class McpHubServiceTests
         store.Providers.Single(provider => provider.ProviderKey == "shortcut").Enabled.ShouldBeFalse();
         store.Providers.Single(provider => provider.ProviderKey == "shortcut-shim").Enabled.ShouldBeFalse();
         store.Providers.Single(provider => provider.ProviderKey == "shortcut-shim").Description.ShouldContain("Retired");
+        // The KanbanBoard import's credential has a provider to belong to, and the provider has no tools (sc-28194).
+        store.Providers.Single(provider => provider.ProviderKey == "kanban").Enabled.ShouldBeFalse();
+        store.Tools.ShouldNotContain(tool => tool.ProviderKey == "kanban");
         store.Tools.Single(tool => tool.ToolName == "mcp_hub_catalog").Enabled.ShouldBeTrue();
         store.Tools.Single(tool => tool.ToolName == "shortcut_search_epics").Enabled.ShouldBeFalse();
         store.Tools.Single(tool => tool.ToolName == "stories-create-comment").ReadOnly.ShouldBeFalse();
