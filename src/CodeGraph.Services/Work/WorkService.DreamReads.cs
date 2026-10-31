@@ -74,11 +74,38 @@ public sealed partial class WorkService
         }
         if (tool == "dream_work_trail")
         {
-            RefuseDreamFields(input, "offset", "limit", "since");
-            var offset = input["offset"]?.GetValue<int>() ?? 0;
-            if (offset < 0) throw WorkException.Invalid("offset must be nonnegative.");
-            var rows = await DreamKnowledge.ListDreamWorkTrailAsync(projectId, input["since"]?.GetValue<DateTime?>(), ct);
-            return rows.Skip(offset).Select(row => new DreamReadItem(token => DreamKnowledge.ReadDreamWorkTrailItemAsync(projectId, row, token), cache: row.Kind != "revision")).ToList();
+            RefuseDreamFields(input, "offset", "limit", "since", "kind", "id", "item", "detail", "expected_hash");
+            var request = WorkJson.Parse<DreamModelContract.PageInput>(arguments, tool);
+            if (request.Offset < 0) throw WorkException.Invalid("offset must be nonnegative.");
+            if (request.Kind is not null && request.Kind is not ("revision" or "attempt" or "handoff" or "thread" or "message" or "review"))
+                throw WorkException.Invalid("kind must be revision, attempt, handoff, thread, message or review.");
+            if (request.Detail is not null && request.Detail is not ("summary" or "full"))
+                throw WorkException.Invalid("detail must be summary or full.");
+            if (request.Item == Guid.Empty) throw WorkException.Invalid("item must be a nonempty work item UUID.");
+            if (request.ExpectedHash is { } expectedHash && (request.Id is null || expectedHash.Length != 64 || !expectedHash.All(Uri.IsHexDigit)))
+                throw WorkException.Invalid("expected_hash requires id and a 64-digit hexadecimal content hash from a summary row.");
+            if (request.Id is { } id)
+            {
+                var parts = id.Split(':');
+                var revisionId = parts.Length == 2 && Guid.TryParse(parts[0], out var entry) && entry != Guid.Empty
+                    && int.TryParse(parts[1], out var revision) && revision > 0;
+                var ordinaryId = Guid.TryParse(id, out var identifier) && identifier != Guid.Empty;
+                if (!(request.Kind == "revision" ? revisionId : request.Kind is not null ? ordinaryId : revisionId || ordinaryId))
+                    throw WorkException.Invalid("id must be a stored UUID, or entry UUID:positive revision for a revision row.");
+            }
+            var rows = await DreamKnowledge.QueryDreamWorkTrailAsync(projectId, request.Since, request.Kind, request.Id, request.Item, ct);
+            if (request.Id is not null && rows.Count == 0) throw WorkException.NotFound("No work-trail row matches this project's selection.");
+            if (request.ExpectedHash is { } hash && rows.Any(row => !row.ContentHash.Equals(hash, StringComparison.OrdinalIgnoreCase)))
+                throw new WorkException(WorkErrorCodes.Conflict, "This work-trail row changed after discovery. Start a new summary read before judging its current content.");
+            var fullTrail = request.Detail == "full" || request.Detail is null && request.Id is not null;
+            IEnumerable<DreamTrailReference> ordered = fullTrail ? rows : rows.OrderByDescending(row => row.CreatedAt).ThenBy(row => row.Id, StringComparer.Ordinal).ThenBy(row => row.Kind, StringComparer.Ordinal);
+            return ordered.Skip(request.Offset).Select(row => fullTrail
+                ? new DreamReadItem(token => DreamKnowledge.ReadDreamWorkTrailItemAsync(projectId, row, token), cache: row.Kind != "revision")
+                : DreamReadItem.Of(JsonSerializer.SerializeToElement(new
+                {
+                    row.Kind, row.Id, row.ItemId, row.CreatedAt, row.ContentHash, row.Preview, preview_truncated = row.PreviewTruncated,
+                    detail = "summary", read = new { tool = "dream_work_trail", arguments = new { kind = row.Kind, id = row.Id, detail = "full", expected_hash = row.ContentHash } }
+                }, WorkJson.Options))).ToList();
         }
         var args = input.DeepClone().AsObject();
         // Input limit controls the bounded output page, not how much history remains reachable.

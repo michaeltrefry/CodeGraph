@@ -54,7 +54,7 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
 
         var actions = (IKnowledgeDreamActions)db.Service;
         using var scope = DreamExecutionScope.Begin(Guid.NewGuid(), project, "scripted");
-        var firstHistory = await ReadBoundedAsync(actions, "dream_work_trail", new { limit = 100 });
+        var firstHistory = await ReadBoundedAsync(actions, "dream_work_trail", new { detail = "full", limit = 100 });
         var firstEntries = await ReadBoundedAsync(actions, "dream_read", new { detail = "full", limit = 100 });
         firstHistory.GetProperty("total_count").GetInt32().ShouldBe(expected.Count);
         firstEntries.GetProperty("total_count").GetInt32().ShouldBe(entries.Count);
