@@ -22,6 +22,26 @@ function fixture(sources: Record<string, string>, serviceName?: string) {
 }
 const routes = (result: ReturnType<typeof fixture>, owner: string) => result.edges.filter(e => e.sourceQN === owner).map(e => e.targetQN).sort();
 
+test('HTTP type fallback requires Angular HttpClient declaration provenance, not package-shaped local paths or sibling types', () => {
+  const result = fixture({
+    'src/@angular/common/http/local.ts': `export class LocalStore { get(key:string){return key;} } export class HttpClient { get(key:string){return key;} }`,
+    'src/@angular/common/http/lookalike.d.ts': `export declare class HttpClient { get(key:string):string; }`,
+    'node_modules/@angular/common/http/index.d.ts': `export declare class HttpClient { get(url:string):unknown; } export declare class HttpHeaders { get(name:string):string|null; } export declare class HttpParams { get(name:string):string|null; }`,
+    'facade.ts': `import {HttpClient,HttpHeaders,HttpParams} from './node_modules/@angular/common/http/index';
+      export function client(){return new HttpClient();} export function headers(){return new HttpHeaders();} export function params(){return new HttpParams();}`,
+    'calls.ts': `import {LocalStore,HttpClient as LocalClient} from './src/@angular/common/http/local';
+      import {HttpClient as LocalDeclaration} from './src/@angular/common/http/lookalike'; import {client,headers,params} from './facade';
+      export function store(value:LocalStore){return value.get('/api/local-store');}
+      export function local(value:LocalClient){return value.get('/api/local-client');}
+      export function declaration(value:LocalDeclaration){return value.get('/api/local-declaration');}
+      export function header(){const value=headers();return value.get('/api/header-name');}
+      export function parameter(){const value=params();return value.get('/api/parameter-name');}
+      export function genuine(){const value=client();return value.get('/api/genuine');}`,
+  });
+  assert.deepEqual(routes(result, 'Demo:calls.ts#genuine'), ['route:*:GET:/api/genuine']);
+  for (const name of ['store', 'local', 'declaration', 'header', 'parameter']) assert.deepEqual(routes(result, `Demo:calls.ts#${name}`), [], name);
+});
+
 test('SceneWorks apiFetch source-shaped options and exported helper chains retain POST and /api/v1', () => {
   const result = fixture({
     'api.js': `const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL;

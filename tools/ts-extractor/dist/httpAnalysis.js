@@ -394,11 +394,15 @@ function createHttpClientClassifier(model) {
         // The fallback is evaluated at this receiver, not cached across flow-sensitive locations.
         model.work.charge(receiver.getFullWidth() + 1);
         const typeSymbol = receiver.getType().getSymbol();
+        if (typeSymbol?.getName() !== 'HttpClient')
+            return false;
         model.work.charge((typeSymbol?.compilerSymbol.declarations?.length ?? 0) + 1);
         for (const declaration of typeSymbol?.getDeclarations() ?? []) {
-            const file = declaration.getSourceFile().getFilePath();
+            const source = declaration.getSourceFile();
+            const file = source.getFilePath();
             model.work.charge(file.length + 1);
-            if (file.replace(/\\/g, '/').includes('/@angular/common/http/'))
+            // A package-shaped application folder or Angular's HttpHeaders/HttpParams is not a client.
+            if (source.isDeclarationFile() && file.replace(/\\/g, '/').includes('/node_modules/@angular/common/'))
                 return true;
         }
         return false;
