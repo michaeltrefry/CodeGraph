@@ -27,7 +27,7 @@ public sealed partial class MySqlWorkStore
         // Current locking reads protect both metadata-only proofs and file locations from index
         // updates through commit. Recreated or removed nodes require a fresh evidence decision.
         var nodes = (await connection.QueryAsync<DreamGraphNodeRow>(new CommandDefinition(
-            "SELECT n.id,n.repository,n.label,n.name,n.qualified_name,n.file_path,n.start_line,n.end_line,n.properties FROM nodes n WHERE n.id IN @ids AND EXISTS(SELECT 1 FROM work_project_repositories r WHERE r.project_id=@projectId AND r.repository_name=n.repository) ORDER BY n.id LOCK IN SHARE MODE",
+            $"SELECT n.id,n.repository,n.label,n.name,n.qualified_name,n.file_path,n.start_line,n.end_line,n.properties FROM nodes n WHERE n.id IN @ids AND EXISTS(SELECT 1 FROM work_project_repositories r WHERE r.project_id=@projectId AND {CoercibleText("r.repository_name")}=n.repository) ORDER BY n.id LOCK IN SHARE MODE",
             new { ids, projectId }, transaction, cancellationToken: ct))).ToList();
         if (nodes.Count != ids.Length)
             throw new WorkException(WorkErrorCodes.Forbidden, "A referenced graph node no longer exists in this project. Read the current graph and propose a correction; nothing was verified.");

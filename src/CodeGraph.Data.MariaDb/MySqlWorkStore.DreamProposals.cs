@@ -153,7 +153,7 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
             DreamEvidenceKind.LessonEvent => "SELECT event_hash fingerprint,created_at observed_at FROM lesson_events WHERE correction_id=@id AND project_id=@projectId",
             DreamEvidenceKind.Item => "SELECT CAST(version AS CHAR) fingerprint,updated_at observed_at FROM work_items WHERE id=@id AND project_id=@projectId",
             DreamEvidenceKind.ReviewEvidence => "SELECT SHA2(CONCAT_WS('|',e.body,e.review_state,e.evidence_key),256) fingerprint,e.updated_at observed_at FROM work_github_evidence e JOIN work_items i ON i.id=e.item_id WHERE e.id=@id AND i.project_id=@projectId",
-            DreamEvidenceKind.GraphNode => "SELECT SHA2(CONCAT_WS('|',n.qualified_name,n.file_path,n.properties,f.content_hash),256) fingerprint,COALESCE(r.indexed_at,r.created_at) observed_at FROM nodes n JOIN work_project_repositories p ON p.repository_name=n.repository JOIN repositories r ON r.name=n.repository LEFT JOIN file_hashes f ON f.repository=n.repository AND f.rel_path=n.file_path WHERE n.id=@id AND p.project_id=@projectId",
+            DreamEvidenceKind.GraphNode => $"SELECT SHA2(CONCAT_WS('|',n.qualified_name,n.file_path,n.properties,f.content_hash),256) fingerprint,COALESCE(r.indexed_at,r.created_at) observed_at FROM nodes n JOIN work_project_repositories p ON {CoercibleText("p.repository_name")}=n.repository JOIN repositories r ON r.name=n.repository LEFT JOIN file_hashes f ON f.repository=n.repository AND f.rel_path=n.file_path WHERE n.id=@id AND p.project_id=@projectId",
             _ => throw WorkException.Invalid("Unknown proposal evidence kind.")
         };
         var value = await c.QuerySingleOrDefaultAsync<EvidenceSnapshot>(new CommandDefinition(sql, new { id = input.Id, projectId }, tx, cancellationToken: ct));
@@ -220,7 +220,7 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
                 }
             }
             long? graphHead = action == DreamReviewAction.Reject
-                ? await c.ExecuteScalarAsync<long>(new CommandDefinition("SELECT COALESCE(MAX(n.id),0) FROM nodes n JOIN work_project_repositories p ON p.repository_name=n.repository WHERE p.project_id=@projectId", new { projectId }, tx, cancellationToken: ct)) : null;
+                ? await c.ExecuteScalarAsync<long>(new CommandDefinition($"SELECT COALESCE(MAX(n.id),0) FROM nodes n JOIN work_project_repositories p ON {CoercibleText("p.repository_name")}=n.repository WHERE p.project_id=@projectId", new { projectId }, tx, cancellationToken: ct)) : null;
             await c.ExecuteAsync(new CommandDefinition("UPDATE dream_proposals SET status=@status,version=version+1,review_reason=@reason,reviewed_by_json=@actor,reviewed_at=@now,rejection_graph_head=@graphHead WHERE id=@id",
                 new { id, status = action == DreamReviewAction.Accept ? "accepted" : "rejected", reason, actor = ProposalJson(actor), now, graphHead }, tx, cancellationToken: ct));
             var result = await c.QuerySingleAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE id=@id", new { id }, tx, cancellationToken: ct));

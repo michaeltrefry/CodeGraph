@@ -29,7 +29,9 @@ public sealed class WorkDatabase : IAsyncLifetime
     public const int IdleSeconds = 900;
     public WorkService Service { get; private set; } = null!;
 
-    public async Task InitializeAsync()
+    public Task InitializeAsync() => InitializeAsync(useLegacyGraphCollation: false);
+
+    public async Task InitializeAsync(bool useLegacyGraphCollation)
     {
         var builder = new MySqlConnectionStringBuilder(MariaDbTestEnvironment.RequireConnectionString())
         {
@@ -38,6 +40,14 @@ public sealed class WorkDatabase : IAsyncLifetime
             MaximumPoolSize = 200
         };
         ConnectionString = builder.ConnectionString;
+        if (useLegacyGraphCollation)
+        {
+            // Only the owned adversarial fixture opts in. Normal tests keep the host default,
+            // including UCA defaults on newer MariaDB releases. Legacy graph tables inherit
+            // the database collation; newer work tables choose their own utf8mb4 default.
+            await using var admin = new MySqlConnection(new MySqlConnectionStringBuilder(builder.ConnectionString) { Database = "" }.ConnectionString);
+            await admin.ExecuteAsync($"CREATE DATABASE `{builder.Database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+        }
         var options = Options.Create(new MariaDbStorageOptions
         {
             ConnectionString = ConnectionString,
