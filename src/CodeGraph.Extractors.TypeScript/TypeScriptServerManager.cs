@@ -108,11 +108,11 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try
         {
             TouchLastUsed();
-            // A reused v6 process accepts package-shaped local types as Angular HTTP clients.
-            // Require v7 before sending source paths so HTTP provenance uses real declarations.
+            // A reused v7 process rescans destructuring patterns and literal members per alias.
+            // Require v8 before sending source paths so mutation/binding lookups are bounded too.
             var health = await _http.GetFromJsonAsync<JsonElement>("/health", ct);
             if (!health.TryGetProperty("sourceBoundsVersion", out var bounds)
-                || !bounds.TryGetInt32(out var version) || version < 7)
+                || !bounds.TryGetInt32(out var version) || version < 8)
             {
                 _logger.LogWarning("TypeScript sidecar does not support bounded source and semantic analysis; extraction of {Repository} was refused", request.RepositoryName);
                 return null;

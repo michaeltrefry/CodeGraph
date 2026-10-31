@@ -24,7 +24,7 @@ public class TypeScriptProjectAnalyzer : ITypeScriptAnalyzer
     /// 6 (sc-27972): authoritative scoped source coverage, relative ApiContract endpoints
     /// and alias-aware static request values.
     /// </remarks>
-    public string ExtractionVersion => "13"; // Nominal Angular HTTP dependency declaration provenance.
+    public string ExtractionVersion => "14"; // Indexed immutable destructuring and literal member structure.
 
     private readonly TypeScriptServerManager _server;
     private readonly ILogger<TypeScriptProjectAnalyzer> _logger;
