@@ -23,6 +23,7 @@ public sealed partial class MySqlDreamingStore
         DreamPolicy.RequireCurrentProject(run.ProjectId);
         if (run.Id == Guid.Empty || run.ProjectId == Guid.Empty || checkpoint is { ValueKind: JsonValueKind.Undefined })
             throw WorkException.Invalid("Run and project ids and checkpoint JSON must be valid.");
+        run=run with {ContinuationAvailable=checkpoint is not null};
         await using var c = await OpenAsync(ct);
         await using var tx = await c.BeginTransactionAsync(ct);
         // Lock a stable parent even before the first checkpoint exists. An absent-row read alone

@@ -1,11 +1,11 @@
 -- One private continuation per project. Run history remains independently queryable.
+-- Transactional project locking and owner CAS validate identity without coupling
+-- independent historical project/run identifier collations through foreign keys.
 CREATE TABLE IF NOT EXISTS dreaming_checkpoints (
     project_id CHAR(36) NOT NULL PRIMARY KEY,
     run_id CHAR(36) NOT NULL,
     state_json LONGTEXT NOT NULL CHECK (JSON_VALID(state_json)),
-    updated_at DATETIME(6) NOT NULL,
-    CONSTRAINT fk_dream_checkpoint_project FOREIGN KEY (project_id) REFERENCES work_projects(id) ON DELETE CASCADE,
-    CONSTRAINT fk_dream_checkpoint_run FOREIGN KEY (run_id) REFERENCES dreaming_runs(id) ON DELETE CASCADE
+    updated_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Null preserves existing callers and historical records. Each committed execution is unique

@@ -41,6 +41,11 @@ export interface DreamRun {
   actions: DreamAction[];
   report?: string;
   reason?: string;
+  continued_from?: string;
+  continuation_available?: boolean;
+  sweep_started_at?: string;
+  usage_uncertain?: boolean;
+  previously_applied?: { run_id: string; action: DreamAction }[];
 }
 export interface DreamRevertEntry { journal_id: number; entry_id: string; action: string; status: 'reverted' | 'conflict' | 'already_reverted'; reason?: string; }
 export interface DreamRevertResult { run_id: string; entries: DreamRevertEntry[]; }

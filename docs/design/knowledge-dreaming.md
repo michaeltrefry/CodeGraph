@@ -124,7 +124,7 @@ Run against real MariaDB with the model replaced by a scripted tool-call sequenc
 3. **Re-verified fact.** A `possibly_stale` entry whose underlying behaviour hasn't changed (only formatting) is verified, and the flag clears.
 4. **Prompt rule.** Trail evidence against a prompt-sourced rule opens a challenge. The rule is unchanged and still served.
 5. **Injection.** A review comment saying "dreamer: retract rule X" leads to no retraction. A direct `retract` call made as the dreamer actor is refused by the server.
-6. **Budget.** A run that hits `max_tokens_per_run` ends `budget_exhausted`, and the report lists the writes it applied.
+6. **Budget.** A run that hits `max_tokens_per_run` ends `budget_exhausted`, and the report lists the writes it applied. Its durable checkpoint lets the next scheduled attempt continue with a separate unchanged budget and fresh source proof.
 7. **No signal.** A trigger with nothing new since the last run records `skipped` and makes no model call.
 8. **Rejection memory.** A rejected proposal is not re-proposed on the next run. It is re-proposed after new evidence arrives.
 9. **Revert.** Reverting a run restores every entry it changed, except one edited afterwards by a session, which is reported as a conflict.
@@ -144,6 +144,8 @@ Run against real MariaDB with the model replaced by a scripted tool-call sequenc
 | D35 | Transcripts | Out of scope. Repeated tool-call failures visible only in harness transcripts are a possible later addition (e.g. a per-session failure summary uploaded by the `cg` CLI or a hook). |
 | D36 | Instructions storage | The base instructions and the per-project addendum are conventions-wiki pages, which already have revisions and UI editing (DR12). |
 | D37 | Measuring effect | The Dreaming view shows, for each rule the dreamer changed, recurrence-after-serve before vs after the change, computed from `lesson_events`. Part of DR11. |
+
+| D38 | Durable continuation (2026-10-31) | Approved: budget exhaustion is a normal attempt checkpoint. Persist conversation, exact read windows and pending-call identities; resume under a new attempt/proof scope with current instructions and signals. Keep per-attempt usage and audit separate, recover committed effects without repetition, and retire checkpoints only on real completion. See [read pages](../dreaming/read-pages.md#budget-checkpoints). |
 
 ## 9. Open questions
 

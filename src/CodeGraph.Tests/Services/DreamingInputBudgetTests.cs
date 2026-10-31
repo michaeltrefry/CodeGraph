@@ -174,6 +174,12 @@ public sealed class DreamingInputBudgetTests
     private sealed class RunStore : IDreamingStore
     {
         public DreamRun? Saved { get; private set; }
+        public DreamCheckpoint? Checkpoint { get; private set; }
+        public Task<DreamCheckpoint?> GetCheckpointAsync(Guid projectId,CancellationToken ct=default)=>Task.FromResult(Checkpoint?.ProjectId==projectId?Checkpoint:null);
+        public Task<DreamExecutionOutcome?> GetExecutionResultAsync(Guid projectId,Guid executionId,CancellationToken ct=default)=>Task.FromResult<DreamExecutionOutcome?>(null);
+        public Task SaveProgressAsync(DreamRun run,JsonElement? checkpoint,Guid? expectedCheckpointRunId,CancellationToken ct=default)
+        {if(Checkpoint?.RunId!=expectedCheckpointRunId)throw new InvalidOperationException("checkpoint conflict");Saved=run;Checkpoint=checkpoint is {} state?new(run.ProjectId,run.Id,state.Clone()):null;return Task.CompletedTask;}
+
         public DreamSettings Settings { get; set; } = new(MinimumIntervalMinutes: 0);
         public Task<IAsyncDisposable?> TryAcquireAsync(Guid projectId, CancellationToken ct = default) => Task.FromResult<IAsyncDisposable?>(new Lease());
         public Task SaveRunAsync(DreamRun run, CancellationToken ct = default) { Saved = run; return Task.CompletedTask; }

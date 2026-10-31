@@ -164,8 +164,15 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
 
     private static async Task RequireProposalRunAsync(MySqlConnection c, MySqlTransaction tx, Guid projectId, Guid runId, CancellationToken ct)
     {
-        if (!await c.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT EXISTS(SELECT 1 FROM dreaming_runs WHERE id=@runId AND project_id=@projectId AND status='running')", new { runId, projectId }, tx, cancellationToken: ct)))
-            throw WorkException.Invalid("The proposal must belong to an active dreaming run in this project.");
+        _=await c.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+            "SELECT id FROM work_projects WHERE id=@projectId FOR UPDATE",new {projectId},tx,cancellationToken:ct));
+        var json=await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT run_json FROM dreaming_runs WHERE id=@runId AND project_id=@projectId AND status='running' FOR UPDATE",new {runId,projectId},tx,cancellationToken:ct));
+        if(json is null)throw WorkException.Invalid("The proposal must belong to an active dreaming run in this project.");
+        using var metadata=JsonDocument.Parse(json);
+        var managed=metadata.RootElement.ValueKind==JsonValueKind.Object
+            &&metadata.RootElement.TryGetProperty("continuation_available",out var flag)&&flag.ValueKind==JsonValueKind.True;
+        await RequireDreamCheckpointOwnerAsync(c,tx,projectId,runId,managed,ct);
     }
 
     public async Task<DreamReviewResult> ReviewDreamProposalAsync(Guid projectId, Guid id, long expectedVersion, DreamReviewAction action, string? reason, WorkActor actor, CancellationToken ct = default)
