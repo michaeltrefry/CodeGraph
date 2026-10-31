@@ -1,11 +1,23 @@
 using System.Text.Json;
 using CodeGraph.Services.Work;
+using CodeGraph.Models.Work;
 using Shouldly;
 
 namespace CodeGraph.Tests.Work;
 
 public sealed class DreamModelContractTests
 {
+    [Theory]
+    [InlineData("{\"node_id\":\"not-an-integer\"}")]
+    [InlineData("{\"node_id\":1,\"actor\":\"forged\"}")]
+    [InlineData("{\"repository\":\"codegraph\",\"path\":\"Source.cs\",\"project_id\":\"foreign\"}")]
+    public void Provider_schema_compatibility_does_not_relax_strict_server_argument_parsing(string json)
+    {
+        var error = Should.Throw<WorkException>(() => WorkJson.Parse<DreamModelContract.SourceInput>(JsonSerializer.Deserialize<JsonElement>(json), "dream_read_source"));
+        error.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        error.Message.ShouldContain("dream_read_source");
+    }
+
     [Fact]
     public void Every_private_schema_is_self_contained_and_excludes_server_identity()
     {

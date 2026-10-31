@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodeGraph.Models;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Configuration;
@@ -28,11 +29,24 @@ public partial class GraphAssistant : IDreamBatchModel
     private async Task<DreamModelResponse> CompleteDreamAnthropicAsync(DreamModelRequest request,CancellationToken ct)
     {
         var provider=await ResolveProviderConfigAsync("anthropic",ct);
-        var baseUrl=FirstNonEmpty(provider.EndpointUrl,TryGetAnthropicBaseUrl(options.Anthropic.MessagesApiUrl),"https://api.anthropic.com").TrimEnd('/');
+        var url=AnthropicEndpointUrls.Messages(provider.EndpointUrl,options.Anthropic.MessagesApiUrl);
         var messages=new List<object>();
-        foreach(var m in request.Messages)
+        for(var index=0;index<request.Messages.Count;)
         {
-            if(m.Role=="tool") messages.Add(new {role="user",content=new object[]{new {type="tool_result",tool_use_id=m.ToolCallId,content=m.Content??""}}});
+            var m=request.Messages[index++];
+            if(m.Role=="tool")
+            {
+                // Anthropic requires every result of a parallel tool turn in one following
+                // user message. Stop at the next assistant/user boundary, retaining order.
+                var results=new List<object>();
+                while(true)
+                {
+                    results.Add(new {type="tool_result",tool_use_id=m.ToolCallId,content=m.Content??""});
+                    if(index>=request.Messages.Count||request.Messages[index].Role!="tool") break;
+                    m=request.Messages[index++];
+                }
+                messages.Add(new {role="user",content=results});
+            }
             else if(m.ToolCalls is {Count:>0})
             {
                 var content=new List<object>();
@@ -42,11 +56,11 @@ public partial class GraphAssistant : IDreamBatchModel
             }
             else messages.Add(new {role=m.Role,content=m.Content??""});
         }
-        using var httpRequest=new HttpRequestMessage(HttpMethod.Post,baseUrl+"/v1/messages");
+        using var httpRequest=new HttpRequestMessage(HttpMethod.Post,url);
         if(!string.IsNullOrWhiteSpace(provider.ApiKey)) httpRequest.Headers.Add("x-api-key",provider.ApiKey);
         httpRequest.Headers.Add("anthropic-version","2023-06-01");
         httpRequest.Content=JsonContent.Create(new {model=request.Model,max_tokens=request.MaxTokens,system=request.System,messages,
-            tools=request.Tools.Select(t=>new {name=t.Name,description=t.Description,input_schema=t.Parameters})});
+            tools=request.Tools.Select(BuildDreamAnthropicTool)});
         using var response=await httpClientFactory.CreateClient().SendAsync(httpRequest,ct);
         response.EnsureSuccessStatusCode();
         using var json=JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -61,6 +75,22 @@ public partial class GraphAssistant : IDreamBatchModel
         if(usage.TryGetProperty("cache_read_input_tokens",out var read)) input+=read.GetInt64();
         if(usage.TryGetProperty("cache_creation_input_tokens",out var creation)) input+=creation.GetInt64();
         return new(string.Join("\n",text),calls,input,usage.GetProperty("output_tokens").GetInt64());
+    }
+
+    private static object BuildDreamAnthropicTool(DreamToolDefinition tool)
+    {
+        var schema=JsonNode.Parse(tool.Parameters.GetRawText())!.AsObject();
+        var description=tool.Description;
+        // Anthropic rejects composition keywords at the input-schema root. Keep their full
+        // branch rules as mandatory guidance; canonical schemas and server validation stay
+        // authoritative. All nested constraints, definitions, properties and refs remain.
+        foreach(var (keyword,meaning) in new[] {("anyOf","at least one branch must match"),
+            ("oneOf","exactly one branch must match"),("allOf","all branches must match")})
+        {
+            if(!schema.Remove(keyword)) continue;
+            description+=$"\nMandatory argument rules, validated by the server: {keyword} ({meaning}): {tool.Parameters.GetProperty(keyword).GetRawText()}";
+        }
+        return new {name=tool.Name,description,input_schema=JsonSerializer.SerializeToElement(schema)};
     }
     internal async Task<object> ReadDreamSourceAsync(string repository,string path,long? nodeId,CancellationToken ct)
     {

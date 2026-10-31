@@ -123,7 +123,7 @@ public class AnthropicAnalysisProvider(
         var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Get, $"{BuildBatchUrl(providerConfig)}/{batchId}", providerConfig), ct);
+            () => CreateRequest(HttpMethod.Get, AnthropicEndpointUrls.BatchResource(providerConfig.EndpointUrl, options.Anthropic.BatchApiBaseUrl, batchId), providerConfig), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -152,7 +152,7 @@ public class AnthropicAnalysisProvider(
         var providerConfig = await ResolveProviderConfigAsync(ct);
         var http = httpClientFactory.CreateClient();
         using var response = await circuitBreaker.ExecuteAsync(http,
-            () => CreateRequest(HttpMethod.Get, $"{BuildBatchUrl(providerConfig)}/{batchId}/results", providerConfig), ct);
+            () => CreateRequest(HttpMethod.Get, AnthropicEndpointUrls.BatchResource(providerConfig.EndpointUrl, options.Anthropic.BatchApiBaseUrl, batchId, results: true), providerConfig), ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -230,35 +230,11 @@ public class AnthropicAnalysisProvider(
         return request;
     }
 
-    private string BuildMessagesUrl(LlmProviderRuntimeConfig providerConfig)
-    {
-        if (string.IsNullOrWhiteSpace(providerConfig.EndpointUrl))
-            return options.Anthropic.MessagesApiUrl;
+    private string BuildMessagesUrl(LlmProviderRuntimeConfig providerConfig) =>
+        AnthropicEndpointUrls.Messages(providerConfig.EndpointUrl, options.Anthropic.MessagesApiUrl);
 
-        var endpoint = providerConfig.EndpointUrl.TrimEnd('/');
-        if (endpoint.EndsWith("/messages/batches", StringComparison.OrdinalIgnoreCase))
-            return endpoint[..^"/batches".Length];
-
-        if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
-            return endpoint;
-
-        return $"{endpoint}/messages";
-    }
-
-    private string BuildBatchUrl(LlmProviderRuntimeConfig providerConfig)
-    {
-        if (string.IsNullOrWhiteSpace(providerConfig.EndpointUrl))
-            return options.Anthropic.BatchApiBaseUrl.TrimEnd('/');
-
-        var endpoint = providerConfig.EndpointUrl.TrimEnd('/');
-        if (endpoint.EndsWith("/messages/batches", StringComparison.OrdinalIgnoreCase))
-            return endpoint;
-
-        if (endpoint.EndsWith("/messages", StringComparison.OrdinalIgnoreCase))
-            return $"{endpoint}/batches";
-
-        return $"{endpoint}/messages/batches";
-    }
+    private string BuildBatchUrl(LlmProviderRuntimeConfig providerConfig) =>
+        AnthropicEndpointUrls.Batches(providerConfig.EndpointUrl, options.Anthropic.BatchApiBaseUrl);
 
     private static string? ExtractText(IReadOnlyList<AnthropicContentBlock>? content)
     {
