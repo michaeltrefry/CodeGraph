@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Logging;
 using CodeGraph.Models;
 using CodeGraph.Models.Work;
 using CodeGraph.Services.Configuration;
@@ -26,10 +27,22 @@ public partial class GraphAssistant : IDreamBatchModel
         return new(message.Content,message.ToolCalls?.Select(t=>new DreamToolCall(t.Id,t.Function?.Name??"",JsonSerializer.Deserialize<JsonElement>(t.Function?.Arguments??"{}"))).ToList()??[],
             completion.Usage?.PromptTokens??throw new InvalidOperationException("Provider omitted token usage; cannot enforce dreaming budget."),completion.Usage.CompletionTokens??0);
     }
-    private async Task<DreamModelResponse> CompleteDreamAnthropicAsync(DreamModelRequest request,CancellationToken ct)
+    public async Task<IDreamPreparedTurn?> PrepareAsync(DreamModelRequest request,CancellationToken ct=default)
     {
+        if(request.Provider!="anthropic") return null;
+        // Snapshot the adapted input before awaiting configuration: caller-owned lists may move.
+        var input=BuildDreamAnthropicInput(request);
         var provider=await ResolveProviderConfigAsync("anthropic",ct);
         var url=AnthropicEndpointUrls.Messages(provider.EndpointUrl,options.Anthropic.MessagesApiUrl);
+        var version=FirstNonEmpty(provider.ApiVersion,options.Anthropic.Version,"2023-06-01");
+        return new PreparedAnthropicTurn(input,url,provider.ApiKey,version,httpClientFactory,logger);
+    }
+
+    private async Task<DreamModelResponse> CompleteDreamAnthropicAsync(DreamModelRequest request,CancellationToken ct) =>
+        await (await PrepareAsync(request,ct))!.CompleteAsync(request.MaxTokens,ct);
+
+    private static JsonElement BuildDreamAnthropicInput(DreamModelRequest request)
+    {
         var messages=new List<object>();
         for(var index=0;index<request.Messages.Count;)
         {
@@ -56,25 +69,79 @@ public partial class GraphAssistant : IDreamBatchModel
             }
             else messages.Add(new {role=m.Role,content=m.Content??""});
         }
-        using var httpRequest=new HttpRequestMessage(HttpMethod.Post,url);
-        if(!string.IsNullOrWhiteSpace(provider.ApiKey)) httpRequest.Headers.Add("x-api-key",provider.ApiKey);
-        httpRequest.Headers.Add("anthropic-version","2023-06-01");
-        httpRequest.Content=JsonContent.Create(new {model=request.Model,max_tokens=request.MaxTokens,system=request.System,messages,
-            tools=request.Tools.Select(BuildDreamAnthropicTool)});
-        using var response=await httpClientFactory.CreateClient().SendAsync(httpRequest,ct);
-        response.EnsureSuccessStatusCode();
-        using var json=JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-        var root=json.RootElement;var text=new List<string>();var calls=new List<DreamToolCall>();
+        return JsonSerializer.SerializeToElement(new {model=request.Model,system=request.System,messages,tools=request.Tools.Select(BuildDreamAnthropicTool)});
+    }
+
+    private sealed class PreparedAnthropicTurn(JsonElement input,string url,string apiKey,string version,
+        IHttpClientFactory factory,Microsoft.Extensions.Logging.ILogger<GraphAssistant> log) : IDreamPreparedTurn
+    {
+        public async Task<long?> CountInputTokensAsync(CancellationToken ct=default)
+        {
+            using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            try
+            {
+                using var request=CreateRequest(AnthropicEndpointUrls.CountTokens(url),input);
+                using var response=await factory.CreateClient().SendAsync(request,timeout.Token);
+                if(!response.IsSuccessStatusCode)
+                {
+                    log.LogWarning("Dreaming input count unavailable: HTTP {Status}",(int)response.StatusCode);
+                    return null;
+                }
+                using var json=JsonDocument.Parse(await response.Content.ReadAsStringAsync(timeout.Token),new JsonDocumentOptions {AllowDuplicateProperties=false});
+                if(json.RootElement.ValueKind==JsonValueKind.Object&&json.RootElement.TryGetProperty("input_tokens",out var count)
+                    &&count.ValueKind==JsonValueKind.Number&&count.TryGetInt64(out var value)&&value>0) return value;
+                log.LogWarning("Dreaming input count unavailable: invalid count response");
+                return null;
+            }
+            catch(OperationCanceledException) when(ct.IsCancellationRequested) {throw;}
+            catch(Exception ex) when(ex is HttpRequestException or JsonException or OperationCanceledException or TimeoutException)
+            {
+                log.LogWarning("Dreaming input count unavailable: {Failure}",ex.GetType().Name);
+                return null;
+            }
+        }
+        public async Task<DreamModelResponse> CompleteAsync(int maxTokens,CancellationToken ct=default)
+        {
+            var body=JsonNode.Parse(input.GetRawText())!.AsObject();
+            body["max_tokens"]=maxTokens;
+            using var request=CreateRequest(url,body);
+            using var response=await factory.CreateClient().SendAsync(request,ct);
+            response.EnsureSuccessStatusCode();
+            using var json=JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return ParseDreamAnthropicResponse(json.RootElement);
+        }
+        private HttpRequestMessage CreateRequest(string target,object body)
+        {
+            var request=new HttpRequestMessage(HttpMethod.Post,target);
+            if(!string.IsNullOrWhiteSpace(apiKey))request.Headers.Add("x-api-key",apiKey);
+            request.Headers.Add("anthropic-version",version);
+            request.Content=JsonContent.Create(body);
+            return request;
+        }
+    }
+
+    private static DreamModelResponse ParseDreamAnthropicResponse(JsonElement root)
+    {
+
+        var text=new List<string>();var calls=new List<DreamToolCall>();
         foreach(var block in root.GetProperty("content").EnumerateArray())
         {
             if(block.GetProperty("type").GetString()=="text") text.Add(block.GetProperty("text").GetString()??"");
             else if(block.GetProperty("type").GetString()=="tool_use") calls.Add(new(block.GetProperty("id").GetString()!,block.GetProperty("name").GetString()!,block.GetProperty("input").Clone()));
         }
         var usage=root.GetProperty("usage");
-        var input=usage.GetProperty("input_tokens").GetInt64();
-        if(usage.TryGetProperty("cache_read_input_tokens",out var read)) input+=read.GetInt64();
-        if(usage.TryGetProperty("cache_creation_input_tokens",out var creation)) input+=creation.GetInt64();
-        return new(string.Join("\n",text),calls,input,usage.GetProperty("output_tokens").GetInt64());
+        var input=Usage("input_tokens");
+        input=DreamingService.AddTokens(input,Usage("cache_read_input_tokens",optional:true));
+        input=DreamingService.AddTokens(input,Usage("cache_creation_input_tokens",optional:true));
+        return new(string.Join("\n",text),calls,input,Usage("output_tokens"));
+        long Usage(string field,bool optional=false)
+        {
+            if(!usage.TryGetProperty(field,out var count)&&optional)return 0;
+            if(count.ValueKind!=JsonValueKind.Number||!count.TryGetInt64(out var value)||value<0)
+                throw new InvalidOperationException("Provider returned invalid token usage.");
+            return value;
+        }
     }
 
     private static object BuildDreamAnthropicTool(DreamToolDefinition tool)
