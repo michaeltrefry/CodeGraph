@@ -66,12 +66,15 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                         lastInputTokens,InputFramingBudget(messages,tools));
                 var request=new DreamModelRequest(settings.DefaultProvider,settings.DefaultModel,system,messages,tools,(int)Math.Min(remaining,8192));
                 var admission=await PrepareInputAsync(request,ct);
-                if(remaining<=admission.Reserve)
+                // Forecast replay across the remaining configured turns before it consumes the balance.
+                // This only chooses when to archive delivered bodies; actual admission remains below.
+                var remainingTurns=settings.MaxTurns-turn;
+                if(admission.Reserve>=remaining/remainingTurns)
                 {
                     var archived=DreamReplayContext.ArchiveDeliveredReads(messages,run.Actions,deliveredPrefix);
                     if(archived>0)
                     {
-                        logger?.LogInformation("Dreaming run {RunId} turn {Turn}: archived {Bytes} previously delivered replay bytes; initial reserve {Reserve}, unchanged remaining {Remaining}; recounting the changed request",run.Id,turn+1,archived,admission.Reserve,remaining);
+                        logger?.LogInformation("Dreaming run {RunId} turn {Turn}: archived {Bytes} previously delivered replay bytes; initial reserve {Reserve}, unchanged remaining {Remaining}, replay forecast {RemainingTurns} turns; recounting the changed request",run.Id,turn+1,archived,admission.Reserve,remaining,remainingTurns);
                         admission=await PrepareInputAsync(request,ct);
                     }
                 }
