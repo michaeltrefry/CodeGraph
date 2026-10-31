@@ -14,7 +14,7 @@ public static class WorkImportServiceCollectionExtensions
             // Shortcut file URLs redirect to signed storage URLs; the token header must not follow them off Shortcut,
             // and every connection is checked on the address connected to (no internal hosts, no DNS rebinding).
             .ConfigurePrimaryHttpMessageHandler(ShortcutRestSource.CreateHandler);
-        services.AddHttpClient(KanbanRestSource.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
+        services.AddHttpClient(KanbanMcpSource.HttpClientName, client => client.Timeout = TimeSpan.FromSeconds(60));
         services.AddSingleton<IWorkAttachmentStorage, WorkAttachmentStorage>();
         services.AddTransient<IWorkImportSourceFactory, RestWorkImportSourceFactory>();
         services.AddTransient<ShortcutImporter>();

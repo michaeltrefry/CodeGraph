@@ -7,7 +7,7 @@ using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services.Work.Imports;
 
-/// <summary>Opens the read-only sources of an import. The default reads the REST APIs with tokens from MCP Hub credentials.</summary>
+/// <summary>Opens the read-only sources of an import. The default reads Shortcut's REST API and KanbanBoard's MCP server, with tokens from MCP Hub credentials.</summary>
 public interface IWorkImportSourceFactory
 {
     Task<IShortcutSource> ShortcutAsync(CancellationToken ct);
@@ -17,7 +17,7 @@ public interface IWorkImportSourceFactory
 public sealed class RestWorkImportSourceFactory(IHttpClientFactory http, IMcpHubStore hub, IOptions<WorkImportOptions> options) : IWorkImportSourceFactory
 {
     public async Task<IShortcutSource> ShortcutAsync(CancellationToken ct) => await ShortcutRestSource.CreateAsync(http, hub, options, ct);
-    public async Task<IKanbanSource> KanbanAsync(CancellationToken ct) => await KanbanRestSource.CreateAsync(http, hub, options, ct);
+    public async Task<IKanbanSource> KanbanAsync(CancellationToken ct) => await KanbanMcpSource.CreateAsync(http, hub, options, ct);
 }
 
 public sealed record StartedRun(Guid RunId, string Source, ImportMode Mode, DateTime? UpdatedSince, IReadOnlyList<string> Retry);
