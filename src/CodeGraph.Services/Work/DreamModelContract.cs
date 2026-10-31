@@ -48,6 +48,9 @@ internal static class DreamModelContract
         if (properties["expected_version"] is JsonObject version) version["description"] = "Current target version returned by dream_read. Reread after conflict.";
         switch (tool)
         {
+            case "dream_read_prior":
+                properties["action_index"]!["minimum"]=1;properties["offset_chars"]!["minimum"]=0;
+                break;
             case "dream_work_trail":
                 properties["kind"]!["enum"] = new JsonArray("revision", "attempt", "handoff", "thread", "message", "review", (JsonNode?)null);
                 properties["detail"]!["enum"] = new JsonArray("summary", "full", (JsonNode?)null);
