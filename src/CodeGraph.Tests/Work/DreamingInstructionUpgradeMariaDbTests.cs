@@ -12,6 +12,7 @@ public sealed class DreamingInstructionUpgradeMariaDbTests(WorkDatabase db) : IC
     [Theory]
     [InlineData("108_dreaming_tool_contract_instructions.sql", 2, 3)]
     [InlineData("109_dreaming_source_verification_instructions.sql", 3, 4)]
+    [InlineData("110_dreaming_read_efficiency_instructions.sql", 4, 5)]
     public async Task Canonical_contract_upgrade_preserves_edited_pages_and_history_and_is_restart_safe(string script, int fromRevision, int toRevision)
     {
         var migrations = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations"));
@@ -21,7 +22,7 @@ public sealed class DreamingInstructionUpgradeMariaDbTests(WorkDatabase db) : IC
         var expected = System.Text.RegularExpressions.Regex.Match(update, "SET p\\.content='(?<content>(?:''|[^'])*)', p\\.revision=", System.Text.RegularExpressions.RegexOptions.Singleline)
             .Groups["content"].Value.Replace("''", "'");
         expected.ShouldNotBeNullOrEmpty();
-        if (toRevision == 4) expected.ShouldBe(await File.ReadAllTextAsync(docs));
+        if (toRevision == 5) expected.ShouldBe(await File.ReadAllTextAsync(docs));
         await using var c = new MySqlConnection(db.ConnectionString);
         var page = await c.ExecuteScalarAsync<long>("SELECT p.id FROM wiki_pages p JOIN wiki_sections s ON s.id=p.section_id WHERE p.slug='dreaming-base' AND p.parent_id IS NULL AND s.slug='conventions'");
         var old = await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_revisions WHERE page_id=@page AND revision=@fromRevision", new { page, fromRevision });

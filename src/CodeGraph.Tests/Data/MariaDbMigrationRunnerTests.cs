@@ -159,7 +159,9 @@ public class MariaDbMigrationRunnerTests
             // sc-27970: upgrade only the byte-exact untouched canonical dreaming instruction seed.
             ["108_dreaming_tool_contract_instructions.sql"] = 1,
             // sc-27970: prioritize source checks only on the untouched canonical instruction seed.
-            ["109_dreaming_source_verification_instructions.sql"] = 1
+            ["109_dreaming_source_verification_instructions.sql"] = 1,
+            // sc-28214: compact only the byte-exact untouched revision-4 dreaming seed.
+            ["110_dreaming_read_efficiency_instructions.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",

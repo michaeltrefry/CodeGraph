@@ -12,23 +12,25 @@ public sealed partial class WorkService : IKnowledgeDreamActions
     public async Task<DreamDigest> BuildDigestAsync(Guid projectId, DateTime? since, CancellationToken ct = default)
     {
         var digest = await DreamKnowledge.ReadDreamDigestAsync(projectId, since, ct);
+        int Count(string name) => digest.Data.TryGetProperty(name, out var value) && value.TryGetInt32(out var count) ? count : 0;
+        var reads = new List<object>();
+        if (Count("stale_count") > 0)
+            reads.Add(new { tool = "dream_read", arguments = (object)new { possibly_stale = true, limit = 5 }, purpose = "Select relevant stale claims, then read each selected id in full and check its owning source." });
+        else if (Count("changed_count") > 0 || Count("knowledge_count") > 0)
+            reads.Add(new { tool = "dream_read", arguments = (object)new { limit = 5 }, purpose = "Use changed_entries in signals first; otherwise select relevant claims from this compact index. Read a selected id in full before judging it." });
+        if (Count("open_challenge_count") > 0 || Count("open_proposal_count") > 0)
+            reads.Add(new { tool = "dream_review_queue", arguments = (object)new { }, purpose = "Inspect existing open disputes/proposals before acting on their targets; leave review decisions to their owners." });
+        if (Count("lesson_event_count") > 0)
+            reads.Add(new { tool = "dream_lessons", arguments = (object)new { view = "recurrence" }, purpose = "Inspect recurrence only when relevant to selected work; other lesson views remain available through the tool schema." });
+        if (Count("work_trail_count") > 0)
+            reads.Add(new { tool = "dream_work_trail", arguments = (object)new { since, detail = "summary", limit = 5 }, purpose = "Newest trail metadata and short previews for selecting evidence. Use each row's read arguments for exact full content; summaries cannot justify a judgment." });
         // The first turn is an index, never a body/history dump. Each section is read lazily
         // through bounded run-scoped pages, so growth cannot prevent the model from starting.
         var data = JsonSerializer.SerializeToElement(new
         {
             untrusted_data = true, signals = digest.Data,
-            reads = new object[]
-            {
-                new { tool = "dream_read", arguments = new { status = new[] { "active", "superseded", "retracted" } }, purpose = "All knowledge, including revised, superseded and retracted entries; read id for details." },
-                new { tool = "dream_read", arguments = new { possibly_stale = true }, purpose = "All currently possibly_stale entries." },
-                new { tool = "dream_lessons", arguments = new { view = "recurrence" }, purpose = "Recurrence with and without rule served." },
-                new { tool = "dream_lessons", arguments = new { view = "unaddressed" }, purpose = "Rules not addressed by skill, hook or test." },
-                new { tool = "dream_lessons", arguments = new { view = "unmatched" }, purpose = "Rules not served recently." },
-                new { tool = "dream_lessons", arguments = new { view = "unlearned_reviews" }, purpose = "Review evidence without a lesson; full review text is in work trail." },
-                new { tool = "dream_similar", arguments = new { }, purpose = "Unrelated similar lesson pairs across the complete project." },
-                new { tool = "dream_review_queue", arguments = new { }, purpose = "All open review items." },
-                new { tool = "dream_work_trail", arguments = new { since }, purpose = "Changed revision snapshots plus attempts, handoffs, threads, messages and GitHub review evidence since the watermark. Omit since for complete history." }
-            },
+            reads,
+            selection = "These are signal-based suggestions, not a checklist. Select useful evidence-backed work early, batch independent reads, and report when the signals do not justify more work. All tool capabilities remain available, including complete history by detail full without since.",
             pagination = "Every read returns total_count, has_more and next_cursor. Pass next_cursor unchanged as cursor to the same tool. Pages are immutable within this run. Oversized items use exact JSON fragments; concatenate content until has_more is false, then parse JSON. Source reads remain separate and are required for verify."
         }, WorkJson.Options);
         return new(data, digest.Fingerprint, digest.HasSignal);

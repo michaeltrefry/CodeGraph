@@ -65,7 +65,7 @@ public sealed class DreamingInstructionCollationMigrationTests : IAsyncLifetime
         }
         await ReproduceOriginalFailureAsync();
         var before = (await c.QueryAsync<Checkpoint>("SELECT statement_ordinal AS Ordinal,statement_checksum AS Checksum,status,attempt_count AS Attempts FROM migration_statement_history WHERE script_name=@script AND statement_ordinal<3 ORDER BY statement_ordinal", new { script = Migration105 })).ToArray();
-        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql" })
+        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql", "110_dreaming_read_efficiency_instructions.sql" })
             File.Copy(Path.Combine(migrations, script), Path.Combine(scripts, script), overwrite: true);
         var repair = Runner();
         repair.StatementExecutedHook = (script, ordinal) => script == Migration105 && ordinal == 3
@@ -76,15 +76,15 @@ public sealed class DreamingInstructionCollationMigrationTests : IAsyncLifetime
         var after = (await c.QueryAsync<Checkpoint>("SELECT statement_ordinal AS Ordinal,statement_checksum AS Checksum,status,attempt_count AS Attempts FROM migration_statement_history WHERE script_name=@script AND statement_ordinal<3 ORDER BY statement_ordinal", new { script = Migration105 })).ToArray();
         after.ShouldBe(before);
         (await c.ExecuteScalarAsync<int>("SELECT attempt_count FROM migration_statement_history WHERE script_name=@script AND statement_ordinal=3", new { script = Migration105 })).ShouldBe(3);
-        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM migration_history WHERE script_name IN ('105_dreaming_instructions.sql','108_dreaming_tool_contract_instructions.sql','109_dreaming_source_verification_instructions.sql')")).ShouldBe(3);
+        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM migration_history WHERE script_name IN ('105_dreaming_instructions.sql','108_dreaming_tool_contract_instructions.sql','109_dreaming_source_verification_instructions.sql','110_dreaming_read_efficiency_instructions.sql')")).ShouldBe(4);
         var body = await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_pages WHERE slug='dreaming-base'");
         var revision = await c.ExecuteScalarAsync<int>("SELECT revision FROM wiki_pages WHERE slug='dreaming-base'");
         body.ShouldBe(edited ? "Custom base instructions" : await File.ReadAllTextAsync(Path.Combine(migrations, "../../docs/dreaming/base-instructions.md")));
-        revision.ShouldBe(edited ? 1 : 4);
+        revision.ShouldBe(edited ? 1 : 5);
         var addendum = await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_pages WHERE slug=@slug", new { slug = "dreaming-project-" + project.ToString("N") });
         if (edited) addendum.ShouldBe("Custom project instructions"); else addendum!.ShouldContain("CodeGraph project addendum");
         (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_pages WHERE slug=@slug", new { slug = "dreaming-project-" + project.ToString("N") })).ShouldBe(1);
-        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base')")).ShouldBe(edited ? 1 : 4);
+        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base')")).ShouldBe(edited ? 1 : 5);
         (await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base') AND revision=1")).ShouldBe(edited ? "Custom base instructions" : BootstrapText);
     }
 
@@ -100,7 +100,7 @@ public sealed class DreamingInstructionCollationMigrationTests : IAsyncLifetime
         (await c.ExecuteScalarAsync<string>("SELECT status FROM migration_statement_history WHERE script_name=@script AND statement_ordinal=4", new { script = Migration105 })).ShouldBe("failed");
         var before = (await c.QueryAsync<Checkpoint>("SELECT statement_ordinal AS Ordinal,statement_checksum AS Checksum,status,attempt_count AS Attempts FROM migration_statement_history WHERE script_name=@script AND statement_ordinal<4 ORDER BY statement_ordinal", new { script = Migration105 })).ToArray();
         before.Length.ShouldBe(3);
-        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql" })
+        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql", "110_dreaming_read_efficiency_instructions.sql" })
             File.Copy(Path.Combine(migrations, script), Path.Combine(scripts, script), overwrite: true);
         await Runner().ApplyConfiguredMigrationsAsync();
         var after = (await c.QueryAsync<Checkpoint>("SELECT statement_ordinal AS Ordinal,statement_checksum AS Checksum,status,attempt_count AS Attempts FROM migration_statement_history WHERE script_name=@script AND statement_ordinal<4 ORDER BY statement_ordinal", new { script = Migration105 })).ToArray();
@@ -126,13 +126,13 @@ public sealed class DreamingInstructionCollationMigrationTests : IAsyncLifetime
             await c.ExecuteAsync("UPDATE wiki_pages SET content='Edited after completed 105',revision=3,author='alice' WHERE slug='dreaming-base'; INSERT INTO wiki_revisions(page_id,revision,title,content,author) SELECT id,revision,title,content,author FROM wiki_pages WHERE slug='dreaming-base'");
         }
         await c.ExecuteAsync("ALTER TABLE work_projects CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_uca1400_ai_ci");
-        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql" })
+        foreach (var script in new[] { Migration105, "108_dreaming_tool_contract_instructions.sql", "109_dreaming_source_verification_instructions.sql", "110_dreaming_read_efficiency_instructions.sql" })
             File.Copy(Path.Combine(migrations, script), Path.Combine(scripts, script), overwrite: true);
         await Runner().ApplyConfiguredMigrationsAsync();
         var after = (await c.QueryAsync<Checkpoint>("SELECT statement_ordinal AS Ordinal,statement_checksum AS Checksum,status,attempt_count AS Attempts FROM migration_statement_history WHERE script_name=@script ORDER BY statement_ordinal", new { script = Migration105 })).ToArray();
         after.ShouldBe(before);
         (await c.ExecuteScalarAsync<string>("SELECT content FROM wiki_pages WHERE slug='dreaming-base'")).ShouldBe(edited ? "Edited after completed 105" : await File.ReadAllTextAsync(Path.Combine(migrations, "../../docs/dreaming/base-instructions.md")));
-        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base')")).ShouldBe(edited ? 3 : 4);
+        (await c.ExecuteScalarAsync<int>("SELECT COUNT(*) FROM wiki_revisions WHERE page_id=(SELECT id FROM wiki_pages WHERE slug='dreaming-base')")).ShouldBe(edited ? 3 : 5);
     }
 
     private async Task ReproduceOriginalFailureAsync()

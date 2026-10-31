@@ -118,17 +118,29 @@ public sealed partial class MySqlWorkStore
         ) trail
         """;
 
-    public async Task<IReadOnlyList<DreamTrailReference>> ListDreamWorkTrailAsync(Guid projectId, DateTime? since, CancellationToken ct = default)
+    public Task<IReadOnlyList<DreamTrailReference>> ListDreamWorkTrailAsync(Guid projectId, DateTime? since, CancellationToken ct = default) =>
+        QueryDreamWorkTrailAsync(projectId, since, null, null, null, ct);
+
+    public async Task<IReadOnlyList<DreamTrailReference>> QueryDreamWorkTrailAsync(Guid projectId, DateTime? since, string? kind, string? id, Guid? itemId, CancellationToken ct = default)
     {
         DreamPolicy.RequireCurrentProject(projectId);
         await using var connection = await OpenAsync(ct);
         var rows = await connection.QueryAsync(new CommandDefinition(
-            "SELECT kind,id,item_id,created_at,SHA2(data,256) AS content_hash FROM (" + DreamTrailSql + ") t WHERE @since IS NULL OR created_at>=@since ORDER BY created_at,id,kind",
-            new { projectId, since }, cancellationToken: ct));
+            """
+            SELECT kind,id,item_id,created_at,SHA2(data,256) AS content_hash,LEFT(preview,240) AS preview,CHAR_LENGTH(preview)>240 AS preview_truncated
+            FROM (SELECT t.*,CASE kind WHEN 'revision' THEN JSON_VALUE(data,'$.summary') WHEN 'attempt' THEN JSON_VALUE(data,'$.reason')
+                WHEN 'handoff' THEN JSON_VALUE(data,'$.done') ELSE JSON_VALUE(data,'$.body') END AS preview
+                FROM (
+            """ + DreamTrailSql + """
+                ) t) projected WHERE (@since IS NULL OR created_at>=@since) AND (@kind IS NULL OR kind=@kind)
+                AND (@id IS NULL OR id=@id) AND (@itemId IS NULL OR item_id=@itemId) ORDER BY created_at,id,kind
+            """,
+            new { projectId, since, kind, id, itemId }, cancellationToken: ct));
         // UNION collation resolution can promote CHAR(36) metadata to VARCHAR. Preserve the
         // domain UUID contract whether the connector returns a Guid or its textual form.
         return rows.Select(row => new DreamTrailReference((string)row.kind, (string)row.id,
-            DreamTrailItemId((object?)row.item_id), (DateTime)row.created_at, (string)row.content_hash)).ToList();
+            DreamTrailItemId((object?)row.item_id), (DateTime)row.created_at, (string)row.content_hash,
+            (string?)row.preview, row.preview_truncated is not null && Convert.ToBoolean(row.preview_truncated))).ToList();
     }
 
     private static Guid? DreamTrailItemId(object? value) => value is null ? null : value is Guid id ? id : Guid.Parse((string)value);
