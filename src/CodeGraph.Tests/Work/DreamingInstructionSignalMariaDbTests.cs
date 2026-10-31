@@ -1,4 +1,5 @@
 using CodeGraph.Models.Work;
+using CodeGraph.Services.Work;
 using Shouldly;
 
 namespace CodeGraph.Tests.Work;
@@ -29,8 +30,9 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
         tuned.SignalFingerprint.ShouldBe(baseline.SignalFingerprint, "instruction tuning requires no fabricated knowledge signal");
         tuned.BaseInstructionRevision.ShouldBe(scope == "base" ? updated.Revision : before.Base.Revision);
         tuned.ProjectInstructionRevision.ShouldBe(scope == "project" ? updated.Revision : before.Project.Revision);
-        model.Requests[1].System.ShouldBe(scope == "base" ? updated.Content + "\n\n" + before.Project.Content
-            : before.Base.Content + "\n\n" + updated.Content);
+        var versioned = scope == "base" ? updated.Content + "\n\n" + before.Project.Content
+            : before.Base.Content + "\n\n" + updated.Content;
+        model.Requests[1].System.ShouldBe(versioned + DreamModelContext.RuntimeBudget(await service.GetSettingsAsync(), 1, 0, 128000));
         var saved = (await service.GetRunAsync(project, tuned.Id))!;
         saved.BaseInstructionRevision.ShouldBe(tuned.BaseInstructionRevision);
         saved.ProjectInstructionRevision.ShouldBe(tuned.ProjectInstructionRevision);
