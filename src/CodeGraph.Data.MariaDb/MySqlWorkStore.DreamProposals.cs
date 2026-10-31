@@ -128,9 +128,9 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
             }
             var id = Guid.NewGuid(); var now = Now();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO dream_proposals (id,project_id,run_id,action,target_id,target_version,other_id,other_version,rationale,prevalence,evidence_json,replacement_json,replacement_input_json,draft,author_json,created_at) " +
-                "VALUES (@id,@projectId,@runId,@action,@target,@version,@other,@otherVersion,@rationale,@prevalence,@evidence,@replacement,@input,@draft,@author,@now)",
-                new { id, projectId, runId, action = JsonName(spec.Action), target = spec.Target, version = spec.ExpectedVersion, other = spec.Other, otherVersion = spec.OtherVersion,
+                "INSERT INTO dream_proposals (id,project_id,run_id,action,target_id,target_version,other_id,other_version,rationale,prevalence,evidence_json,replacement_json,replacement_input_json,draft,author_json,created_at,execution_id) " +
+                "VALUES (@id,@projectId,@runId,@action,@target,@version,@other,@otherVersion,@rationale,@prevalence,@evidence,@replacement,@input,@draft,@author,@now,@executionId)",
+                new { id, projectId, runId, executionId = DreamPolicy.RequireScope(actor).ExecutionId, action = JsonName(spec.Action), target = spec.Target, version = spec.ExpectedVersion, other = spec.Other, otherVersion = spec.OtherVersion,
                     rationale = spec.Rationale, prevalence = spec.Prevalence, evidence = ProposalJson(evidence), replacement = spec.Replacement is null ? null : ProposalJson(spec.Replacement),
                     input = spec.ReplacementInput is null ? null : ProposalJson(spec.ReplacementInput), draft = spec.Draft, author = ProposalJson(actor), now }, tx, cancellationToken: ct));
             var stored = (await connection.QuerySingleAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE id=@id", new { id }, tx, cancellationToken: ct)));
@@ -164,8 +164,15 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
 
     private static async Task RequireProposalRunAsync(MySqlConnection c, MySqlTransaction tx, Guid projectId, Guid runId, CancellationToken ct)
     {
-        if (!await c.ExecuteScalarAsync<bool>(new CommandDefinition("SELECT EXISTS(SELECT 1 FROM dreaming_runs WHERE id=@runId AND project_id=@projectId AND status='running')", new { runId, projectId }, tx, cancellationToken: ct)))
-            throw WorkException.Invalid("The proposal must belong to an active dreaming run in this project.");
+        _=await c.QuerySingleOrDefaultAsync<Guid?>(new CommandDefinition(
+            "SELECT id FROM work_projects WHERE id=@projectId FOR UPDATE",new {projectId},tx,cancellationToken:ct));
+        var json=await c.QuerySingleOrDefaultAsync<string>(new CommandDefinition(
+            "SELECT run_json FROM dreaming_runs WHERE id=@runId AND project_id=@projectId AND status='running' FOR UPDATE",new {runId,projectId},tx,cancellationToken:ct));
+        if(json is null)throw WorkException.Invalid("The proposal must belong to an active dreaming run in this project.");
+        using var metadata=JsonDocument.Parse(json);
+        var managed=metadata.RootElement.ValueKind==JsonValueKind.Object
+            &&metadata.RootElement.TryGetProperty("continuation_available",out var flag)&&flag.ValueKind==JsonValueKind.True;
+        await RequireDreamCheckpointOwnerAsync(c,tx,projectId,runId,managed,ct);
     }
 
     public async Task<DreamReviewResult> ReviewDreamProposalAsync(Guid projectId, Guid id, long expectedVersion, DreamReviewAction action, string? reason, WorkActor actor, CancellationToken ct = default)

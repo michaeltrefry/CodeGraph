@@ -117,6 +117,10 @@ public class DreamProjectsExecutorTests
 
     private sealed class ProjectStore(IReadOnlyList<Guid> projects) : IDreamingStore
     {
+        public Task<DreamCheckpoint?> GetCheckpointAsync(Guid projectId,CancellationToken ct=default)=>throw new NotSupportedException();
+        public Task<DreamExecutionOutcome?> GetExecutionResultAsync(Guid projectId,Guid executionId,CancellationToken ct=default)=>throw new NotSupportedException();
+        public Task SaveProgressAsync(DreamRun run,System.Text.Json.JsonElement? checkpoint,Guid? expectedCheckpointRunId,CancellationToken ct=default)=>throw new NotSupportedException();
+
         public Task<IReadOnlyList<Guid>> ListProjectIdsAsync(CancellationToken ct = default) => Task.FromResult(projects);
         public Task<IAsyncDisposable?> TryAcquireAsync(Guid projectId, CancellationToken ct = default) => throw new NotSupportedException();
         public Task SaveRunAsync(DreamRun run, CancellationToken ct = default) => throw new NotSupportedException();

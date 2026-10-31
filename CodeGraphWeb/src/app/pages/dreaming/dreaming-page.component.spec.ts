@@ -54,6 +54,19 @@ describe('DreamingPageComponent', () => {
     };
   });
 
+  it('shows continuation lineage and separates recovered outcomes and uncertain usage from new activity', async () => {
+    const continued = { ...run, continued_from: 'previous-run', continuation_available: true, usage_uncertain: true,
+      previously_applied: [{ run_id: 'previous-run', action: run.actions[0] }] };
+    api['run'].mockReturnValue(of(continued));
+    const fixture = await create(); await fixture.componentInstance.select(run.id); fixture.detectChanges();
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('Continued from'); expect(text).toContain('previous-run');
+    expect(text).toContain('Progress checkpoint saved'); expect(text).toContain('uncertain usage');
+    expect(text).toContain('not new writes by this attempt');
+    const parent = Array.from(fixture.nativeElement.querySelectorAll('button')).find((e: any) => e.textContent.includes('previous-run')) as HTMLButtonElement;
+    parent.click(); await fixture.whenStable(); expect(api['run']).toHaveBeenLastCalledWith('ONE', 'previous-run');
+  });
+
   it('shows viewers shared settings as read-only while retaining run reports, run now and wiki editing', async () => {
     auth.currentUser.set({ isAdmin: false });
     const fixture = await create(); const page = fixture.componentInstance;

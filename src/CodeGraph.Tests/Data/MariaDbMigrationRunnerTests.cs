@@ -161,7 +161,9 @@ public class MariaDbMigrationRunnerTests
             // sc-27970: prioritize source checks only on the untouched canonical instruction seed.
             ["109_dreaming_source_verification_instructions.sql"] = 1,
             // sc-28214: compact only the byte-exact untouched revision-4 dreaming seed.
-            ["110_dreaming_read_efficiency_instructions.sql"] = 1
+            ["110_dreaming_read_efficiency_instructions.sql"] = 1,
+            // sc-28273: continuation adds only empty storage and nullable receipt columns; no historical data rewrite.
+            ["111_dreaming_continuation.sql"] = 0
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",
@@ -174,7 +176,7 @@ public class MariaDbMigrationRunnerTests
                 Count = MariaDbMigrationRunner.SplitStatements(File.ReadAllText(file))
                     .Count(statement => mutationPattern.IsMatch(statement))
             })
-            .Where(item => item.Count > 0)
+            .Where(item => item.Count > 0 || expectedMutationCounts.ContainsKey(item.FileName))
             .ToDictionary(item => item.FileName, item => item.Count, StringComparer.OrdinalIgnoreCase);
 
         actualMutationCounts.OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)

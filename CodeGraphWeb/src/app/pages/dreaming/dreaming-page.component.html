@@ -41,7 +41,15 @@
                 <dt>Estimated cost</dt><dd>{{ run.estimated_cost | currency:'USD':'symbol':'1.4-6' }}</dd>
                 <dt>Instructions used</dt><dd>Base revision {{ run.base_instruction_revision }} · project revision {{ run.project_instruction_revision }}</dd>
               </dl>
+              @if (run.continued_from) { <p>Continued from <button type="button" class="cg-btn secondary" (click)="select(run.continued_from!)">{{ run.continued_from }}</button>. Usage and actions below belong to this attempt.</p> }
+              @if (run.continuation_available) { <p class="adm-banner">Progress checkpoint saved. A later scheduled attempt can continue unfinished work.</p> }
+              @if (run.usage_uncertain) { <p role="alert" class="adm-banner err">A generation was interrupted before its usage was recorded. The totals shown exclude that uncertain usage.</p> }
               @if (run.reason) { <p>{{ run.reason }}</p> }
+              @if (run.previously_applied?.length) {
+                <section aria-label="Recovered prior outcomes"><h3>Previously applied outcomes</h3><p>Recovered from earlier attempts; these are not new writes by this attempt. Reverts and later edits may have changed their current state.</p>
+                  @for (prior of run.previously_applied; track $index) { <details><summary>{{ prior.action.tool }} · {{ prior.run_id }}</summary><pre class="dream-data">{{ prior.action.result | json }}</pre></details> }
+                </section>
+              }
               <div class="kn-meta">@for (count of counts(); track count.action) { <span class="cg-chip">{{ count.action }}: {{ count.count }}</span> }</div>
               @if (run.report) { <h3>Report</h3><p class="dream-data">{{ run.report }}</p> }
               <h3>Every action and proposal</h3>

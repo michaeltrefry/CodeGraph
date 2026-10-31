@@ -7,11 +7,12 @@ public sealed record DreamSettings(bool Enabled = true, string DefaultProvider =
     decimal InputCostPerMillion = 3m, decimal OutputCostPerMillion = 15m, string? Version = null);
 
 public sealed record DreamEvidence(string Kind, string Reference, string Summary);
-public sealed record DreamAction(string Tool, JsonElement Arguments, JsonElement Result, IReadOnlyList<DreamEvidence> Evidence, DateTime CreatedAt);
+public sealed record DreamAction(string Tool, JsonElement Arguments, JsonElement Result, IReadOnlyList<DreamEvidence> Evidence, DateTime CreatedAt, Guid? ExecutionId = null);
 public sealed record DreamRun(Guid Id, Guid ProjectId, string Trigger, WorkActor Initiator, string Status, DateTime StartedAt,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] DateTime? EndedAt, string Provider, string Model, long InputTokens, long OutputTokens, decimal EstimatedCost,
     int BaseInstructionRevision, int ProjectInstructionRevision, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] string? SignalFingerprint, IReadOnlyList<DreamAction> Actions,
-    string? Report = null, string? Reason = null)
+    string? Report = null, string? Reason = null, Guid? ContinuedFrom = null, bool ContinuationAvailable = false,
+    DateTime? SweepStartedAt = null, IReadOnlyList<DreamRecoveredAction>? PreviouslyApplied = null, bool UsageUncertain = false)
 {
     public IReadOnlyDictionary<string,int> ActionCounts => Actions
         .Where(a=>a.Tool is "dream_verify" or "dream_revise" or "dream_relate" or "dream_promote" or "dream_record" or "dream_challenge" or "dream_propose")
@@ -32,6 +33,8 @@ public sealed class DreamExecutionScope : IDisposable
     public static DreamExecutionScope? Current => Slot.Value;
     public Guid RunId { get; }
     public Guid ProjectId { get; }
+    public Guid? ExecutionId { get; set; }
+    public Guid? ResumeFromRunId { get; set; }
     public string Model { get; }
     public WorkActor Actor => new("dreamer", WorkActor.SystemKind, RunId.ToString(), Model: Model);
     public IReadOnlyList<DreamEvidence> Evidence { get; private set; } = [];

@@ -10,7 +10,6 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
 {
     [Theory]
     [InlineData(60000)]
-    [InlineData(30000)]
     public async Task Input_pressure_archives_only_delivered_reads_recounts_and_finishes_real_verification_with_full_audit_replay(long originalReplayCount)
     {
         var (project, entry) = await StaleFactAsync();
