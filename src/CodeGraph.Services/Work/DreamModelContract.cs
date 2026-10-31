@@ -54,6 +54,7 @@ internal static class DreamModelContract
                 root["required"] = Names();
                 root["anyOf"] = new JsonArray(new JsonObject { ["required"] = Names("view") }, new JsonObject { ["required"] = Names("cursor") });
                 properties["cursor"]!["type"] = "string";
+                properties["view"]!["enum"] = Names("recurrence", "unaddressed", "unmatched", "unlearned_reviews");
                 break;
             case "dream_revise":
                 Require(root, "applies_when");
@@ -76,9 +77,7 @@ internal static class DreamModelContract
                 entry["properties"]!["kind"]!["enum"] = Names("fact", "gotcha", "constraint", "attempt", "lesson");
                 entry["properties"]!["confidence"]!["type"] = "string";
                 entry["properties"]!["confidence"]!["enum"] = Names("high", "medium", "low");
-                entry["properties"]!["why_failed"]!["type"] = "string";
                 entry["properties"]!["source"]!["properties"]!["kind"]!["enum"] = Names("agent");
-                entry["properties"]!["source"]!["type"] = "object";
                 entry["properties"]!["source"]!["properties"]!["kind"]!["description"] = "Dreamer lessons must use agent; no other correction source is permitted.";
                 entry["anyOf"] = new JsonArray(KindBranch(["fact", "gotcha", "constraint"]), KindBranch(["attempt"], "why_failed"), KindBranch(["lesson"], "source"));
                 break;
@@ -95,8 +94,8 @@ internal static class DreamModelContract
                 citation["examples"] = new JsonArray(new JsonObject { ["kind"] = "entry", ["id"] = ExampleId }, new JsonObject { ["kind"] = "graph_node", ["id"] = "123" });
                 RestrictEntry(properties["replacement"]!.AsObject());
                 properties["replacement"]!["type"] = "object";
-                properties["replacement"]!["properties"]!["why_failed"]!["type"] = "string";
-                properties["replacement"]!["anyOf"] = new JsonArray(KindBranch(["attempt"], "why_failed"), KindBranch(["goal", "decision", "constraint", "fact", "gotcha", "architecture", "lesson"]));
+                properties["replacement"]!["anyOf"] = new JsonArray(KindBranch(["goal", "constraint", "fact", "gotcha", "architecture"]),
+                    KindBranch(["decision"]), KindBranch(["attempt"], "why_failed"), KindBranch(["lesson"]));
                 properties["other"]!["type"] = "string";
                 properties["other_expected_version"]!["type"] = "integer";
                 properties["draft"] = TextSchema("Reviewable skill, hook or test text for external application, required only for draft actions.", 100000);
@@ -134,8 +133,23 @@ internal static class DreamModelContract
             if (!required.Contains(field)) properties[field] = false;
         return new() { ["properties"] = properties, ["required"] = Names(required) };
     }
-    private static JsonObject KindBranch(string[] kinds, params string[] required) => new()
-    { ["properties"] = new JsonObject { ["kind"] = new JsonObject { ["enum"] = Names(kinds) } }, ["required"] = Names(required) };
+    private static JsonObject KindBranch(string[] kinds, params string[] required)
+    {
+        // Match WorkService.RefuseForeignKindFields. Null optional fields disappear during
+        // typed parsing; a non-null field of another kind is refused by the server.
+        string[] fields = ["why", "alternatives", "context", "consequences", "made_autonomously", "why_failed", "what", "applies_when", "source"];
+        string[] allowed = kinds[0] switch
+        {
+            "decision" => ["why", "alternatives", "context", "consequences", "made_autonomously"],
+            "attempt" => ["why_failed"],
+            "lesson" => ["what", "applies_when", "source"],
+            _ => []
+        };
+        var properties = new JsonObject { ["kind"] = new JsonObject { ["enum"] = Names(kinds) } };
+        foreach (var field in fields.Except(allowed)) properties[field] = new JsonObject { ["type"] = "null" };
+        foreach (var field in required) properties[field] = new JsonObject { ["type"] = field == "source" ? "object" : "string" };
+        return new() { ["properties"] = properties, ["required"] = Names(required) };
+    }
     private static void Require(JsonObject schema, params string[] names)
     {
         var required = schema["required"] as JsonArray ?? [];
