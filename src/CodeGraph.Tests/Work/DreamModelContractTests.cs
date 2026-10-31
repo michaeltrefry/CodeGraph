@@ -19,6 +19,16 @@ public sealed class DreamModelContractTests
     }
 
     [Fact]
+    public void Trail_selector_enums_preserve_all_server_kinds_details_and_optional_nulls()
+    {
+        var properties=DreamingService.Tools.Single(t=>t.Name=="dream_work_trail").Parameters.GetProperty("properties");
+        properties.GetProperty("kind").GetProperty("enum").EnumerateArray().Select(v=>v.GetString())
+            .ShouldBe(new string?[]{"revision","attempt","handoff","thread","message","review",null});
+        properties.GetProperty("detail").GetProperty("enum").EnumerateArray().Select(v=>v.GetString())
+            .ShouldBe(new string?[]{"summary","full",null});
+    }
+
+    [Fact]
     public void Every_private_schema_is_self_contained_and_excludes_server_identity()
     {
         foreach (var tool in DreamingService.Tools)

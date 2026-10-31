@@ -38,7 +38,13 @@ internal static class DreamModelContext
         }
     }
 
-    public static string RuntimeBudget(DreamSettings settings, int turn, long spent, long remaining) => $"""
+    public static string RuntimeBudget(DreamSettings settings, int turn, long spent, long remaining, long lastInputTokens=0, long admissionSlack=0)
+    {
+        var forecast=DreamingService.AddTokens(DreamingService.AddTokens(lastInputTokens,DreamingService.AddTokens(lastInputTokens,lastInputTokens)),admissionSlack);
+        var planning=lastInputTokens>0
+            ? $"Most recent generation charged {lastInputTokens} input tokens. A read-and-report cycle spans this response, interpretation of another read, and a final report. Three requests at that recent input size plus the current {admissionSlack}-token admission buffer need roughly {forecast} tokens before output or payload growth; remaining balance is {remaining}. This is a planning estimate, not a new allowance or the exact next count; evidence compaction can lower it. If that cycle will not fit, finish the selected work and report it; leave unrelated categories uninspected."
+            : "";
+        return $"""
 
         ## Server runtime budget
         Turn {turn} of {settings.MaxTurns}. Total run limit: {settings.MaxTokensPerRun} tokens; already charged: {spent}; remaining: {remaining}.
@@ -46,13 +52,17 @@ internal static class DreamModelContext
         Select concrete work from relevant digest signals, batch independent reads, and act or report before fetching another unrelated page. Do not visit empty views as a checklist. Summary previews select work; they do not substantiate claims. Inspect full evidence for selected work. You need not exhaust every category or pagination cursor in one pass; report uninspected coverage honestly, without treating it as reviewed or clear.
         Leave enough balance for a final response. When the remaining balance is smaller than the recent input, finish a concise report instead of starting another investigation. {((turn == settings.MaxTurns) ? "This is the last allowed turn: finish the report now." : "")}
 
+        {planning}
+
         ## Shared tool argument conventions
         Use the complete published argument shapes. IDs are stored UUIDs, not item keys or paths. expected_version is the current target version; reread after conflict.
         Direct-write evidence uses kind/reference/summary. lesson_event references correction_id; review references GitHub evidence; thread references item comment; graph_node is a positive numeric node ID encoded as a string, never a file path. Other references are UUIDs returned by scoped readers. For file verification cite the entry and explain the checked path/behavior; actual same-run source/hash proof is still required. Prevalence states observed events/sessions/items and unavailable counts honestly.
         Record kinds have different fields: fact/gotcha/constraint take no what, applies_when or source. A lesson may use what/applies_when and requires source.kind=agent. An attempt requires why_failed. Every record call requires its own evidence array and prevalence, even when batched. Copy actual UUID citations returned by readers; omit an uncertain citation instead of inventing an item UUID from its key. Never invent repository paths; search the graph for a current path when it is unknown.
         Continuations use only cursor and optional limit; omit view and other selectors. If source verification_ready=false, do not retry unchanged bytes or call verify; full content remains explicitly available for a different evidence task.
+        Use repository identifiers exactly as listed in the digest; do not prepend a GitHub owner or substitute a URL. Copy a trail summary's read.arguments intact, keeping the same kind, id and expected_hash. Never combine one row's id with another row's hash. If no matching trail summary was seen for the selected id, omit expected_hash for a new current read; summaries from different rows are not proof.
         Proposals use kind/id citations (review_evidence, not review); put explanations in rationale. Drafts require actual recurrence while the rule was served. Never copy example identifiers or turn a refusal into a workaround.
         """;
+    }
 
     // Tool data is sent as JSON TEXT to a model, never embedded as HTML. Avoid HTML-style
     // \u0022/\u003C escaping of source and Unicode while preserving exact JSON values.

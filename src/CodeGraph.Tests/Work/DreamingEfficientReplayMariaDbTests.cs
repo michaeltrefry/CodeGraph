@@ -93,6 +93,9 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
             .GetProperty("journal_id").GetInt64().ShouldBeGreaterThan(0);
         model.Requests[2].System.ShouldContain("already charged: 37200");
         model.Requests[2].System.ShouldContain("remaining: 90800");
+        model.Requests[1].System.ShouldContain("Most recent generation charged 7000 input tokens");
+        model.Requests[2].System.ShouldContain("Most recent generation charged 30000 input tokens");
+        model.Requests[2].System.ShouldContain($"roughly {90000+DreamingService.InputFramingBudget(model.Requests[2].Messages,model.Requests[2].Tools)} tokens");
         var final = model.Requests[2];
         var uncompressed = final.Messages.Select(m => m.ToolCallId == "source" ? m with { Content = beforeWrite } : m).ToArray();
         var oldReserve = DreamingService.ConservativeInputBudget(final.System, uncompressed, final.Tools);
