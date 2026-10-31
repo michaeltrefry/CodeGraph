@@ -8,8 +8,9 @@ namespace CodeGraph.Services.Work;
 internal static class DreamToolSelection
 {
     public static IReadOnlyList<DreamToolDefinition> Select(IReadOnlyList<DreamToolDefinition> tools, JsonElement digestData,
-        long newEntryCount = 0, long newLessonCount = 0, bool unknownNewEntries = false)
+        long newEntryCount = 0, long newLessonCount = 0, bool unknownNewEntries = false, bool? hasPriorResults = null)
     {
+        if (hasPriorResults is false) tools = tools.Where(tool => tool.Name != "dream_read_prior").ToArray();
         if (unknownNewEntries || newEntryCount < 0 || newLessonCount < 0 || newLessonCount > newEntryCount
             || digestData.ValueKind != JsonValueKind.Object) return tools;
         var signals = digestData.TryGetProperty("signals", out var nested) ? nested : digestData;

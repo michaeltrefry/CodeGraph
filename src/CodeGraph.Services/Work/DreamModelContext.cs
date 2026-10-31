@@ -54,6 +54,8 @@ internal static class DreamModelContext
 
         {planning}
 
+        Older read bodies may be archived only after being delivered to you when a full replay cannot fit. Their receipts are indexes, not new evidence. Use earlier analysis or dream_read_prior to recover exact immutable JSON; fresh unseen results, write outcomes and the full audit remain intact.
+
         ## Shared tool argument conventions
         Use the complete published argument shapes. IDs are stored UUIDs, not item keys or paths. expected_version is the current target version; reread after conflict.
         Direct-write evidence uses kind/reference/summary. lesson_event references correction_id; review references GitHub evidence; thread references item comment; graph_node is a positive numeric node ID encoded as a string, never a file path. Other references are UUIDs returned by scoped readers. For file verification cite the entry and explain the checked path/behavior; actual same-run source/hash proof is still required. Prevalence states observed events/sessions/items and unavailable counts honestly.
