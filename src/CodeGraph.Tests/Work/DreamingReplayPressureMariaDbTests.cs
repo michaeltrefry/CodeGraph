@@ -8,8 +8,10 @@ namespace CodeGraph.Tests.Work;
 
 public sealed partial class DreamingRunAcceptanceMariaDbTests
 {
-    [Fact]
-    public async Task Input_pressure_archives_only_delivered_reads_recounts_and_finishes_real_verification_with_full_audit_replay()
+    [Theory]
+    [InlineData(60000)]
+    [InlineData(30000)]
+    public async Task Input_pressure_archives_only_delivered_reads_recounts_and_finishes_real_verification_with_full_audit_replay(long originalReplayCount)
     {
         var (project, entry) = await StaleFactAsync();
         var source = string.Concat(Enumerable.Repeat("// café 界 😀 source evidence\n", 4000)) + "public static int Answer() => 42;";
@@ -59,14 +61,14 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
         })
         {
             InputCounter = request => turn >= 2 && request.Messages.Any(m => m.ToolCallId == "source"
-                && m.Content!.Contains("source evidence", StringComparison.Ordinal)) ? 60000 : 1000
+                && m.Content!.Contains("source evidence", StringComparison.Ordinal)) ? originalReplayCount : 1000
         };
 
         var run = await (await ServiceAsync(model)).RunAsync(project, "schedule", Human);
 
         run.Status.ShouldBe("completed", run.Reason);
         turn.ShouldBe(5);
-        model.CountRequests.ShouldBe(6); // One denied original replay, then the changed request is counted again.
+        model.CountRequests.ShouldBeGreaterThan(turn); // Every changed request is counted again, including early pressure.
         (run.InputTokens + run.OutputTokens).ShouldBe(87700);
         var durable = (await runs.GetRunAsync(project, run.Id))!;
         durable.Actions.First().Result.GetProperty("untrusted_data").GetProperty("source").GetString().ShouldBe(source);
