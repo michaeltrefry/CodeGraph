@@ -53,24 +53,29 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             await store.SaveRunAsync(run,ct);
             using var scope=DreamExecutionScope.Begin(run.Id,projectId,settings.DefaultModel);
             var messages=new List<DreamModelMessage> {new("user",JsonSerializer.Serialize(new {untrusted_data=digest.Data},WorkJson.Options))};
+            long newEntryCount=0,newLessonCount=0;
+            var unknownNewEntries=false;
             for(var turn=0;turn<settings.MaxTurns;turn++)
             {
                 var remaining=settings.MaxTokensPerRun-run.InputTokens-run.OutputTokens;
                 if(remaining<=0) return await FinishAsync(run,"budget_exhausted","token_budget",ct);
                 var system=instructions.Base.Content+"\n\n"+instructions.Project.Content
                     +DreamModelContext.RuntimeBudget(settings,turn+1,AddTokens(run.InputTokens,run.OutputTokens),remaining);
-                var request=new DreamModelRequest(settings.DefaultProvider,settings.DefaultModel,system,messages,ModelTools,(int)Math.Min(remaining,8192));
+                var tools=DreamToolSelection.Select(ModelTools,digest.Data,newEntryCount,newLessonCount,unknownNewEntries);
+                var request=new DreamModelRequest(settings.DefaultProvider,settings.DefaultModel,system,messages,tools,(int)Math.Min(remaining,8192));
                 var prepared=await model.PrepareAsync(request,ct);
-                var inputReserve=ConservativeInputBudget(system,messages,ModelTools);
+                var inputReserve=ConservativeInputBudget(system,messages,tools);
                 var counted=prepared is null?null:await prepared.CountInputTokensAsync(ct);
                 var validCount=counted is >0;
                 var source=prepared is null?"conservative_bytes":validCount?"provider_count":"uncertain_count_byte_fallback";
-                if(validCount)inputReserve=AddTokens(counted!.Value,InputFramingBudget(messages,ModelTools));
+                if(validCount)inputReserve=AddTokens(counted!.Value,InputFramingBudget(messages,tools));
                 var outputAllowance=remaining>inputReserve?Math.Min(remaining-inputReserve,8192):0;
                 logger?.LogInformation("Dreaming run {RunId} turn {Turn}: input count {InputCount}, reserve {Reserve}, source {Source}, remaining {Remaining}, output allowance {OutputAllowance}",
                     run.Id,turn+1,counted,inputReserve,source,remaining,outputAllowance);
                 if(remaining<=inputReserve)return await FinishAsync(run,"budget_exhausted",prepared is not null&&!validCount?"input_count_uncertain":"input_budget",ct);
                 var outputLimit=(int)outputAllowance;
+                // Messages are append-only; only this prefix has reached the model.
+                var deliveredMessageCount=messages.Count;
                 var response=prepared is null?await model.CompleteAsync(request with {MaxTokens=outputLimit},ct):await prepared.CompleteAsync(outputLimit,ct);
                 if(response.InputTokens<0||response.OutputTokens<0) throw new InvalidOperationException("Provider returned invalid token usage.");
                 var inputTotal=AddTokens(run.InputTokens,response.InputTokens);
@@ -98,11 +103,25 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                     var action=new DreamAction(call.Name,RecordedArguments(call.Arguments),json,evidence,clock.GetUtcNow().UtcDateTime);
                     run=run with {Actions=run.Actions.Append(action).ToList()};
                     await store.SaveRunAsync(run,ct);
+                    if(call.Name=="dream_record" && json.TryGetProperty("journal_id",out var journal) && journal.ValueKind==JsonValueKind.Number && journal.TryGetInt64(out var journalId) && journalId>0)
+                    {
+                        // Only the executor's durable result establishes newly reachable reads.
+                        // An unfamiliar result cannot prove a domain is empty.
+                        if(json.TryGetProperty("data",out var recorded) && recorded.TryGetProperty("entry",out var entry)
+                           && entry.TryGetProperty("kind",out var kind) && kind.ValueKind==JsonValueKind.String
+                           && kind.GetString() is "fact" or "gotcha" or "constraint" or "attempt" or "lesson")
+                        {
+                            newEntryCount=AddTokens(newEntryCount,1);
+                            if(kind.GetString()=="lesson")newLessonCount=AddTokens(newLessonCount,1);
+                        }
+                        else unknownNewEntries=true;
+                    }
                     var modelJson=DreamModelContext.ModelJson(json);
                     messages.Add(new("tool",modelJson,ToolCallId:call.Id));
                     logger?.LogInformation("Dreaming run {RunId} tool {Tool}: model result bytes {Bytes}",run.Id,call.Name,System.Text.Encoding.UTF8.GetByteCount(modelJson));
-                    var compacted=DreamModelContext.CompactVerifiedSources(messages,call.Name,json);
-                    if(compacted>0)logger?.LogInformation("Dreaming run {RunId}: compacted {Bytes} replay bytes after durable source verification",run.Id,compacted);
+                    var compacted=DreamModelContext.CompactVerifiedSources(messages,call.Name,json,deliveredMessageCount)
+                        +DreamModelContext.CompactRecordedTrail(messages,call.Name,json,deliveredMessageCount);
+                    if(compacted>0)logger?.LogInformation("Dreaming run {RunId}: compacted {Bytes} replay bytes after durable evidence consumption",run.Id,compacted);
                 }
             }
             return await FinishAsync(run,"budget_exhausted","turn_budget",ct);
@@ -169,7 +188,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             ["dream_relate"]="Relate lessons: same_as merges non-prompt duplicates reversibly; contradicts flags both. Input:id,expected_version,same_as OR contradicts,evidence,prevalence.",
             ["dream_promote"]="Propose rule status only. Input:id,expected_version,evidence,prevalence.",
             ["dream_record"]="Record a fact,gotcha,constraint,attempt or agent-source lesson with explicit confidence. Input:entry,evidence,prevalence.",
-            ["dream_challenge"]="Open a challenge with evidence; never resolve it. Input:id,reason,evidence,prevalence.",
+            ["dream_challenge"]="Open a challenge against an active lesson rule (not a candidate) with evidence; never resolve it. Input:id,reason,evidence,prevalence.",
             ["dream_propose"]="Propose retract, supersede, merge, skill_draft, hook_draft or test_draft with typed evidence kind/id (not reference/summary), target and expected_version. Supersede requires replacement; merge requires other and other_expected_version; drafts require draft text. Server supplies project and run id. Never applies or accepts a proposal."
         };
         JsonElement Shape(Type type,string[]? keep=null,bool write=false)
