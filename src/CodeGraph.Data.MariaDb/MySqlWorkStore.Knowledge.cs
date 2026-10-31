@@ -33,13 +33,20 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
     private const int MaxRecallScan = 5_000;
     private const int MaxRelevantCandidates = 500;
 
+    // JSON extraction gives a UTF-8 value coercibility 4 (like a parameter), so the bare
+    // indexed column's native collation wins over a differently collated work column. A fixed
+    // COLLATE can broaden repository/path equivalence and cross project boundaries. Preserve
+    // SQL NULL, exact string bytes and the index lookup; this is not a JSON data transformation.
+    private static string CoercibleText(string column) =>
+        $"IF({column} IS NULL,NULL,JSON_UNQUOTE(JSON_EXTRACT(JSON_ARRAY({column}),'$[0]')))";
+
     // An entry is possibly stale while a file it was verified against has another indexed hash, or
     // is no longer indexed. A file not yet indexed at verification (NULL hash) is not counted.
-    private const string StaleCondition =
-        "EXISTS (SELECT 1 FROM knowledge_entry_files kf LEFT JOIN file_hashes h ON h.repository = kf.repository_name AND h.rel_path = kf.path " +
-        "WHERE kf.entry_id = e.id AND kf.content_hash IS NOT NULL AND (h.content_hash IS NULL OR h.content_hash <> kf.content_hash))";
+    private static readonly string StaleCondition =
+        $"EXISTS (SELECT 1 FROM knowledge_entry_files kf LEFT JOIN file_hashes h ON h.repository = {CoercibleText("kf.repository_name")} AND h.rel_path = {CoercibleText("kf.path")} " +
+        $"WHERE kf.entry_id = e.id AND kf.content_hash IS NOT NULL AND (h.content_hash IS NULL OR h.content_hash <> {CoercibleText("kf.content_hash")}))";
 
-    private const string KnowledgeColumns =
+    private static readonly string KnowledgeColumns =
         "e.id, e.project_id, p.project_key, e.kind, e.status, e.summary, e.body, e.details_json, e.confidence, e.made_autonomously, " +
         "e.item_id, wi.number AS item_number, wi.title AS item_title, e.feature_id, wf.number AS feature_number, wf.title AS feature_title, " +
         "e.supersedes_id, e.superseded_by_id, e.status_reason, e.source_file, e.verified_commit, e.verified_at, e.revision, e.version, " +
@@ -419,7 +426,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 // transaction established an older repeatable-read snapshot. Hold the index rows
                 // through commit so a successful proof cannot race a newly indexed revision.
                 var files = await connection.QueryAsync<(string RepositoryName, string Path, string? BaselineHash, string? IndexedHash)>(new CommandDefinition(
-                    "SELECT k.repository_name,k.path,k.content_hash AS baseline_hash,h.content_hash AS indexed_hash FROM knowledge_entry_files k LEFT JOIN file_hashes h ON h.repository=k.repository_name AND h.rel_path=k.path WHERE k.entry_id=@entryId LOCK IN SHARE MODE",
+                    $"SELECT k.repository_name,k.path,k.content_hash AS baseline_hash,h.content_hash AS indexed_hash FROM knowledge_entry_files k LEFT JOIN file_hashes h ON h.repository={CoercibleText("k.repository_name")} AND h.rel_path={CoercibleText("k.path")} WHERE k.entry_id=@entryId LOCK IN SHARE MODE",
                     new { entryId }, transaction, cancellationToken: ct));
                 foreach (var file in files)
                 {
@@ -661,7 +668,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             .Select(node => new KnowledgeNodeView(node.NodeId, node.RepositoryName, node.QualifiedName, node.FilePath)).ToList();
         var files = (await connection.QueryAsync<(string RepositoryName, string Path, string? ContentHash, string? CurrentHash)>(new CommandDefinition(
             "SELECT kf.repository_name, kf.path, kf.content_hash, h.content_hash FROM knowledge_entry_files kf " +
-            "LEFT JOIN file_hashes h ON h.repository = kf.repository_name AND h.rel_path = kf.path WHERE kf.entry_id = @entryId ORDER BY kf.repository_name, kf.path",
+            $"LEFT JOIN file_hashes h ON h.repository = {CoercibleText("kf.repository_name")} AND h.rel_path = {CoercibleText("kf.path")} WHERE kf.entry_id = @entryId ORDER BY kf.repository_name, kf.path",
             new { entryId }, transaction, cancellationToken: ct))).ToList();
         var stale = files.Where(file => file.ContentHash is not null && file.CurrentHash != file.ContentHash)
             .Select(file => new KnowledgeFileView(file.RepositoryName, file.Path)).ToList();
