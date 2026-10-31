@@ -71,7 +71,8 @@ public sealed class DreamModelContractTests
         var entry = Schema("dream_record").GetProperty("properties").GetProperty("entry");
         Required(Schema("dream_record")).ShouldContain("entry");
         Required(entry).ShouldContain("confidence");
-        entry.GetProperty("properties").GetProperty("why_failed").GetProperty("type").GetString().ShouldBe("string");
+        entry.GetProperty("anyOf").EnumerateArray().Single(branch => branch.GetProperty("properties").GetProperty("kind").GetProperty("enum")[0].GetString() == "attempt")
+            .GetProperty("properties").GetProperty("why_failed").GetProperty("type").GetString().ShouldBe("string");
         entry.GetProperty("properties").GetProperty("kind").GetProperty("enum").EnumerateArray().Select(x => x.GetString())
             .ShouldBe(new[] { "fact", "gotcha", "constraint", "attempt", "lesson" });
         var proposal = Schema("dream_propose");

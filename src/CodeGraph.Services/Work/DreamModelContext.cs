@@ -76,20 +76,18 @@ internal static class DreamModelContext
         }
     }
 
-    public static int CompactVerifiedSources(List<DreamModelMessage> messages, string tool, JsonElement result)
+    public static int CompactVerifiedSources(List<DreamModelMessage> messages, string tool, JsonElement result, int deliveredMessageCount)
     {
         if (tool != "dream_verify" || !result.TryGetProperty("journal_id", out var journal) || journal.ValueKind != JsonValueKind.Number || !journal.TryGetInt64(out var journalId) || journalId <= 0
             || !result.TryGetProperty("data", out var data) || !data.TryGetProperty("entry", out var entry)
             || !entry.TryGetProperty("id", out var entryId) || !entry.TryGetProperty("verified_files", out var files) || files.ValueKind != JsonValueKind.Array) return 0;
         var verified = files.EnumerateArray().Where(f => f.TryGetProperty("repository", out _) && f.TryGetProperty("path", out _))
             .Select(f => FileKey(f.GetProperty("repository").GetString()!, f.GetProperty("path").GetString()!)).ToHashSet(StringComparer.Ordinal);
-        var sourceCalls = messages.Where(m => m.Role == "assistant").SelectMany(m => m.ToolCalls ?? [])
-            .Where(c => c.Name == "dream_read_source").Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
         var removed = 0;
         for (var i = 0; i < messages.Count; i++)
         {
             var message = messages[i];
-            if (message.Role != "tool" || message.ToolCallId is null || !sourceCalls.Contains(message.ToolCallId) || message.Content is null) continue;
+            if (message.Role != "tool" || message.ToolCallId is null || i >= deliveredMessageCount || Origin(messages, i, "dream_read_source") is null || message.Content is null) continue;
             using var document = JsonDocument.Parse(message.Content);
             if (!document.RootElement.TryGetProperty("untrusted_data", out var source) || source.ValueKind != JsonValueKind.Object
                 || !source.TryGetProperty("source", out var content) || content.ValueKind != JsonValueKind.String
@@ -108,5 +106,60 @@ internal static class DreamModelContext
         return removed;
     }
 
+    public static int CompactRecordedTrail(List<DreamModelMessage> messages, string tool, JsonElement result, int deliveredMessageCount)
+    {
+        if (tool != "dream_record" || !result.TryGetProperty("journal_id", out var journal) || journal.ValueKind != JsonValueKind.Number
+            || !journal.TryGetInt64(out var journalId) || journalId <= 0 || !result.TryGetProperty("evidence", out var evidence) || evidence.ValueKind != JsonValueKind.Array) return 0;
+        var cited = evidence.EnumerateArray().Where(e => e.TryGetProperty("kind", out var kind)
+                && kind.GetString() is "thread" or "message" or "review" or "attempt" or "handoff" && e.TryGetProperty("reference", out _))
+            .Select(e => TrailKey(e.GetProperty("kind").GetString()!, e.GetProperty("reference").GetString()!)).ToHashSet(StringComparer.Ordinal);
+        var removed = 0;
+        for (var i = 0; i < messages.Count; i++)
+        {
+            var message = messages[i];
+            if (message.Role != "tool" || message.ToolCallId is null || i >= deliveredMessageCount
+                || Origin(messages, i, "dream_work_trail") is not { } call || message.Content is null) continue;
+            var arguments = call.Arguments;
+            var envelope = JsonNode.Parse(message.Content) as JsonObject;
+            if (envelope?["data"]?["items"] is not JsonArray rows) continue;
+            var changed = false;
+            foreach (var row in rows.OfType<JsonObject>())
+            {
+                // Only a complete exact row consumed by this write. Summary previews and
+                // oversized JSON fragments remain available in their original form.
+                if (row["data"] is null || row["kind"] is not JsonValue kind || row["id"] is not JsonValue id
+                    || !cited.Contains(TrailKey(kind.GetValue<string>(), id.GetValue<string>()))) continue;
+                var read = new JsonObject { ["kind"] = kind.DeepClone(), ["id"] = id.DeepClone(), ["detail"] = "full" };
+                if (arguments.TryGetProperty("id", out var requested) && requested.GetString() == id.GetValue<string>()
+                    && arguments.TryGetProperty("expected_hash", out var hash) && hash.ValueKind == JsonValueKind.String)
+                    read["expected_hash"] = hash.GetString();
+                row.Remove("data");
+                row["compacted_after"] = JsonSerializer.SerializeToNode(new { action = "dream_record", journal_id = journalId });
+                row["full_result_in_run_report"] = true;
+                row["reread"] = new JsonObject { ["tool"] = "dream_work_trail", ["arguments"] = read };
+                changed = true;
+            }
+            if (!changed) continue;
+            var compact = ModelJson(JsonSerializer.SerializeToElement(envelope));
+            removed += Math.Max(0, Encoding.UTF8.GetByteCount(message.Content) - Encoding.UTF8.GetByteCount(compact));
+            messages[i] = message with { Content = compact };
+        }
+        return removed;
+    }
+
+    private static DreamToolCall? Origin(List<DreamModelMessage> messages, int index, string tool)
+    {
+        // IDs need only identify their assistant turn. Do not confuse a later reused ID
+        // with the provenance of an earlier tool result.
+        for (var i = index - 1; i >= 0; i--)
+        {
+            if (messages[i].Role != "assistant") continue;
+            var call = messages[i].ToolCalls?.FirstOrDefault(c => c.Id == messages[index].ToolCallId);
+            if (call is not null) return call.Name == tool ? call : null;
+        }
+        return null;
+    }
+
     private static string FileKey(string repository, string path) => repository.ToLowerInvariant() + ":" + path.Replace('\\', '/');
+    private static string TrailKey(string kind, string id) => kind + ":" + id.ToLowerInvariant();
 }

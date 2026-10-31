@@ -54,7 +54,7 @@ public sealed partial class MySqlWorkStore
             changed_count = changed.Count, changed_entries = changed.Take(5).Select(row => ToRow(row)), changed_more = changed.Count > 5,
             stale_count = stale.Count, possibly_stale = stale.Take(5).Select(row => ToRow(row)), stale_more = stale.Count > 5,
             changed_revisions = changedRevisions.Take(5), changed_revisions_count = changedRevisions.Length, changed_revisions_more = changedRevisions.Length > 5,
-            knowledge_count = entries.Count, lesson_event_count = events.Length, review_evidence_count = reviews.Length,
+            knowledge_count = entries.Count, lesson_count = entries.Count(row => row.Kind == "lesson"), lesson_event_count = events.Length, review_evidence_count = reviews.Length,
             open_challenge_count = challenges.Count(row => (string)row.status == "open"), open_proposal_count = proposals.Count(row => (string)row.status == "pending"),
             work_trail_count = changedRevisions.Length + activity.Count(row => since is null || (DateTime)row.changed_at >= since)
                 + trail.Count(row => since is null || (DateTime)(row.resolved_at ?? row.created_at) >= since)
