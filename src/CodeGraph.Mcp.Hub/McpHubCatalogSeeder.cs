@@ -26,6 +26,9 @@ public sealed class McpHubCatalogSeeder(IMcpHubStore store, IMcpSensitiveColumnS
         new("shortcut", "Shortcut", "Shortcut project tracking tools using each caller's validated delegated credential."),
         new("rabbitmq", "RabbitMQ", "Read-only RabbitMQ management API inspection tools."),
         new("mysql", "MySQL", "Schema catalog and guarded read-only SQL tools."),
+        // Credential holder only (sc-28194): the KanbanBoard work import reads kanban/apiToken, and a
+        // credential needs its provider row. It has no tools.
+        new("kanban", "KanbanBoard", "Credential for the KanbanBoard work import (kanban/apiToken, a read-scoped KanbanBoard PAT). No tools."),
         // Shim provider: tools are not seeded here — an admin sets discoveryUrl/discoveryToken
         // and runs discovery, which populates provider_type='shim' tools (disabled by default).
         new("shortcut-shim", "Shortcut (MCP shim)", "Retired downstream Shortcut MCP shim. Use the native Shortcut provider instead.")
