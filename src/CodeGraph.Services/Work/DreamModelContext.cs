@@ -49,6 +49,8 @@ internal static class DreamModelContext
         ## Shared tool argument conventions
         Use the complete published argument shapes. IDs are stored UUIDs, not item keys or paths. expected_version is the current target version; reread after conflict.
         Direct-write evidence uses kind/reference/summary. lesson_event references correction_id; review references GitHub evidence; thread references item comment; graph_node is a positive numeric node ID encoded as a string, never a file path. Other references are UUIDs returned by scoped readers. For file verification cite the entry and explain the checked path/behavior; actual same-run source/hash proof is still required. Prevalence states observed events/sessions/items and unavailable counts honestly.
+        Record kinds have different fields: fact/gotcha/constraint take no what, applies_when or source. A lesson may use what/applies_when and requires source.kind=agent. An attempt requires why_failed. Every record call requires its own evidence array and prevalence, even when batched. Copy actual UUID citations returned by readers; omit an uncertain citation instead of inventing an item UUID from its key. Never invent repository paths; search the graph for a current path when it is unknown.
+        Continuations use only cursor and optional limit; omit view and other selectors. If source verification_ready=false, do not retry unchanged bytes or call verify; full content remains explicitly available for a different evidence task.
         Proposals use kind/id citations (review_evidence, not review); put explanations in rationale. Drafts require actual recurrence while the rule was served. Never copy example identifiers or turn a refusal into a workaround.
         """;
 

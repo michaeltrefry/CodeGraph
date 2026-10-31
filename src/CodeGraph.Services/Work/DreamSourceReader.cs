@@ -15,6 +15,7 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
             throw new WorkException(WorkErrorCodes.Forbidden,"Source tools use the server run identity; it cannot be overridden. Nothing was changed.");
         var search=tool=="dream_search_graph"?WorkJson.Parse<DreamModelContract.SearchInput>(arguments,tool):null;
         var source=tool=="dream_read_source"?WorkJson.Parse<DreamModelContract.SourceInput>(arguments,tool):null;
+        if(source is not null && source.Detail is not ("auto" or "full"))throw WorkException.Invalid("Source detail must be auto or full.");
         if(search is null&&source is null)throw new WorkException(WorkErrorCodes.Forbidden,"Unknown dream source tool.");
         var project=await work.GetProjectAsync(projectId,ct)??throw WorkException.NotFound("No such project.");
         var repository=search?.Repository??source?.Repository;
@@ -50,6 +51,6 @@ public sealed class DreamSourceReader(GraphAssistant assistant,IGraphStore graph
         }
         if(tool!="dream_read_source"||KnowledgePaths.Normalize(path??"") is not {} normalized)
             throw WorkException.Invalid("Read source requires a relative path or node_id.");
-        return await assistant.ReadDreamSourceAsync(repository,normalized,nodeId,ct);
+        return await assistant.ReadDreamSourceAsync(repository,normalized,nodeId,source!.Detail=="full",ct);
     }
 }

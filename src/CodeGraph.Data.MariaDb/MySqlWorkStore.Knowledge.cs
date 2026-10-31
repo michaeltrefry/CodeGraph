@@ -432,7 +432,7 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
                 {
                     var readHash = DreamExecutionScope.Current!.ReadFileHash(file.RepositoryName, file.Path);
                     if (readHash is null || !string.Equals(readHash, file.IndexedHash, StringComparison.OrdinalIgnoreCase) || !string.Equals(readHash, file.BaselineHash, StringComparison.OrdinalIgnoreCase))
-                        throw new WorkException(WorkErrorCodes.Forbidden, "The source read no longer matches the indexed file being verified. Read the current source again; nothing was changed.");
+                        throw new WorkException(WorkErrorCodes.Forbidden, "The source proof does not match the current indexed file. Check verification_ready from the source reader; a missing or unchanged mismatched index cannot be fixed by repeatedly reading the same bytes. Leave this entry unverified until source and index agree; nothing was changed.");
                 }
             }
         }, ct);

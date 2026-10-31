@@ -159,7 +159,7 @@ public partial class GraphAssistant : IDreamBatchModel
         }
         return new {name=tool.Name,description,input_schema=JsonSerializer.SerializeToElement(schema)};
     }
-    internal async Task<object> ReadDreamSourceAsync(string repository,string path,long? nodeId,CancellationToken ct)
+    internal async Task<object> ReadDreamSourceAsync(string repository,string path,long? nodeId,bool includeUnverifiableSource,CancellationToken ct)
     {
         var indexed=await store.GetFileHashesAsync(repository);
         indexed.TryGetValue(path,out var indexHash);
@@ -170,9 +170,20 @@ public partial class GraphAssistant : IDreamBatchModel
         // XxHash3 is the indexing pipeline's byte hash. Older imported baselines may use SHA256.
         var contentHash=indexHash?.Length==64?Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(raw)):
             Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(raw));
+        var verificationReady=!string.IsNullOrEmpty(indexHash)&&string.Equals(contentHash,indexHash,StringComparison.OrdinalIgnoreCase);
+        if(!verificationReady&&!includeUnverifiableSource)
+        {
+            // An earlier matching read must not survive new evidence of unavailable proof.
+            DreamExecutionScope.Current!.InvalidateSourceRead(repository,path,nodeId);
+            return new {untrusted_data=new {repository,path,node_id=nodeId,content_hash=contentHash,indexed_hash=indexHash,
+                verification_ready=false,source_omitted=true,source_bytes=raw.Length,
+                reason=string.IsNullOrEmpty(indexHash)?"unindexed_source":"source_index_mismatch",
+                guidance="This source cannot authorize verification against the current index. Repeating the same read will not repair a missing or unchanged index. Leave the entry unverified and report the limitation, or explicitly read full content for another evidence task.",
+                read_full=new {tool="dream_read_source",arguments=new {repository,path,detail="full"}}}};
+        }
         DreamExecutionScope.Current!.MarkSourceRead(repository,path,nodeId,contentHash,indexHash);
         using var reader=new StreamReader(new MemoryStream(raw),detectEncodingFromByteOrderMarks:true);
         var source=await reader.ReadToEndAsync(ct);
-        return new {untrusted_data=new {repository,path,node_id=nodeId,content_hash=contentHash,indexed_hash=indexHash,source}};
+        return new {untrusted_data=new {repository,path,node_id=nodeId,content_hash=contentHash,indexed_hash=indexHash,verification_ready=verificationReady,source}};
     }
 }
