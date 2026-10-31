@@ -806,6 +806,7 @@ class SemanticModel {
         const existing = new Map(nodes.map(node => [node.qualifiedName, node]));
         const callableQNs = new Set(this.callables.values());
         for (const [callable, qn] of this.callables) {
+            this.work.charge(callable.getFullWidth() + 1);
             const jsx = callable.getDescendants().some(node => ts_morph_1.Node.isJsxElement(node) || ts_morph_1.Node.isJsxSelfClosingElement(node) || ts_morph_1.Node.isJsxFragment(node));
             const name = qn.split(/[.#]/).pop();
             const component = jsx && (/^[A-Z]/.test(name) || name === 'default');
@@ -817,42 +818,45 @@ class SemanticModel {
                 }
                 continue;
             }
-            const emitted = { label: component ? 'Component' : ts_morph_1.Node.isMethodDeclaration(callable) ? 'Method' : 'Function', name,
+            const emitted = this.work.createNode(() => ({ label: component ? 'Component' : ts_morph_1.Node.isMethodDeclaration(callable) ? 'Method' : 'Function', name,
                 qualifiedName: qn, filePath: this.relative(callable), startLine: callable.getStartLineNumber(), endLine: callable.getEndLineNumber(),
-                properties: { callable: true, ...(component ? { framework: 'react' } : {}), is_hook: /^use[A-Z]/.test(name) } };
+                properties: { callable: true, ...(component ? { framework: 'react' } : {}), is_hook: /^use[A-Z]/.test(name) } }));
             nodes.push(emitted);
             existing.set(qn, emitted);
             const owner = callable.getAncestors().find(node => this.callables.has(node) || ts_morph_1.Node.isClassDeclaration(node));
-            edges.push({ sourceQN: owner ? this.declarations.get(owner) : this.fileQN(callable), targetQN: qn,
-                type: owner && ts_morph_1.Node.isClassDeclaration(owner) ? 'DEFINES_METHOD' : 'DEFINES' });
+            edges.push(this.work.createEdge(() => ({ sourceQN: owner ? this.declarations.get(owner) : this.fileQN(callable), targetQN: qn,
+                type: owner && ts_morph_1.Node.isClassDeclaration(owner) ? 'DEFINES_METHOD' : 'DEFINES' })));
         }
         for (const file of this.files) {
+            this.work.charge(file.getFullWidth() + 1);
             for (const attribute of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.JsxAttribute)) {
                 if (!/^on[A-Z]/.test(attribute.getNameNode().getText()))
                     continue;
                 const init = attribute.getInitializer();
                 const target = init && ts_morph_1.Node.isJsxExpression(init) ? this.target(init.getExpression()) : undefined;
                 if (target && callableQNs.has(target))
-                    edges.push({ sourceQN: this.owner(attribute), targetQN: target, type: 'CALLS', properties: { call_kind: 'event_handler' } });
+                    edges.push(this.work.createEdge(() => ({ sourceQN: this.owner(attribute), targetQN: target, type: 'CALLS', properties: { call_kind: 'event_handler' } })));
             }
+            this.work.charge(file.getFullWidth() + 1);
             for (const call of file.getDescendantsOfKind(ts_morph_1.SyntaxKind.CallExpression)) {
                 const source = this.owner(call);
                 const target = this.target(call.getExpression());
                 let external;
                 if (target && callableQNs.has(target))
-                    edges.push({ sourceQN: source, targetQN: target, type: 'CALLS' });
+                    edges.push(this.work.createEdge(() => ({ sourceQN: source, targetQN: target, type: 'CALLS' })));
                 else if ((external = this.externalReference(call.getExpression()))) {
-                    if (!this.externalCallSymbols.has(external.qualifiedName))
-                        this.externalCallSymbols.set(external.qualifiedName, {
-                            label: 'ExternalSymbol', name: [external.properties.export_name, external.properties.member_path].filter(Boolean).join('.'), qualifiedName: external.qualifiedName,
-                            filePath: this.relative(call), startLine: 0, endLine: 0, properties: external.properties,
-                        });
-                    edges.push({ sourceQN: source, targetQN: external.qualifiedName, type: 'CALLS', properties: { call_kind: 'external_import' } });
+                    const reference = external;
+                    if (!this.externalCallSymbols.has(reference.qualifiedName))
+                        this.externalCallSymbols.set(reference.qualifiedName, this.work.createNode(() => ({
+                            label: 'ExternalSymbol', name: [reference.properties.export_name, reference.properties.member_path].filter(Boolean).join('.'), qualifiedName: reference.qualifiedName,
+                            filePath: this.relative(call), startLine: 0, endLine: 0, properties: reference.properties,
+                        })));
+                    edges.push(this.work.createEdge(() => ({ sourceQN: source, targetQN: reference.qualifiedName, type: 'CALLS', properties: { call_kind: 'external_import' } })));
                 }
                 for (const arg of call.getArguments()) {
                     const callback = this.target(arg);
                     if (callback && callback !== source && callableQNs.has(callback))
-                        edges.push({ sourceQN: source, targetQN: callback, type: 'CALLS', properties: { call_kind: 'callback' } });
+                        edges.push(this.work.createEdge(() => ({ sourceQN: source, targetQN: callback, type: 'CALLS', properties: { call_kind: 'callback' } })));
                 }
                 if (!target && !external && unresolved.length < 100 && !this.reactApi(call))
                     unresolved.push({ callerQN: source, calleeName: call.getExpression().getText().slice(0, 160), confidence: 0 });

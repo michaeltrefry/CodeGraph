@@ -143,14 +143,7 @@ function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, include
             }
             // Reserve parse/source retention before the compiler allocates the next file. Count raw
             // compiler nodes immediately afterwards, before another file or ts-morph wrappers accumulate.
-            work.reserveSource(text.length);
-            const source = project.createSourceFile(f, text);
-            const pending = [source.compilerNode];
-            while (pending.length) {
-                const node = pending.pop();
-                work.retainAstNode();
-                ts_morph_1.ts.forEachChild(node, child => { pending.push(child); });
-            }
+            work.parse(text, () => project.createSourceFile(f, text), source => source.compilerNode, (node, visit) => ts_morph_1.ts.forEachChild(node, child => { visit(child); }));
         }
         catch (error) {
             if (error.code === 'extraction_work_incomplete')
@@ -196,27 +189,22 @@ function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, include
     const sourceFiles = parsedFiles.filter(source => isTsSourceFile(source.getFilePath()) && !/\.generated\./i.test(source.getFilePath()));
     diag(`getSourceFiles: ${sourceFiles.length} files in ${Date.now() - t0}ms`);
     t0 = Date.now();
-    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope, reader);
+    const workspaceResolution = (0, workspaceResolver_1.analyzeWorkspaceImports)(repositoryName, rootPath, tsconfigPath, sourceFiles, log, scope, reader, work);
     if (!reader.complete)
         return refused();
     for (const node of workspaceResolution.nodes) {
-        work.reserveOutput('node', node.qualifiedName.length + node.name.length + node.filePath.length);
         nodes.push(node);
     }
     for (const edge of workspaceResolution.edges) {
-        work.reserveOutput('edge', edge.sourceQN.length + edge.targetQN.length);
         edges.push(edge);
     }
     for (const item of workspaceResolution.workspacePackages) {
-        work.reserveOutput('metadata', item.name.length + item.qualifiedName.length + item.rootPath.length);
         workspacePackages.push(item);
     }
     for (const item of workspaceResolution.resolvedImports) {
-        work.reserveOutput('metadata', item.fileQN.length + item.importedNamespace.length);
         resolvedImports.push(item);
     }
     for (const item of workspaceResolution.unresolvedImports) {
-        work.reserveOutput('metadata', item.fileQN.length + item.importedNamespace.length);
         unresolvedImports.push(item);
     }
     for (const message of workspaceResolution.diagnostics) {

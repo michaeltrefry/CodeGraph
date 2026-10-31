@@ -104,15 +104,15 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     if (!edgeKeys.has(key)) {
       edgeKeys.add(key);
       const direct = type === 'CALLS' ? directCalls.get(callKey(sourceQN, targetQN))?.next().value : undefined;
-      if (direct) direct.properties = {...direct.properties, ...props};
-      else edges.push({ sourceQN, targetQN, type, properties: props });
+      if (direct) direct.properties = model.work.createMetadata(()=>({...direct.properties, ...props}));
+      else edges.push(model.work.createEdge(()=>({ sourceQN, targetQN, type, properties: props })));
     }
   }
   function emit(node: Node, qualifiedName: string, label: string, name: string, properties: Record<string, unknown> = {}) {
     charge(qualifiedName.length + name.length + 96);
     const existing = graphNodes.get(qualifiedName);
     if (existing) { Object.assign(existing.properties, properties); return; }
-    const value = { label, name, qualifiedName, filePath: model.relative(node), startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber(), properties };
+    const value = model.work.createNode(()=>({ label, name, qualifiedName, filePath: model.relative(node), startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber(), properties }));
     nodes.push(value); graphNodes.set(qualifiedName, value);
   }
   function imported(node: Node | undefined, packageName: string): string | undefined {

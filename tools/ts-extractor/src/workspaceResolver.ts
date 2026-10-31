@@ -9,6 +9,7 @@ import type {
   UnresolvedImportDto,
   WorkspacePackageDto,
 } from './protocol';
+import { ExtractionWorkBudget } from './extractionWork';
 import { viteLibrarySource } from './viteLibraryExports';
 import type { DiscoveryScope } from './discoveryScope';
 import { BoundedTextReader } from './boundedTextReader';
@@ -56,6 +57,7 @@ interface ResolverContext {
   moduleHost: ts.ModuleResolutionHost;
   diagnostics: string[];
   reader: BoundedTextReader;
+  work: ExtractionWorkBudget;
 }
 
 export interface WorkspaceResolutionResult {
@@ -75,6 +77,7 @@ export function analyzeWorkspaceImports(
   log: (msg: string) => void = () => {},
   scope?: DiscoveryScope,
   reader = new BoundedTextReader(rootPath, scope ? file => scope.includesFile(file) : undefined, {}, log),
+  work = new ExtractionWorkBudget(),
 ): WorkspaceResolutionResult {
   const diagnostics: string[] = [];
   const diag = (msg: string) => {
@@ -92,7 +95,7 @@ export function analyzeWorkspaceImports(
       .filter(file => isInside(dir, file))
       .slice(0, limit)
     : findFilesByName(dir, fileName, limit, reader);
-  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope, reader);
+  const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope, reader, work);
   const fallbackConfig = pickFallbackConfig(tsconfigs, requestedTsconfigPath);
   const workspacePackages = discoverWorkspacePackages(
     repositoryName,
@@ -128,10 +131,11 @@ export function analyzeWorkspaceImports(
     },
     diagnostics,
     reader,
+    work,
   };
 
   const nodes = buildWorkspacePackageNodes(workspacePackages, ctx);
-  const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages);
+  const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages, work);
   const resolvedImports: ResolvedImportDto[] = [];
   const unresolvedImports: UnresolvedImportDto[] = [];
 
@@ -154,18 +158,15 @@ export function analyzeWorkspaceImports(
       resolutionCount++;
       const resolved = resolveImportSpec(ctx, absPath, fileQN, relPath, sourcePackage, spec);
       resolvedImports.push(resolved);
-      addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved);
+      addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved, work);
       if (resolved.classification === 'unresolved_alias' ||
           resolved.classification === 'unsupported_dynamic_expression') {
-        unresolvedImports.push({
-          fileQN,
-          importedNamespace: resolved.importedNamespace,
-        });
+        unresolvedImports.push(work.createMetadata(()=>({fileQN,importedNamespace:resolved.importedNamespace})));
       }
     }
   }
 
-  nodes.push(...buildExternalPackageNodes(resolvedImports));
+  nodes.push(...buildExternalPackageNodes(resolvedImports, work));
 
   diag(`workspaceDiscovery: ${workspacePackages.length} packages, ${tsconfigs.length} tsconfig files`);
   diag(`moduleResolution: ${resolvedImports.length} import/export/dynamic specifiers`);
@@ -173,7 +174,7 @@ export function analyzeWorkspaceImports(
   return {
     nodes,
     edges: dedupeEdges(edges),
-    workspacePackages: workspacePackages.map(toWorkspacePackageDto),
+    workspacePackages: workspacePackages.map(pkg=>work.createMetadata(()=>toWorkspacePackageDto(pkg))),
     resolvedImports,
     unresolvedImports,
     diagnostics,
@@ -187,6 +188,7 @@ function discoverTsConfigs(
   findManifests: ManifestFinder,
   scope: DiscoveryScope | undefined,
   reader: BoundedTextReader,
+  work: ExtractionWorkBudget,
 ): TsConfigInfo[] {
   const discovered = [...findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1), ...findManifests(rootPath, 'jsconfig.json', MAX_TSCONFIGS + 1)];
   const normalizedRequested = normalizeAbsolute(requestedTsconfigPath);
@@ -198,9 +200,9 @@ function discoverTsConfigs(
     diag(`tsconfigDiscovery: limited from ${discovered.length} to ${MAX_TSCONFIGS} files`);
   }
 
-  const configs: TsConfigInfo[] = [];
+  const configs: TsConfigInfo[] = []; const extendedConfigCache=new Map<string,ts.ExtendedConfigCacheEntry>();
   for (const configPath of discovered.slice(0, MAX_TSCONFIGS)) {
-    const parsed = parseTsConfig(configPath, rootPath, diag, scope, reader);
+    const parsed = parseTsConfig(configPath, rootPath, diag, scope, reader, work, extendedConfigCache);
     if (parsed) configs.push(parsed);
   }
 
@@ -230,17 +232,30 @@ function parseTsConfig(
   diag: (msg: string) => void,
   scope: DiscoveryScope | undefined,
   reader: BoundedTextReader,
+  work: ExtractionWorkBudget,
+  extendedConfigCache: Map<string,ts.ExtendedConfigCacheEntry>,
 ): TsConfigInfo | null {
+  let budgetFailure:unknown;
   const host: ts.ParseConfigFileHost = {
     useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
     getCurrentDirectory: ts.sys.getCurrentDirectory,
     fileExists: file => reader.exists(file),
-    readFile: file => reader.read(file),
+    readFile: file => {
+      try { work.charge(0); const text=reader.read(file); if(text===undefined) return undefined;
+      // The compiler's config API owns extends resolution. Preflight with the same JSON
+      // parser, then reserve its exact hidden parse before returning text to that API.
+      const source=work.parse(text,()=>ts.parseJsonText(file,text),value=>value,(node,visit)=>ts.forEachChild(node as ts.Node,child=>{visit(child);}));
+      const count=work.accountAst(source,(node,visit)=>ts.forEachChild(node as ts.Node,child=>{visit(child);}));
+      work.reserveSource(text.length); work.reserveAstNodes(count); return text;
+      } catch(error) { if((error as {code?:string}).code==='extraction_work_incomplete') budgetFailure=error; throw error; }
+    },
     // With a discovery scope, include/exclude globs see the admitted files; without one the
     // config's file list is never walked (sources are discovered separately).
     readDirectory: scope ? scopedReadDirectory(scope) : () => [],
-    onUnRecoverableConfigFileDiagnostic: diagnostic =>
-      diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(diagnostic)}`),
+    onUnRecoverableConfigFileDiagnostic: diagnostic => {
+      if(budgetFailure) throw budgetFailure;
+      diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(diagnostic)}`);
+    },
   };
 
   const parsed = ts.getParsedCommandLineOfConfigFile(
@@ -252,8 +267,11 @@ function parseTsConfig(
       types: [],
     },
     host,
+    extendedConfigCache,
   );
 
+  // TypeScript translates readFile exceptions into diagnostics; budget refusal must escape.
+  if(budgetFailure) throw budgetFailure;
   if (!parsed) return null;
   for (const error of parsed.errors) {
     // Without a scope no directory is read, so "No inputs were found" would always be false.
@@ -441,7 +459,8 @@ function addAngularWorkspacePackages(
 }
 
 function buildWorkspacePackageNodes(packages: WorkspacePackageInfo[], ctx: ResolverContext): GraphNodeDto[] {
-  return packages.map(pkg => ({
+  const work=ctx.work;
+  return packages.map(pkg => (work.createNode(()=>({
     label: 'Module',
     name: pkg.name,
     qualifiedName: pkg.qualifiedName,
@@ -457,22 +476,26 @@ function buildWorkspacePackageNodes(packages: WorkspacePackageInfo[], ctx: Resol
       ...(pkg.packageJsonPath ? { package_json_path: pkg.packageJsonPath } : {}),
       ...(pkg.tsconfigPath ? { tsconfig_path: pkg.tsconfigPath } : {}),
     },
-  }));
+  }))));
 }
 
 /** Public package entry identities, resolved only against already admitted ASTs. No dist or
  * node_modules reads are needed. An explicit compiler rootDir/outDir mapping can prove where a
  * manifest's generated JS entry originates; missing/alternative targets remain visible. */
 function packageEntryPoints(pkg: WorkspacePackageInfo, ctx: ResolverContext): Array<{ import_path: string; file_path?: string }> {
+  const work=ctx.work;
   if (!pkg.packageJsonPath) return [];
   const manifest = readJsonFile(path.join(ctx.rootPath, pkg.packageJsonPath), ctx.reader);
   if (!manifest || typeof manifest.name !== 'string' || manifest.name !== pkg.name) return [];
   const entries = new Map<string, string[]>();
-  const runtimeTargets = (value: unknown): string[] => {
-    if (typeof value === 'string') return [value];
-    if (Array.isArray(value)) return value.flatMap(runtimeTargets);
+  const runtimeTargets = (value: unknown, depth=0): string[] => {
+    work.checkDepth(depth,128);
+    if (typeof value === 'string') { work.text(value); return [value]; }
+    if (Array.isArray(value)) { work.charge(value.length+1); return value.flatMap(item=>runtimeTargets(item,depth+1)); }
     if (!value || typeof value !== 'object') return [];
-    return Object.entries(value).filter(([condition]) => condition !== 'types').flatMap(([, target]) => runtimeTargets(target));
+    const keys=Object.keys(value); work.charge(keys.length+1); const values:string[]=[];
+    for(const key of keys) { work.text(key); if(key!=='types') { const nested=runtimeTargets((value as Record<string,unknown>)[key],depth+1); work.charge(nested.length+1); for(const target of nested) values.push(target); } }
+    return values;
   };
   if (manifest.exports !== undefined) {
     const exports = manifest.exports;
@@ -486,6 +509,7 @@ function packageEntryPoints(pkg: WorkspacePackageInfo, ctx: ResolverContext): Ar
   }
   const config = ctx.tsconfigs.find(config => config.relativePath === pkg.tsconfigPath);
   const emittedPath = (source: string, output: string): string | undefined => {
+    work.charge(source.length+output.length+(config?.options.rootDir?.length??0)+8);
     if (!config?.options.rootDir || !isInside(normalizeAbsolute(config.options.rootDir), source)) return undefined;
     const jsx = /\.[jt]sx$/.test(source);
     if (jsx && config.options.jsx === undefined) return undefined;
@@ -493,6 +517,7 @@ function packageEntryPoints(pkg: WorkspacePackageInfo, ctx: ResolverContext): Ar
     return normalizeAbsolute(path.join(output, path.relative(config.options.rootDir, source))).replace(/\.[jt]sx?$/, extension);
   };
   const sourceCandidates = (absolute: string): string[] => {
+    work.charge(absolute.length+pkg.rootPath.length+16);
     if (ctx.sourceFilesByPath.has(absolute)) return [absolute];
     const candidates = viteLibrarySource(pkg.rootPath, ctx.sourceFilesByPath, absolute,
       message => ctx.diagnostics.push(message));
@@ -509,48 +534,58 @@ function packageEntryPoints(pkg: WorkspacePackageInfo, ctx: ResolverContext): Ar
   };
   const result: Array<{ import_path: string; file_path?: string }> = [];
   for (const [subpath, targets] of entries) {
+    work.charge(subpath.length+pkg.name.length+targets.length+8);
     const importPath = subpath === '.' ? pkg.name : `${pkg.name}${subpath.slice(1)}`;
-    if (!targets.length) { result.push({ import_path: importPath }); continue; }
+    if (!targets.length) { result.push(work.createMetadata(()=>({ import_path: importPath }))); continue; }
     const distinctTargets = [...new Set(targets)];
     const wildcardTargets = new Map<string, Set<string>>();
     for (const target of distinctTargets) {
-      if (!target.startsWith('./') && manifest.exports !== undefined) { result.push({ import_path: importPath }); continue; }
+      work.charge(target.length+pkg.rootPath.length+subpath.length+8);
+      if (!target.startsWith('./') && manifest.exports !== undefined) { result.push(work.createMetadata(()=>({ import_path: importPath }))); continue; }
       const absolute = normalizeAbsolute(path.join(pkg.rootPath, target));
-      if (!isInside(pkg.rootPath, absolute)) { result.push({ import_path: importPath }); continue; }
+      if (!isInside(pkg.rootPath, absolute)) { result.push(work.createMetadata(()=>({ import_path: importPath }))); continue; }
       if (subpath.includes('*') || target.includes('*')) {
         // Expand a single public wildcard from the admitted source universe, never a filesystem glob.
-        if (subpath.split('*').length !== 2 || target.split('*').length !== 2) { result.push({ import_path: importPath }); continue; }
+        if (subpath.split('*').length !== 2 || target.split('*').length !== 2) { result.push(work.createMetadata(()=>({ import_path: importPath }))); continue; }
         const [prefix, suffix] = absolute.split('*');
         for (const admitted of ctx.sourceFilesByPath.keys()) {
+          // Unmatched pairs still perform mapping and comparison work; reserve before arrays/paths.
+          work.charge(admitted.length+prefix.length+suffix.length+(config?.options.rootDir?.length??0)+(config?.options.outDir?.length??0)+16);
           const emitted = [admitted];
           if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.rootDir), admitted))
             { const compiled = emittedPath(admitted, config.options.outDir); if (compiled) emitted.push(compiled); }
-          for (const candidate of emitted) if (candidate.startsWith(prefix) && candidate.endsWith(suffix)) {
+          for (const candidate of emitted) {
+            work.charge(candidate.length+prefix.length+suffix.length+8);
+            if (candidate.startsWith(prefix) && candidate.endsWith(suffix)) {
+            work.charge(candidate.length+importPath.length+admitted.length+ctx.rootPath.length+16);
             const wildcard = candidate.slice(prefix.length, candidate.length - suffix.length || undefined);
             const publicPath = importPath.replace('*', wildcard);
-            result.push({ import_path: publicPath, file_path: toRelative(ctx.rootPath, admitted) });
+            result.push(work.createMetadata(()=>({ import_path: publicPath, file_path: toRelative(ctx.rootPath, admitted) })));
             if (!wildcardTargets.has(publicPath)) wildcardTargets.set(publicPath, new Set());
             wildcardTargets.get(publicPath)!.add(target);
+            }
           }
         }
       } else {
         const candidates = sourceCandidates(absolute);
-        if (!candidates.length) result.push({ import_path: importPath });
-        for (const candidate of candidates) result.push({ import_path: importPath, file_path: toRelative(ctx.rootPath, candidate) });
+        if (!candidates.length) result.push(work.createMetadata(()=>({ import_path: importPath })));
+        for (const candidate of candidates) result.push(work.createMetadata(()=>({ import_path: importPath, file_path: toRelative(ctx.rootPath, candidate) })));
       }
     }
     if (subpath.includes('*')) for (const [publicPath, resolvedTargets] of wildcardTargets)
-      if (resolvedTargets.size !== distinctTargets.length) result.push({ import_path: publicPath });
+      if (resolvedTargets.size !== distinctTargets.length) result.push(work.createMetadata(()=>({ import_path: publicPath })));
   }
-  return [...new Map(result.map(entry => [`${entry.import_path}\0${entry.file_path ?? ''}`, entry])).values()]
-    .sort((a, b) => a.import_path.localeCompare(b.import_path) || (a.file_path ?? '').localeCompare(b.file_path ?? ''));
+  work.charge(result.length+1);
+  return [...new Map(result.map(entry => { work.charge(entry.import_path.length+(entry.file_path?.length??0)+2); return [`${entry.import_path}\0${entry.file_path ?? ''}`, entry] as const; })).values()]
+    .sort((a, b) => { work.charge(a.import_path.length+b.import_path.length+(a.file_path?.length??0)+(b.file_path?.length??0)+4); return a.import_path.localeCompare(b.import_path) || (a.file_path ?? '').localeCompare(b.file_path ?? ''); });
 }
 
 function buildWorkspacePackageContainmentEdges(
   repositoryName: string,
   packages: WorkspacePackageInfo[],
+  work: ExtractionWorkBudget,
 ): PendingEdgeDto[] {
-  return packages.map(pkg => ({
+  return packages.map(pkg => (work.createEdge(()=>({
     sourceQN: repositoryName,
     targetQN: pkg.qualifiedName,
     type: 'CONTAINS_PROJECT',
@@ -558,10 +593,10 @@ function buildWorkspacePackageContainmentEdges(
       workspace_kind: pkg.kind,
       root_path: pkg.relativeRoot,
     },
-  }));
+  }))));
 }
 
-function buildExternalPackageNodes(resolvedImports: ResolvedImportDto[]): GraphNodeDto[] {
+function buildExternalPackageNodes(resolvedImports: ResolvedImportDto[], work:ExtractionWorkBudget): GraphNodeDto[] {
   const packages = new Map<string, string>();
   for (const resolved of resolvedImports) {
     if (resolved.classification !== 'external_npm_package' ||
@@ -573,7 +608,7 @@ function buildExternalPackageNodes(resolvedImports: ResolvedImportDto[]): GraphN
     packages.set(resolved.targetPackageQN, resolved.externalPackageName);
   }
 
-  return [...packages.entries()].map(([qualifiedName, name]) => ({
+  return [...packages.entries()].map(([qualifiedName, name]) => (work.createNode(()=>({
     label: 'NuGetPackage',
     name,
     qualifiedName,
@@ -583,7 +618,7 @@ function buildExternalPackageNodes(resolvedImports: ResolvedImportDto[]): GraphN
     properties: {
       package_type: 'npm',
     },
-  }));
+  }))));
 }
 
 function collectImportSpecs(sourceFile: SourceFile): Array<{ specifier: string; kind: ResolvedImportKind }> {
@@ -633,6 +668,7 @@ function resolveImportSpec(
   sourcePackage: WorkspacePackageInfo | undefined,
   spec: { specifier: string; kind: ResolvedImportKind },
 ): ResolvedImportDto {
+  ctx.work.reserveOutput('metadata',fileQN.length+filePath.length+spec.specifier.length);
   if (spec.specifier === '<dynamic expression>') {
     return {
       fileQN,
@@ -764,6 +800,7 @@ function addGraphEdgesForResolvedImport(
   fileQN: string,
   sourcePackage: WorkspacePackageInfo | undefined,
   resolved: ResolvedImportDto,
+  work: ExtractionWorkBudget,
 ): void {
   const commonProperties = {
     imported_namespace: resolved.importedNamespace,
@@ -774,65 +811,65 @@ function addGraphEdgesForResolvedImport(
   };
 
   if (resolved.targetFileQN) {
-    edges.push({
+    edges.push(work.createEdge(()=>({
       sourceQN: fileQN,
-      targetQN: resolved.targetFileQN,
+      targetQN: resolved.targetFileQN!,
       type: 'IMPORTS',
       properties: commonProperties,
-    });
+    })));
   }
 
   if (resolved.targetPackageQN && resolved.classification === 'local_workspace_package') {
-    edges.push({
+    edges.push(work.createEdge(()=>({
       sourceQN: fileQN,
-      targetQN: resolved.targetPackageQN,
+      targetQN: resolved.targetPackageQN!,
       type: 'IMPORTS',
       properties: commonProperties,
-    });
+    })));
 
     if (sourcePackage && sourcePackage.qualifiedName !== resolved.targetPackageQN) {
-      edges.push({
+      edges.push(work.createEdge(()=>({
         sourceQN: sourcePackage.qualifiedName,
-        targetQN: resolved.targetPackageQN,
+        targetQN: resolved.targetPackageQN!,
         type: 'IMPORTS',
         properties: commonProperties,
-      });
+      })));
     }
   }
 
   if (resolved.targetPackageQN && resolved.classification === 'external_npm_package') {
     const packageName = resolved.externalPackageName ?? resolved.importedNamespace;
-    edges.push({
+    edges.push(work.createEdge(()=>({
       sourceQN: fileQN,
-      targetQN: resolved.targetPackageQN,
+      targetQN: resolved.targetPackageQN!,
       type: 'REFERENCES_PACKAGE',
       properties: {
         package_type: 'npm',
         package_name: packageName,
         imported_namespace: resolved.importedNamespace,
       },
-    });
+    })));
 
     if (sourcePackage) {
-      edges.push({
+      edges.push(work.createEdge(()=>({
         sourceQN: sourcePackage.qualifiedName,
-        targetQN: resolved.targetPackageQN,
+        targetQN: resolved.targetPackageQN!,
         type: 'REFERENCES_PACKAGE',
         properties: {
           package_type: 'npm',
           package_name: packageName,
         },
-      });
+      })));
     } else {
-      edges.push({
+      edges.push(work.createEdge(()=>({
         sourceQN: repositoryName,
-        targetQN: resolved.targetPackageQN,
+        targetQN: resolved.targetPackageQN!,
         type: 'REFERENCES_PACKAGE',
         properties: {
           package_type: 'npm',
           package_name: packageName,
         },
-      });
+      })));
     }
   }
 }

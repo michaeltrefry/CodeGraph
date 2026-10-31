@@ -61,8 +61,8 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
       } else work.charge(16);
     }
   };
-  const emitEdge = (edge: PendingEdgeDto): void => { work.charge((edge.sourceQN.length + edge.targetQN.length + edge.type.length) * 6 + 8); chargeProperties(edge.properties); edges.push(edge); };
-  const emitNode = (node: GraphNodeDto): void => { work.charge((node.name.length + node.qualifiedName.length + node.filePath.length) * 6 + 8); chargeProperties(node.properties); nodes.push(node); };
+  const emitEdge = (factory:()=>PendingEdgeDto): void => { const edge=work.createEdge(factory); work.charge((edge.sourceQN.length + edge.targetQN.length + edge.type.length) * 6 + 8); chargeProperties(edge.properties); edges.push(edge); };
+  const emitNode = (factory:()=>GraphNodeDto): void => { const node=work.createNode(factory); work.charge((node.name.length + node.qualifiedName.length + node.filePath.length) * 6 + 8); chargeProperties(node.properties); nodes.push(node); };
   const memoReturns = new Map<Node, import('ts-morph').ReturnStatement[]>();
   const returnsIn = (callback: Node, body: Node): import('ts-morph').ReturnStatement[] => {
     work.charge(); const cached = memoReturns.get(callback); if (cached) return cached;
@@ -124,9 +124,9 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
         if (!declaration || !Node.isVariableDeclaration(declaration)) continue;
         const qn = model.declarations.get(declaration)!;
         contexts.set(qn, { declaration, defaults: callableValues(call.getArguments()[0]) });
-        emitNode({ label: 'Property', name: declaration.getName(), qualifiedName: qn, filePath: model.relative(call),
-          startLine: declaration.getStartLineNumber(), endLine: declaration.getEndLineNumber(), properties: { framework: 'react', context_kind: 'context' } });
-        emitEdge({ sourceQN: model.fileQN(call), targetQN: qn, type: 'DEFINES' });
+        emitNode(()=>({ label: 'Property', name: declaration.getName(), qualifiedName: qn, filePath: model.relative(call),
+          startLine: declaration.getStartLineNumber(), endLine: declaration.getEndLineNumber(), properties: { framework: 'react', context_kind: 'context' } }));
+        emitEdge(()=>({ sourceQN: model.fileQN(call), targetQN: qn, type: 'DEFINES' }));
       }
       if (api === 'useContext' || api === 'use') {
         const context = model.target(call.getArguments()[0]);
@@ -139,7 +139,7 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
     work.charge(owner.length + context.length + 1);
     if (!contexts.has(context)) { diagnostic(`contextUnresolved: ${owner}: ${context} is not a statically known context`); continue; }
     if (!consumers.has(owner)) consumers.set(owner, new Set()); consumers.get(owner)!.add(context);
-    emitEdge({ sourceQN: owner, targetQN: context, type: 'INJECTS', properties: { framework: 'react', context_kind: 'consumer' } });
+    emitEdge(()=>({ sourceQN: owner, targetQN: context, type: 'INJECTS', properties: { framework: 'react', context_kind: 'consumer' } }));
   }
   const contextTag = (tag: Node): string | undefined => {
     const expression = Node.isPropertyAccessExpression(tag) && tag.getName() === 'Provider' ? tag.getExpression() : tag;
@@ -163,10 +163,10 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
         if (expression) work.charge(expression.getFullWidth() + 1);
         const provider: Provider = { qn, context, element, values, dynamic: !!expression && values.size === 0 && !['null', 'undefined'].includes(expression.getText()) };
         providers.set(element, provider);
-        emitNode({ label: 'Property', name: `${context.split(/[.#]/).pop()} provider`, qualifiedName: qn, filePath: model.relative(element),
-          startLine: element.getStartLineNumber(), endLine: element.getEndLineNumber(), properties: { framework: 'react', context_kind: 'provider', context_qn: context, value_resolution: provider.dynamic ? 'unresolved' : 'static' } });
-        emitEdge({ sourceQN: owner, targetQN: qn, type: 'DEFINES' }); emitEdge({ sourceQN: qn, targetQN: context, type: 'REGISTERS', properties: { framework: 'react', context_kind: 'provider' } });
-        for (const value of values) emitEdge({ sourceQN: qn, targetQN: value, type: 'CALLS', properties: { call_kind: 'context_value' } });
+        emitNode(()=>({ label: 'Property', name: `${context.split(/[.#]/).pop()} provider`, qualifiedName: qn, filePath: model.relative(element),
+          startLine: element.getStartLineNumber(), endLine: element.getEndLineNumber(), properties: { framework: 'react', context_kind: 'provider', context_qn: context, value_resolution: provider.dynamic ? 'unresolved' : 'static' } }));
+        emitEdge(()=>({ sourceQN: owner, targetQN: qn, type: 'DEFINES' })); emitEdge(()=>({ sourceQN: qn, targetQN: context, type: 'REGISTERS', properties: { framework: 'react', context_kind: 'provider' } }));
+        for (const value of values) emitEdge(()=>({ sourceQN: qn, targetQN: value, type: 'CALLS', properties: { call_kind: 'context_value' } }));
         if (provider.dynamic) diagnostic(`contextValueUnresolved: ${qn}`);
         continue;
       }
@@ -183,22 +183,22 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
         if (reference) {
           target = reference.qualifiedName;
           if (!external.has(target)) {
-            emitNode({ label: 'ExternalSymbol', name: [reference.properties.export_name, reference.properties.member_path].filter(Boolean).join('.'),
-              qualifiedName: target, filePath: model.relative(file), startLine: 0, endLine: 0,
-              properties: { ...reference.properties, framework: 'react' } });
+            emitNode(()=>({ label: 'ExternalSymbol', name: [reference.properties.export_name, reference.properties.member_path].filter(Boolean).join('.'),
+              qualifiedName: reference.qualifiedName, filePath: model.relative(file), startLine: 0, endLine: 0,
+              properties: { ...reference.properties, framework: 'react' } }));
             external.add(target);
           }
         }
       }
-      if (target) { work.charge(owner.length + target.length + 1); renders.push({ owner, target, element }); emitEdge({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element) } }); }
+      if (target) { work.charge(owner.length + target.length + 1); renders.push({ owner, target, element }); emitEdge(()=>({ sourceQN: owner, targetQN: target, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element) } })); }
       else { work.charge(owner.length + text.length + 1); diagnostic(`renderUnresolved: ${owner}: ${text}`); }
       for (const lazy of lazyTargets(tag)) {
         if (lazy.qualifiedName === target || !renderable.has(lazy.qualifiedName)) continue;
         work.charge(owner.length + lazy.qualifiedName.length + lazy.filePath.length + lazy.wrapperChain.reduce((size, name) => size + name.length, 0) + 1);
         renders.push({ owner, target: lazy.qualifiedName, element, uncertain: true });
-        emitEdge({ sourceQN: owner, targetQN: lazy.qualifiedName, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element),
+        emitEdge(()=>({ sourceQN: owner, targetQN: lazy.qualifiedName, type: 'RENDERS', properties: { framework: 'react', ...screenMetadata(element),
           lazy_wrapper: true, lazy_target_file: lazy.filePath, lazy_wrapper_chain: lazy.wrapperChain,
-          confidence_band: 'medium', candidate: true, lazy_evidence: 'source_initializer_to_react_lazy' } });
+          confidence_band: 'medium', candidate: true, lazy_evidence: 'source_initializer_to_react_lazy' } }));
       }
     }
   }
@@ -333,8 +333,8 @@ export function analyzeReact(model: SemanticModel, nodes: GraphNodeDto[], edges:
     for (const alternative of alternatives) {
       const properties = { framework: 'react', context_qn: context, context_kind: 'binding', confidence_band: ambiguous ? 'medium' : 'high', candidate: ambiguous };
       const provider = providerByQN.get(alternative);
-      if (provider) emitEdge({ sourceQN: owner, targetQN: provider.qn, type: 'INJECTS', properties });
-      else for (const target of contexts.get(context)?.defaults ?? []) emitEdge({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } });
+      if (provider) emitEdge(()=>({ sourceQN: owner, targetQN: provider.qn, type: 'INJECTS', properties }));
+      else for (const target of contexts.get(context)?.defaults ?? []) emitEdge(()=>({ sourceQN: owner, targetQN: target, type: 'CALLS', properties: { ...properties, call_kind: 'context_default' } }));
     }
   }
   canonicalizeRenderEdges(edges, model.work);

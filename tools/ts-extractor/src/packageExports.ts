@@ -156,8 +156,8 @@ export function addNpmExportMetadata(model: SemanticModel, nodes: GraphNodeDto[]
             continue;
           }
           work.charge(packageName.length + importPath.length + name.length + member.length + 8);
-          const identity = { package_name: packageName, import_path: importPath, export_name: name,
-            ...(member ? { member_path: member } : {}) };
+          const identity = work.createMetadata(()=>({ package_name: packageName, import_path: importPath, export_name: name,
+            ...(member ? { member_path: member } : {}) }));
           work.charge(surfaces.length + 1);
           for (const qn of new Set(surfaces.map(surface => surface.get(member)!))) {
             work.charge(qn.length + packageName.length + importPath.length + name.length + member.length + 8);

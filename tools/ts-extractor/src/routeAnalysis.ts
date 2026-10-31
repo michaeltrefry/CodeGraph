@@ -1,4 +1,4 @@
-import { Node, SourceFile, SyntaxKind, Project } from 'ts-morph';
+import { ts, Node, SourceFile, SyntaxKind, Project } from 'ts-morph';
 import * as path from 'path';
 import { BoundedTextReader } from './boundedTextReader';
 import { SemanticModel, sameSymbol } from './semanticModel';
@@ -26,15 +26,18 @@ class RouteAnalysis {
     private readonly edges: PendingEdgeDto[], private readonly scope: DiscoveryScope | undefined,
     private readonly diagnostic: (message: string) => void, private readonly reader: BoundedTextReader) {
     this.inputs = scope ? scope.absoluteFiles().map(file => path.relative(model.root, file).replace(/\\/g, '/')) : model.files.map(file => model.relative(file));
-    if (!scope) for (const file of model.files) {
-      let directory = path.posix.dirname(model.relative(file));
-      while (true) {
-        for (const name of ['package.json', 'angular.json', 'tsconfig.json', 'next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs']) {
-          const input = directory === '.' ? name : `${directory}/${name}`;
-          if (!this.inputs.includes(input) && reader.exists(path.join(model.root, input))) this.inputs.push(input);
+    if (!scope) {
+      const knownInputs=new Set(this.inputs); const visitedDirectories=new Set<string>();
+      for (const file of model.files) {
+        model.work.charge(model.relative(file).length+1); let directory=path.posix.dirname(model.relative(file));
+        while(!visitedDirectories.has(directory)) {
+          model.work.charge(directory.length+1); visitedDirectories.add(directory);
+          for(const name of ['package.json','angular.json','tsconfig.json','next.config.ts','next.config.js','next.config.mjs','next.config.cjs']) {
+            model.work.charge(directory.length+name.length+2); const input=directory==='.'?name:`${directory}/${name}`;
+            if(!knownInputs.has(input)&&reader.exists(path.join(model.root,input))) { knownInputs.add(input); this.inputs.push(input); }
+          }
+          if(directory==='.') break; directory=path.posix.dirname(directory);
         }
-        if (directory === '.') break;
-        directory = path.posix.dirname(directory);
       }
     }
     for (const input of this.inputs) {
@@ -166,7 +169,7 @@ class RouteAnalysis {
     const properties = { extraction_source_file: sourceFile, route_kind: 'ui', ...extra };
     const key = JSON.stringify([source, target, type, properties]);
     if (this.edgeKeys.has(key)) return;
-    this.edgeKeys.add(key); this.edges.push({ sourceQN: source, targetQN: target, type, properties });
+    this.edgeKeys.add(key); this.edges.push(this.model.work.createEdge(()=>({ sourceQN: source, targetQN: target, type, properties })));
   }
   private properties(extra: Record<string, unknown>): void {
     for (const key in extra) { const value = extra[key]; this.model.work.charge(key.length + (typeof value === 'string' ? value.length * 6 : 1) + 8); }
@@ -178,10 +181,10 @@ class RouteAnalysis {
     if (!this.emitted.has(qualifiedName)) {
       const sourceOwner = this.model.owner(owner);
       this.model.work.charge(sourceOwner.length * 6 + 1);
-      const node: GraphNodeDto = { label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
+      const node: GraphNodeDto = this.model.work.createNode(()=>({ label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
         startLine: owner.getStartLineNumber(), endLine: owner.getEndLineNumber(), properties: {
           route_kind: 'ui', framework, full_path: fullPath, app_root: appRoot,
-          extraction_source_file: this.relative(owner), source_owner: sourceOwner, ...extra } };
+          extraction_source_file: this.relative(owner), source_owner: sourceOwner, ...extra } }));
       this.nodes.push(node); this.emitted.set(qualifiedName, node);
     } else Object.assign(this.emitted.get(qualifiedName)!.properties, extra);
     return qualifiedName;
@@ -410,15 +413,20 @@ class RouteAnalysis {
     const configByRoot = new Map<string, { base?: string; file: string }>();
     for (const config of configs) {
       const text = this.read(config); if (text === undefined) continue;
-      this.model.work.charge(text.length + 1);
-      const source = this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true });
+      const source = this.model.byPath.get(config) ?? this.model.work.parse(text,()=>this.parsedConfigs.createSourceFile(`/${config}`,text,{overwrite:true}),source=>source.compilerNode,(node,visit)=>ts.forEachChild(node as ts.Node,child=>{visit(child);}));
       let expression: Node | undefined = source.getExportAssignments()[0]?.getExpression();
       if (!expression) expression = source.getDescendantsOfKind(SyntaxKind.BinaryExpression).find(node => node.getLeft().getText() === 'module.exports')?.getRight();
-      const localValue = (node: Node | undefined, seen = new Set<Node>()): Node | undefined => {
-        if (!node || seen.has(node)) return undefined; seen.add(node);
-        if (Node.isAsExpression(node) || Node.isSatisfiesExpression(node) || Node.isParenthesizedExpression(node)) return localValue(node.getExpression(), seen);
-        if (Node.isIdentifier(node)) return localValue(source.getVariableDeclaration(node.getText())?.getInitializer(), seen);
-        return node;
+      const variables=new Map<string,Node>(); this.model.work.charge(source.compilerNode.statements.length+1);
+      for(const declaration of source.getVariableDeclarations()) { this.model.work.charge(declaration.getNameNode().getFullWidth()+1); const name=declaration.getName(); if(!variables.has(name)) variables.set(name,declaration); }
+      const localValue=(initial:Node|undefined):Node|undefined=>{
+        const seen=new Set<Node>(); let node=initial;
+        while(node) {
+          this.model.work.charge(); this.model.work.checkDepth(seen.size,128); if(seen.has(node)) return undefined; seen.add(node);
+          if(Node.isAsExpression(node)||Node.isSatisfiesExpression(node)||Node.isParenthesizedExpression(node)) { node=node.getExpression(); continue; }
+          if(Node.isIdentifier(node)) { this.model.work.charge(node.getFullWidth()+1); const declaration=variables.get(node.getText()); node=declaration&&Node.isVariableDeclaration(declaration)?declaration.getInitializer():undefined; continue; }
+          return node;
+        }
+        return undefined;
       };
       const object = localValue(expression); let base: string | undefined;
       if (object && Node.isObjectLiteralExpression(object)) {
@@ -437,9 +445,21 @@ class RouteAnalysis {
       try { const pkg = JSON.parse(text); if (pkg.dependencies?.next || pkg.devDependencies?.next) nextRoots.add(path.posix.dirname(input)); } catch { /* Workspace discovery owns malformed manifests. */ }
     }
     for (const file of this.model.files) if (file.getImportDeclarations().some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue()))) nextRoots.add(this.appRoot(this.relative(file)));
+    const rootAtDirectory=new Map<string,string|undefined>();
+    const nearestRoot=(relative:string):string|undefined=>{
+      this.model.work.charge(relative.length+1); let directory=path.posix.dirname(relative); const trail:string[]=[];
+      let found:string|undefined;
+      while(true) {
+        this.model.work.charge(directory.length+1);
+        if(rootAtDirectory.has(directory)) { found=rootAtDirectory.get(directory); break; }
+        trail.push(directory); if(nextRoots.has(directory)) { found=directory; break; }
+        if(directory==='.') break; directory=path.posix.dirname(directory);
+      }
+      for(const item of trail) { this.model.work.charge(item.length+1); rootAtDirectory.set(item,found); } return found;
+    };
     for (const file of this.model.files) {
       const relative = this.relative(file); if (!/(?:^|\/)page\.(?:jsx?|tsx?)$/.test(relative)) continue;
-      const appRoot = [...nextRoots].filter(root => root === '.' || relative.startsWith(`${root}/`)).sort((a, b) => b.length - a.length)[0]; if (appRoot === undefined) continue;
+      const appRoot = nearestRoot(relative); if (appRoot === undefined) continue;
       const within = appRoot === '.' ? relative : relative.slice(appRoot.length + 1);
       const match = /^(?:src\/)?app\/(.*)page\.(?:jsx?|tsx?)$/.exec(within); if (!match) continue;
       const configuration = configByRoot.get(appRoot); if (configuration && configuration.base === undefined) continue;

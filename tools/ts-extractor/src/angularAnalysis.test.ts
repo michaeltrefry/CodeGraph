@@ -453,7 +453,8 @@ test('the 10k selector by 10k repeated-tag shape has bounded growth and retains 
     const renders = matching(result.edges, 'RENDERS', 'Host');
     assert.equal(renders.length, 10_000);
     assert.ok(renders.every(edge => edge.properties?.candidate === true && edge.properties?.confidence_band === 'medium'));
-    assert.ok(result.model.work.used <= 20_000_000, `work=${result.model.work.used}`);
+    // Includes independent hard reservations for the 10k component and render DTOs.
+    assert.ok(result.model.work.used <= 30_000_000, `work=${result.model.work.used}`);
     assert.equal(importViews, 1, 'the source import list is materialized once, not once per component/API check');
     t.diagnostic(JSON.stringify({semanticWork,angularWork:result.model.work.used-semanticWork,totalWork:result.model.work.used,importViews}));
   } finally {f.dispose();}

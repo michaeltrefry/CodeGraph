@@ -540,7 +540,8 @@ function selectorCrowd(count, template, eachTemplate = '') {
         const renders = matching(result.edges, 'RENDERS', 'Host');
         assert_1.strict.equal(renders.length, 10000);
         assert_1.strict.ok(renders.every(edge => edge.properties?.candidate === true && edge.properties?.confidence_band === 'medium'));
-        assert_1.strict.ok(result.model.work.used <= 20000000, `work=${result.model.work.used}`);
+        // Includes independent hard reservations for the 10k component and render DTOs.
+        assert_1.strict.ok(result.model.work.used <= 30000000, `work=${result.model.work.used}`);
         assert_1.strict.equal(importViews, 1, 'the source import list is materialized once, not once per component/API check');
         t.diagnostic(JSON.stringify({ semanticWork, angularWork: result.model.work.used - semanticWork, totalWork: result.model.work.used, importViews }));
     }

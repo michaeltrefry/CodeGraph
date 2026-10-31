@@ -168,7 +168,7 @@ test('scope metadata bounds reject count/character overflow and bounded scope-fi
 test('HTTP extraction transport applies request budgets and a following request gets fresh budget state', async () => {
   const f = fixture({ 'app.jsx': `export const App=()=> <main/>; /*${'x'.repeat(1500)}*/` }); const app = buildApp(f.file('logs'));
   try {
-    assert.equal((await app.inject({ method: 'GET', url: '/health' })).json().sourceBoundsVersion, 4);
+    assert.equal((await app.inject({ method: 'GET', url: '/health' })).json().sourceBoundsVersion, 5);
     const payload = { repositoryName: 'Budget', rootPath: f.root, tsconfigPath: f.file('tsconfig.json'), includedFiles: ['app.jsx'], maxFileSizeKb: 1 };
     const refused = await app.inject({ method: 'POST', url: '/extract-project', payload }); assert.equal(refused.statusCode, 200); assert.equal(refused.json().complete, false);
     const accepted = await app.inject({ method: 'POST', url: '/extract-project', payload: { ...payload, maxFileSizeKbByExtension: { '.jsx': 2 } } });

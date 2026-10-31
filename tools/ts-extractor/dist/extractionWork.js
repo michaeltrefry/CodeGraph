@@ -25,6 +25,7 @@ class ExtractionWorkBudget {
         this.spent = 0;
         this.astNodes = 0;
         this.outputItems = 0;
+        this.accountedTrees = new WeakMap();
         const astLimit = control.maxAstNodes ?? exports.DEFAULT_RETAINED_AST_NODES;
         const outputLimit = control.maxOutputItems ?? exports.DEFAULT_OUTPUT_ITEMS;
         if (![astLimit, outputLimit].every(value => Number.isSafeInteger(value) && value >= 0))
@@ -53,7 +54,41 @@ class ExtractionWorkBudget {
         }
         this.astNodes++;
     }
-    /** Core DTOs and final evidence/ownership copies. Framework passes retain their own precharged emitters. */
+    accountAst(root, children) {
+        const prior = this.accountedTrees.get(root);
+        if (prior !== undefined) {
+            this.charge();
+            return prior;
+        }
+        let count = 0;
+        const pending = [root];
+        while (pending.length) {
+            const node = pending.pop();
+            this.retainAstNode();
+            count++;
+            children(node, child => { pending.push(child); });
+        }
+        this.accountedTrees.set(root, count);
+        return count;
+    }
+    reserveAstNodes(count) {
+        this.charge(count * 32);
+        if (!Number.isSafeInteger(count) || count < 0 || count > this.astLimit - this.astNodes) {
+            this.failure = new ExtractionWorkLimitError('retention_limit', this.spent, this.limit);
+            throw this.failure;
+        }
+        this.astNodes += count;
+    }
+    parse(text, factory, tree, children) {
+        this.reserveSource(text.length);
+        const value = factory();
+        this.accountAst(tree(value), children);
+        return value;
+    }
+    createNode(factory) { this.reserveOutput('node'); return factory(); }
+    createEdge(factory) { this.reserveOutput('edge'); return factory(); }
+    createMetadata(factory) { this.reserveOutput('metadata'); return factory(); }
+    /** Every DTO factory and final evidence/ownership copy shares this per-run ceiling. */
     reserveOutput(kind, textUnits = 0) {
         this.charge((kind === 'node' ? 1024 : kind === 'edge' ? 512 : 128) + textUnits * 2);
         if (this.outputItems >= this.outputLimit) {

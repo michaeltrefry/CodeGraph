@@ -60,20 +60,29 @@ class RouteAnalysis {
         this.frameworkImports = new Map();
         this.parsedConfigs = new ts_morph_1.Project({ useInMemoryFileSystem: true });
         this.inputs = scope ? scope.absoluteFiles().map(file => path.relative(model.root, file).replace(/\\/g, '/')) : model.files.map(file => model.relative(file));
-        if (!scope)
+        if (!scope) {
+            const knownInputs = new Set(this.inputs);
+            const visitedDirectories = new Set();
             for (const file of model.files) {
+                model.work.charge(model.relative(file).length + 1);
                 let directory = path.posix.dirname(model.relative(file));
-                while (true) {
+                while (!visitedDirectories.has(directory)) {
+                    model.work.charge(directory.length + 1);
+                    visitedDirectories.add(directory);
                     for (const name of ['package.json', 'angular.json', 'tsconfig.json', 'next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs']) {
+                        model.work.charge(directory.length + name.length + 2);
                         const input = directory === '.' ? name : `${directory}/${name}`;
-                        if (!this.inputs.includes(input) && reader.exists(path.join(model.root, input)))
+                        if (!knownInputs.has(input) && reader.exists(path.join(model.root, input))) {
+                            knownInputs.add(input);
                             this.inputs.push(input);
+                        }
                     }
                     if (directory === '.')
                         break;
                     directory = path.posix.dirname(directory);
                 }
             }
+        }
         for (const input of this.inputs) {
             model.work.charge(input.length + 1);
             if (/^(package\.json|angular\.json|tsconfig[^/]*\.json|next\.config\.[^/]+)$/.test(path.posix.basename(input)))
@@ -255,7 +264,7 @@ class RouteAnalysis {
         if (this.edgeKeys.has(key))
             return;
         this.edgeKeys.add(key);
-        this.edges.push({ sourceQN: source, targetQN: target, type, properties });
+        this.edges.push(this.model.work.createEdge(() => ({ sourceQN: source, targetQN: target, type, properties })));
     }
     properties(extra) {
         for (const key in extra) {
@@ -270,11 +279,11 @@ class RouteAnalysis {
         if (!this.emitted.has(qualifiedName)) {
             const sourceOwner = this.model.owner(owner);
             this.model.work.charge(sourceOwner.length * 6 + 1);
-            const node = { label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
+            const node = this.model.work.createNode(() => ({ label: 'Route', name: fullPath, qualifiedName, filePath: this.relative(owner),
                 startLine: owner.getStartLineNumber(), endLine: owner.getEndLineNumber(), properties: {
                     route_kind: 'ui', framework, full_path: fullPath, app_root: appRoot,
                     extraction_source_file: this.relative(owner), source_owner: sourceOwner, ...extra
-                } };
+                } }));
             this.nodes.push(node);
             this.emitted.set(qualifiedName, node);
         }
@@ -633,20 +642,40 @@ class RouteAnalysis {
             const text = this.read(config);
             if (text === undefined)
                 continue;
-            this.model.work.charge(text.length + 1);
-            const source = this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true });
+            const source = this.model.byPath.get(config) ?? this.model.work.parse(text, () => this.parsedConfigs.createSourceFile(`/${config}`, text, { overwrite: true }), source => source.compilerNode, (node, visit) => ts_morph_1.ts.forEachChild(node, child => { visit(child); }));
             let expression = source.getExportAssignments()[0]?.getExpression();
             if (!expression)
                 expression = source.getDescendantsOfKind(ts_morph_1.SyntaxKind.BinaryExpression).find(node => node.getLeft().getText() === 'module.exports')?.getRight();
-            const localValue = (node, seen = new Set()) => {
-                if (!node || seen.has(node))
-                    return undefined;
-                seen.add(node);
-                if (ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isSatisfiesExpression(node) || ts_morph_1.Node.isParenthesizedExpression(node))
-                    return localValue(node.getExpression(), seen);
-                if (ts_morph_1.Node.isIdentifier(node))
-                    return localValue(source.getVariableDeclaration(node.getText())?.getInitializer(), seen);
-                return node;
+            const variables = new Map();
+            this.model.work.charge(source.compilerNode.statements.length + 1);
+            for (const declaration of source.getVariableDeclarations()) {
+                this.model.work.charge(declaration.getNameNode().getFullWidth() + 1);
+                const name = declaration.getName();
+                if (!variables.has(name))
+                    variables.set(name, declaration);
+            }
+            const localValue = (initial) => {
+                const seen = new Set();
+                let node = initial;
+                while (node) {
+                    this.model.work.charge();
+                    this.model.work.checkDepth(seen.size, 128);
+                    if (seen.has(node))
+                        return undefined;
+                    seen.add(node);
+                    if (ts_morph_1.Node.isAsExpression(node) || ts_morph_1.Node.isSatisfiesExpression(node) || ts_morph_1.Node.isParenthesizedExpression(node)) {
+                        node = node.getExpression();
+                        continue;
+                    }
+                    if (ts_morph_1.Node.isIdentifier(node)) {
+                        this.model.work.charge(node.getFullWidth() + 1);
+                        const declaration = variables.get(node.getText());
+                        node = declaration && ts_morph_1.Node.isVariableDeclaration(declaration) ? declaration.getInitializer() : undefined;
+                        continue;
+                    }
+                    return node;
+                }
+                return undefined;
             };
             const object = localValue(expression);
             let base;
@@ -680,11 +709,38 @@ class RouteAnalysis {
         for (const file of this.model.files)
             if (file.getImportDeclarations().some(imp => /^next(?:\/|$)/.test(imp.getModuleSpecifierValue())))
                 nextRoots.add(this.appRoot(this.relative(file)));
+        const rootAtDirectory = new Map();
+        const nearestRoot = (relative) => {
+            this.model.work.charge(relative.length + 1);
+            let directory = path.posix.dirname(relative);
+            const trail = [];
+            let found;
+            while (true) {
+                this.model.work.charge(directory.length + 1);
+                if (rootAtDirectory.has(directory)) {
+                    found = rootAtDirectory.get(directory);
+                    break;
+                }
+                trail.push(directory);
+                if (nextRoots.has(directory)) {
+                    found = directory;
+                    break;
+                }
+                if (directory === '.')
+                    break;
+                directory = path.posix.dirname(directory);
+            }
+            for (const item of trail) {
+                this.model.work.charge(item.length + 1);
+                rootAtDirectory.set(item, found);
+            }
+            return found;
+        };
         for (const file of this.model.files) {
             const relative = this.relative(file);
             if (!/(?:^|\/)page\.(?:jsx?|tsx?)$/.test(relative))
                 continue;
-            const appRoot = [...nextRoots].filter(root => root === '.' || relative.startsWith(`${root}/`)).sort((a, b) => b.length - a.length)[0];
+            const appRoot = nearestRoot(relative);
             if (appRoot === undefined)
                 continue;
             const within = appRoot === '.' ? relative : relative.slice(appRoot.length + 1);

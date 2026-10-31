@@ -154,7 +154,7 @@ export function analyzeTauri(model: SemanticModel, nodes: GraphNodeDto[], edges:
       const command = operation.api === 'invoke';
       const qualifiedName = `tauri-reference:${encodeURIComponent(model.repository)}:${encodeURIComponent(qn)}:${operation.api}:${encodeURIComponent(operation.name ?? `dynamic-${call.getStart()}`)}`;
       const filePath = model.relative(callable);
-      nodes.push({ label: command ? 'Function' : 'Event', name: operation.name ?? '<dynamic>', qualifiedName, filePath,
+      nodes.push(model.work.createNode(()=>({ label: command ? 'Function' : 'Event', name: operation.name ?? '<dynamic>', qualifiedName, filePath,
         startLine: call.getStartLineNumber(), endLine: call.getEndLineNumber(), properties: {
           kind: command ? 'tauri_command_reference' : 'tauri_event_reference', transport: 'tauri',
           tauri_api: operation.api, tauri_name: operation.name ?? '', tauri_resolution: operation.name ? 'unbound' : 'dynamic',
@@ -162,11 +162,11 @@ export function analyzeTauri(model: SemanticModel, nodes: GraphNodeDto[], edges:
           wrapper_chain: operation.chain, extraction_source_file: filePath,
           // Static dependency evidence remains possible when desktop guards have web fallbacks.
           dependency_kind: 'possible_desktop', confidence: operation.name ? 'high' : 'low',
-        } });
-      edges.push({ sourceQN: qn, targetQN: qualifiedName,
+        } })));
+      edges.push(model.work.createEdge(()=>({ sourceQN: qn, targetQN: qualifiedName,
         type: command ? 'CALLS' : ['listen', 'once'].includes(operation.api) ? 'SUBSCRIBES' : 'PUBLISHES',
-        properties: { transport: 'tauri', dependency_kind: 'possible_desktop' } });
-      if (operation.callback) edges.push({ sourceQN: qualifiedName, targetQN: operation.callback, type: 'HANDLES', properties: { transport: 'tauri' } });
+        properties: { transport: 'tauri', dependency_kind: 'possible_desktop' } })));
+      if (operation.callback) edges.push(model.work.createEdge(()=>({ sourceQN: qualifiedName, targetQN: operation.callback!, type: 'HANDLES', properties: { transport: 'tauri' } })));
       if (!operation.name) {
         unresolved++;
         diagnostic(`tauriUnresolved: dynamic ${operation.api} at ${filePath}:${call.getStartLineNumber()}`);

@@ -152,9 +152,9 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             edgeKeys.add(key);
             const direct = type === 'CALLS' ? directCalls.get(callKey(sourceQN, targetQN))?.next().value : undefined;
             if (direct)
-                direct.properties = { ...direct.properties, ...props };
+                direct.properties = model.work.createMetadata(() => ({ ...direct.properties, ...props }));
             else
-                edges.push({ sourceQN, targetQN, type, properties: props });
+                edges.push(model.work.createEdge(() => ({ sourceQN, targetQN, type, properties: props })));
         }
     }
     function emit(node, qualifiedName, label, name, properties = {}) {
@@ -164,7 +164,7 @@ function analyzeAngular(model, nodes, edges, scope, diagnostic = model.diagnosti
             Object.assign(existing.properties, properties);
             return;
         }
-        const value = { label, name, qualifiedName, filePath: model.relative(node), startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber(), properties };
+        const value = model.work.createNode(() => ({ label, name, qualifiedName, filePath: model.relative(node), startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber(), properties }));
         nodes.push(value);
         graphNodes.set(qualifiedName, value);
     }

@@ -25,6 +25,7 @@ export class ExtractionWorkBudget {
   private spent = 0;
   private astNodes = 0;
   private outputItems = 0;
+  private readonly accountedTrees = new WeakMap<object, number>();
   private readonly astLimit: number;
   private readonly outputLimit: number;
   private failure?: ExtractionWorkLimitError;
@@ -48,7 +49,24 @@ export class ExtractionWorkBudget {
     if (this.astNodes >= this.astLimit) { this.failure = new ExtractionWorkLimitError('retention_limit',this.spent,this.limit); throw this.failure; }
     this.astNodes++;
   }
-  /** Core DTOs and final evidence/ownership copies. Framework passes retain their own precharged emitters. */
+  accountAst(root: object, children: (node: object, visit: (child: object) => void) => void): number {
+    const prior=this.accountedTrees.get(root); if(prior!==undefined) { this.charge(); return prior; }
+    let count=0; const pending: object[]=[root];
+    while(pending.length) { const node=pending.pop()!; this.retainAstNode(); count++; children(node,child=>{pending.push(child);}); }
+    this.accountedTrees.set(root,count); return count;
+  }
+  reserveAstNodes(count:number): void {
+    this.charge(count*32);
+    if(!Number.isSafeInteger(count)||count<0||count>this.astLimit-this.astNodes) { this.failure=new ExtractionWorkLimitError('retention_limit',this.spent,this.limit); throw this.failure; }
+    this.astNodes+=count;
+  }
+  parse<T>(text:string, factory:()=>T, tree:(value:T)=>object, children:(node:object, visit:(child:object)=>void)=>void):T {
+    this.reserveSource(text.length); const value=factory(); this.accountAst(tree(value),children); return value;
+  }
+  createNode<T>(factory:()=>T):T { this.reserveOutput('node'); return factory(); }
+  createEdge<T>(factory:()=>T):T { this.reserveOutput('edge'); return factory(); }
+  createMetadata<T>(factory:()=>T):T { this.reserveOutput('metadata'); return factory(); }
+  /** Every DTO factory and final evidence/ownership copy shares this per-run ceiling. */
   reserveOutput(kind: 'node' | 'edge' | 'metadata', textUnits = 0): void {
     this.charge((kind === 'node' ? 1024 : kind === 'edge' ? 512 : 128) + textUnits * 2);
     if (this.outputItems >= this.outputLimit) { this.failure = new ExtractionWorkLimitError('retention_limit',this.spent,this.limit); throw this.failure; }

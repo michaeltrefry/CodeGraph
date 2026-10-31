@@ -227,7 +227,7 @@ function analyzeHttp(model, _nodes, edges, diagnostic, serviceName) {
             let aggregate = emitted.get(key);
             if (!aggregate) {
                 const existing = existingEdges.get(key);
-                const edge = existing ?? { sourceQN: qn, targetQN, type: 'HTTP_CALLS', properties };
+                const edge = existing ?? model.work.createEdge(() => ({ sourceQN: qn, targetQN, type: 'HTTP_CALLS', properties }));
                 const priorProperties = existing?.properties ?? properties;
                 edge.properties ?? (edge.properties = properties);
                 aggregate = { edge, representative: propertiesKey(priorProperties), candidates: new Map(), existing: !!existing };
