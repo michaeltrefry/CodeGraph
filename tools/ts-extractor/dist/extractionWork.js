@@ -1,11 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ExtractionWorkBudget = exports.ExtractionWorkLimitError = exports.MAX_PARSE_SOURCE_UNITS = exports.DEFAULT_OUTPUT_ITEMS = exports.DEFAULT_RETAINED_AST_NODES = exports.DEFAULT_EXTRACTION_WORK_LIMIT = void 0;
+exports.ExtractionWorkBudget = exports.ExtractionWorkLimitError = exports.MAX_PARSE_SOURCE_UNITS = exports.DEFAULT_ARRAY_REFERENCES = exports.DEFAULT_OUTPUT_ITEMS = exports.DEFAULT_RETAINED_AST_NODES = exports.DEFAULT_EXTRACTION_WORK_LIMIT = void 0;
 // Sized against selected indexed frontends, including relocated checkout snapshots.
 // Keep finite shared work/output bounds with room for normal source growth.
 exports.DEFAULT_EXTRACTION_WORK_LIMIT = 600000000;
 exports.DEFAULT_RETAINED_AST_NODES = 3000000;
 exports.DEFAULT_OUTPUT_ITEMS = 250000;
+/** Cumulative reference slots allocated by Angular metadata expansion and its consumers. */
+exports.DEFAULT_ARRAY_REFERENCES = 250000;
 exports.MAX_PARSE_SOURCE_UNITS = 2 * 1024 * 1024;
 class ExtractionWorkLimitError extends Error {
     constructor(reason, work, limit) {
@@ -25,11 +27,14 @@ class ExtractionWorkBudget {
         this.spent = 0;
         this.astNodes = 0;
         this.outputItems = 0;
+        this.arrayReferences = 0;
         this.accountedTrees = new WeakMap();
         const astLimit = control.maxAstNodes ?? exports.DEFAULT_RETAINED_AST_NODES;
         const outputLimit = control.maxOutputItems ?? exports.DEFAULT_OUTPUT_ITEMS;
-        if (![astLimit, outputLimit].every(value => Number.isSafeInteger(value) && value >= 0))
+        const arrayLimit = control.maxArrayReferences ?? exports.DEFAULT_ARRAY_REFERENCES;
+        if (![astLimit, outputLimit, arrayLimit].every(value => Number.isSafeInteger(value) && value >= 0))
             throw new RangeError('Retention limits must be nonnegative safe integers');
+        this.arrayLimit = Math.min(arrayLimit, exports.DEFAULT_ARRAY_REFERENCES);
         this.astLimit = Math.min(astLimit, exports.DEFAULT_RETAINED_AST_NODES);
         this.outputLimit = Math.min(outputLimit, exports.DEFAULT_OUTPUT_ITEMS);
         this.limit = control.maxWork ?? exports.DEFAULT_EXTRACTION_WORK_LIMIT;
@@ -39,6 +44,16 @@ class ExtractionWorkBudget {
     get used() { return this.spent; }
     get retainedAstNodes() { return this.astNodes; }
     get retainedOutputItems() { return this.outputItems; }
+    get retainedArrayReferences() { return this.arrayReferences; }
+    /** Reserve actual copied reference slots before materializing an expansion/consumer array. */
+    reserveArrayReferences(slots) {
+        this.charge(slots * 8 + 1);
+        if (!Number.isSafeInteger(slots) || slots < 0 || slots > this.arrayLimit - this.arrayReferences) {
+            this.failure = new ExtractionWorkLimitError('retention_limit', this.spent, this.limit);
+            throw this.failure;
+        }
+        this.arrayReferences += slots;
+    }
     reserveSource(codeUnits) {
         this.charge(codeUnits * 4 + 1);
         if (codeUnits > exports.MAX_PARSE_SOURCE_UNITS) {

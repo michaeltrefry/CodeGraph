@@ -3,11 +3,14 @@
 export const DEFAULT_EXTRACTION_WORK_LIMIT = 600_000_000;
 export const DEFAULT_RETAINED_AST_NODES = 3_000_000;
 export const DEFAULT_OUTPUT_ITEMS = 250_000;
+/** Cumulative reference slots allocated by Angular metadata expansion and its consumers. */
+export const DEFAULT_ARRAY_REFERENCES = 250_000;
 export const MAX_PARSE_SOURCE_UNITS = 2 * 1024 * 1024;
 export interface ExtractionWorkControl {
   /** Trusted caller/test controls; these are not extraction request JSON options. */
   maxAstNodes?: number;
   maxOutputItems?: number;
+  maxArrayReferences?: number;
   maxWork?: number;
   /** Synchronous polling. A timer/AbortSignal cannot preempt CPU while this stack runs. */
   shouldCancel?: () => boolean;
@@ -25,6 +28,8 @@ export class ExtractionWorkBudget {
   private spent = 0;
   private astNodes = 0;
   private outputItems = 0;
+  private arrayReferences = 0;
+  private readonly arrayLimit: number;
   private readonly accountedTrees = new WeakMap<object, number>();
   private readonly astLimit: number;
   private readonly outputLimit: number;
@@ -32,7 +37,9 @@ export class ExtractionWorkBudget {
   readonly limit: number;
   constructor(private readonly control: ExtractionWorkControl = {}) {
     const astLimit=control.maxAstNodes ?? DEFAULT_RETAINED_AST_NODES; const outputLimit=control.maxOutputItems ?? DEFAULT_OUTPUT_ITEMS;
-    if (![astLimit,outputLimit].every(value=>Number.isSafeInteger(value)&&value>=0)) throw new RangeError('Retention limits must be nonnegative safe integers');
+    const arrayLimit=control.maxArrayReferences ?? DEFAULT_ARRAY_REFERENCES;
+    if (![astLimit,outputLimit,arrayLimit].every(value=>Number.isSafeInteger(value)&&value>=0)) throw new RangeError('Retention limits must be nonnegative safe integers');
+    this.arrayLimit=Math.min(arrayLimit,DEFAULT_ARRAY_REFERENCES);
     this.astLimit=Math.min(astLimit,DEFAULT_RETAINED_AST_NODES); this.outputLimit=Math.min(outputLimit,DEFAULT_OUTPUT_ITEMS);
     this.limit = control.maxWork ?? DEFAULT_EXTRACTION_WORK_LIMIT;
     if (!Number.isSafeInteger(this.limit) || this.limit < 0) throw new RangeError('Extraction work limit must be a nonnegative safe integer');
@@ -40,6 +47,15 @@ export class ExtractionWorkBudget {
   get used(): number { return this.spent; }
   get retainedAstNodes(): number { return this.astNodes; }
   get retainedOutputItems(): number { return this.outputItems; }
+  get retainedArrayReferences(): number { return this.arrayReferences; }
+  /** Reserve actual copied reference slots before materializing an expansion/consumer array. */
+  reserveArrayReferences(slots: number): void {
+    this.charge(slots * 8 + 1);
+    if (!Number.isSafeInteger(slots) || slots < 0 || slots > this.arrayLimit - this.arrayReferences) {
+      this.failure = new ExtractionWorkLimitError('retention_limit', this.spent, this.limit); throw this.failure;
+    }
+    this.arrayReferences += slots;
+  }
   reserveSource(codeUnits: number): void {
     this.charge(codeUnits * 4 + 1);
     if(codeUnits>MAX_PARSE_SOURCE_UNITS) { this.failure=new ExtractionWorkLimitError('retention_limit',this.spent,this.limit); throw this.failure; }

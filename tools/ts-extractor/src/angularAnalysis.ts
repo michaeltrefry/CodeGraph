@@ -197,15 +197,44 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     const parent = reference(model.baseExpression(cls));
     return parent && Node.isClassDeclaration(parent) ? classField(parent, name, seen) : undefined;
   }
-  function values(node: Node | undefined, seen = new Set<Node>()): Node[] {
-    if (!node || seen.has(node)) return [];
-    seen.add(node);
-    const value = reference(node);
-    if (value && value !== node && !Node.isClassDeclaration(value) && !Node.isInterfaceDeclaration(value)) return values(value, seen);
-    if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) return values(node.getInitializer(), seen);
-    if (Node.isArrayLiteralExpression(node)) return node.getElements().flatMap(item => values(Node.isSpreadElement(item) ? item.getExpression() : item, new Set(seen)));
-    if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) return values(node.getExpression(), seen);
-    return value ? [value] : [node];
+  // Only raw immutable AST expansions are cached. Injector selection remains per scope.
+  const expandedValues = new Map<Node, readonly Node[]>();
+  const noValues: readonly Node[] = [];
+  const reserveReferences = (slots: number) => model.work.reserveArrayReferences(slots);
+  function values(node: Node | undefined, active = new Set<Node>()): readonly Node[] {
+    charge();
+    if (!node) return noValues;
+    model.work.checkDepth(active.size, 128);
+    if (active.has(node)) model.work.checkDepth(129, 128); // Poison cyclic metadata instead of caching a partial result.
+    const cached = expandedValues.get(node);
+    if (cached) return cached;
+    active.add(node);
+    try {
+      const value = reference(node);
+      let result: readonly Node[];
+      if (value && value !== node && !Node.isClassDeclaration(value) && !Node.isInterfaceDeclaration(value)) result = values(value, active);
+      else if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) result = values(node.getInitializer(), active);
+      else if (Node.isArrayLiteralExpression(node)) {
+        // getElements itself materializes an array; reserve before asking ts-morph for it.
+        const count = node.compilerNode.elements.length;
+        reserveReferences(count);
+        const elements = node.getElements();
+        reserveReferences(count);
+        const chunks: (readonly Node[])[] = [];
+        let length = 0;
+        for (const item of elements) {
+          const child = values(Node.isSpreadElement(item) ? item.getExpression() : item, active);
+          charge(); length += child.length; chunks.push(child);
+        }
+        reserveReferences(length);
+        const output: Node[] = new Array(length);
+        let offset = 0;
+        for (const chunk of chunks) for (const item of chunk) output[offset++] = item;
+        result = output;
+      } else if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) result = values(node.getExpression(), active);
+      else { reserveReferences(1); result = [value ?? node]; }
+      expandedValues.set(node, result); return result;
+    } finally { active.delete(node); }
   }
   function string(node: Node | undefined, seen = new Set<Node>()): string | undefined {
     if (!node || seen.has(node)) return undefined; seen.add(node);
@@ -343,59 +372,78 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   for (const item of angular.filter(item => item.kind === 'NgModule' || item.kind === 'Component' || item.kind === 'Directive')) {
     const providerScope = makeScope(item.declaration);
     if (item.kind === 'NgModule') for (const value of values(property(item.metadata, 'declarations'))) {
-      if (Node.isClassDeclaration(value)) { const owners = moduleDeclarations.get(value) ?? []; owners.push(item.declaration); moduleDeclarations.set(value, owners); }
+      if (Node.isClassDeclaration(value)) { const owners = moduleDeclarations.get(value) ?? []; reserveReferences(1); owners.push(item.declaration); moduleDeclarations.set(value, owners); }
     }
     const importedValues = values(property(item.metadata, 'imports'));
-    const imports = importedValues.flatMap(value => {
-      if (Node.isClassDeclaration(value)) return [value];
-      if (Node.isObjectLiteralExpression(value)) {
+    const imports: ClassDeclaration[] = [];
+    for (const value of importedValues) {
+      if (Node.isClassDeclaration(value)) { reserveReferences(1); imports.push(value); }
+      else if (Node.isObjectLiteralExpression(value)) {
         const module = reference(property(value, 'ngModule'));
         collectProviders(property(value, 'providers'), providerScope);
-        return module && Node.isClassDeclaration(module) ? [module] : [];
+        if (module && Node.isClassDeclaration(module)) { reserveReferences(1); imports.push(module); }
       }
-      return [];
-    });
-    moduleImports.set(item.declaration, imports);
-    moduleExports.set(item.declaration, values(property(item.metadata, 'exports')).filter(Node.isClassDeclaration));
-    for (const imported of imports) if (angularByClass.get(imported)?.kind === 'NgModule') providerScope.parents.push(makeScope(imported));
-  }
-  function collectProviders(node: Node | undefined, providerScope: ProviderScope, seen = new Set<Node>()): void {
-    if (!node || seen.has(node)) return; seen.add(node);
-    if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) { collectProviders(node.getExpression(), providerScope, seen); return; }
-    if (Node.isArrayLiteralExpression(node)) {
-      for (const element of node.getElements()) collectProviders(Node.isSpreadElement(element) ? element.getExpression() : element, providerScope, new Set(seen)); return;
     }
-    if (Node.isCallExpression(node)) {
-      const api = imported(node.getExpression(), '@angular/core');
-      if (api === 'makeEnvironmentProviders') { collectProviders(node.getArguments()[0], providerScope, seen); return; }
-      if (api === 'importProvidersFrom') {
-        for (const argument of node.getArguments()) for (const module of values(argument).filter(Node.isClassDeclaration)) providerScope.parents.push(makeScope(module));
+    moduleImports.set(item.declaration, imports);
+    const exports: ClassDeclaration[] = [];
+    for (const value of values(property(item.metadata, 'exports'))) if (Node.isClassDeclaration(value)) { reserveReferences(1); exports.push(value); }
+    moduleExports.set(item.declaration, exports);
+    for (const imported of imports) if (angularByClass.get(imported)?.kind === 'NgModule') { reserveReferences(1); providerScope.parents.push(makeScope(imported)); }
+
+  }
+  function collectProviders(node: Node | undefined, providerScope: ProviderScope, active = new Set<Node>()): void {
+    charge();
+    if (!node) return;
+    model.work.checkDepth(active.size, 128);
+    if (active.has(node)) model.work.checkDepth(129, 128);
+    active.add(node);
+    try {
+      if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) { collectProviders(node.getExpression(), providerScope, active); return; }
+      if (Node.isArrayLiteralExpression(node)) {
+        for (const element of values(node)) collectProviders(element, providerScope, active);
         return;
       }
-    }
-    if (Node.isConditionalExpression(node)) {
-      providerScope.uncertain = true;
-      collectProviders(node.getWhenTrue(), providerScope, new Set(seen)); collectProviders(node.getWhenFalse(), providerScope, new Set(seen)); return;
-    }
-    const value = reference(node);
-    if (value && Node.isVariableDeclaration(value)) { collectProviders(value.getInitializer(), providerScope, seen); return; }
-    if (value && Node.isClassDeclaration(value)) {
-      providerScope.bindings.set(value, [{ token: value, implementation: value, multi: false, scope: providerScope }]); return;
-    }
-    if (value && value !== node && (Node.isArrayLiteralExpression(value) || Node.isObjectLiteralExpression(value))) { collectProviders(value, providerScope, seen); return; }
-    if (!Node.isObjectLiteralExpression(node)) {
-      providerScope.uncertain = true; diagnostic(`angularProvider: unsupported provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
-    }
-    const token = tokenReference(property(node, 'provide'));
-    const useClass = reference(property(node, 'useClass'));
-    const alias = tokenReference(property(node, 'useExisting'));
-    if (!token || (!alias && (!useClass || !Node.isClassDeclaration(useClass)))) {
-      providerScope.uncertain = true; diagnostic(`angularProvider: unresolved provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
-    }
-    const multi = property(node, 'multi')?.getText() === 'true';
-    const binding: Binding = { token, implementation: useClass && Node.isClassDeclaration(useClass) ? useClass : undefined, alias, multi, scope: providerScope };
-    const previous = providerScope.bindings.get(token) ?? [];
-    providerScope.bindings.set(token, multi || providerScope.uncertain ? [...previous, binding] : [binding]);
+      if (Node.isCallExpression(node)) {
+        const api = imported(node.getExpression(), '@angular/core');
+        if (api === 'makeEnvironmentProviders') { collectProviders(node.getArguments()[0], providerScope, active); return; }
+        if (api === 'importProvidersFrom') {
+          charge(node.getFullWidth()+1);
+          for (const argument of node.getArguments()) for (const module of values(argument)) if (Node.isClassDeclaration(module)) {
+            reserveReferences(1); providerScope.parents.push(makeScope(module));
+          }
+          return;
+        }
+      }
+      if (Node.isConditionalExpression(node)) {
+        // Set uncertainty before either branch, preserving single-provider accumulation.
+        providerScope.uncertain = true;
+        collectProviders(node.getWhenTrue(), providerScope, active); collectProviders(node.getWhenFalse(), providerScope, active); return;
+      }
+      const value = reference(node);
+      if (value && Node.isVariableDeclaration(value)) { collectProviders(value.getInitializer(), providerScope, active); return; }
+      if (value && Node.isClassDeclaration(value)) {
+        reserveReferences(1); charge(32);
+        providerScope.bindings.set(value, [{ token: value, implementation: value, multi: false, scope: providerScope }]); return;
+      }
+      if (value && value !== node && (Node.isArrayLiteralExpression(value) || Node.isObjectLiteralExpression(value))) { collectProviders(value, providerScope, active); return; }
+      if (!Node.isObjectLiteralExpression(node)) {
+        providerScope.uncertain = true; diagnostic(`angularProvider: unsupported provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
+      }
+      const token = tokenReference(property(node, 'provide'));
+      const useClass = reference(property(node, 'useClass'));
+      const alias = tokenReference(property(node, 'useExisting'));
+      if (!token || (!alias && (!useClass || !Node.isClassDeclaration(useClass)))) {
+        providerScope.uncertain = true; diagnostic(`angularProvider: unresolved provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
+      }
+      const multi = property(node, 'multi')?.getText() === 'true';
+      reserveReferences(1); charge(32);
+      const binding: Binding = { token, implementation: useClass && Node.isClassDeclaration(useClass) ? useClass : undefined, alias, multi, scope: providerScope };
+      const previous = providerScope.bindings.get(token);
+      // These arrays are built before any injector lookup. Append multi entries without
+      // repeatedly copying their entire prefix; duplicates and source order are retained.
+      if (previous && (multi || providerScope.uncertain)) previous.push(binding);
+      else providerScope.bindings.set(token, [binding]);
+    } finally { active.delete(node); }
   }
   for (const item of angular) {
     const providerScope = makeScope(item.declaration);
@@ -428,7 +476,7 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     const value = configScope(declaration ?? config ?? call, resolved && Node.isObjectLiteralExpression(resolved) ? property(resolved, 'providers') : undefined);
     if (!declaration) value.identity = `${model.fileQN(call)}#bootstrap:${qn(component)}`;
     if (config && (!resolved || !Node.isObjectLiteralExpression(resolved))) { value.uncertain = true; diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`); }
-    scopeForClass(component).parents.push(value);
+    reserveReferences(1); scopeForClass(component).parents.push(value);
   }
   const modules = angular.filter(item => item.kind === 'NgModule').map(item => item.declaration);
   const moduleSet = new Set(modules);
@@ -443,58 +491,81 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
   const moduleRoots = modules.filter(module => !importedModules.has(module));
   const moduleRootSet = new Set(moduleRoots);
   for (const [cls, owners] of moduleDeclarations) {
-    const contexts = moduleRoots.filter(root => owners.some(owner => moduleReaches(root, owner)));
-    for (const owner of contexts.length ? contexts : owners) scopeForClass(cls).parents.push(scopeForClass(owner));
+    const contexts: ClassDeclaration[] = [];
+    for (const root of moduleRoots) if (owners.some(owner => moduleReaches(root, owner))) { reserveReferences(1); contexts.push(root); }
+    for (const owner of contexts.length ? contexts : owners) { reserveReferences(1); scopeForClass(cls).parents.push(scopeForClass(owner)); }
   }
   const renderedParents = new Map<ProviderScope, Set<ProviderScope>>();
   for (const providerScope of scopes.values()) for (const bindings of providerScope.bindings.values()) for (const binding of bindings) {
-    if (binding.implementation && binding.implementation !== providerScope.owner) scopeForClass(binding.implementation).parents.push(providerScope);
+    if (binding.implementation && binding.implementation !== providerScope.owner) { reserveReferences(1); scopeForClass(binding.implementation).parents.push(providerScope); }
   }
   function lookup(token: Node, providerScope: ProviderScope, seen = new Set<ProviderScope>()): { bindings: Binding[]; certain: boolean } {
-    charge();
+    charge(); model.work.checkDepth(seen.size, 128);
     if (seen.has(providerScope)) return { bindings: [], certain: false }; seen.add(providerScope);
     const local = providerScope.bindings.get(token);
     if (local) return { bindings: local, certain: !providerScope.uncertain && local.length === 1 && !local[0].multi };
-    charge((renderedParents.get(providerScope)?.size ?? providerScope.parents.length) + 1);
-    const parents = [...(renderedParents.get(providerScope) ?? providerScope.parents)];
-    const branches = parents.map(parent => lookup(token, parent, new Set(seen))).filter(result => result.bindings.length);
+    const parentSources = renderedParents.get(providerScope) ?? providerScope.parents;
+    reserveReferences(parentSources instanceof Set ? parentSources.size : parentSources.length);
+    const parents = [...parentSources];
+    const branches: { bindings: Binding[]; certain: boolean }[] = [];
+    for (const parent of parents) {
+      reserveReferences(seen.size);
+      const branch = lookup(token, parent, new Set(seen));
+      if (branch.bindings.length) { reserveReferences(1); branches.push(branch); }
+    }
     // NgModule imports are ordered in one injector: later imported providers win.
     if (Node.isClassDeclaration(providerScope.owner) && moduleSet.has(providerScope.owner) && branches.length) return branches[branches.length - 1];
-    for (const branch of branches) charge(branch.bindings.length + 1);
-    const bindings = [...new Set(branches.flatMap(result => result.bindings))];
-    return { bindings, certain: !providerScope.uncertain && branches.length > 0 && branches.every(result => result.certain) && new Set(bindings.map(binding => binding.implementation ?? binding.alias)).size === 1 };
+    const unique = new Set<Binding>();
+    for (const branch of branches) for (const binding of branch.bindings) {
+      charge(); if (!unique.has(binding)) { reserveReferences(1); unique.add(binding); }
+    }
+    reserveReferences(unique.size); const bindings = [...unique];
+    const targets = new Set<Node | undefined>();
+    for (const binding of bindings) { const target = binding.implementation ?? binding.alias; if (!targets.has(target)) { reserveReferences(1); targets.add(target); } }
+    return { bindings, certain: !providerScope.uncertain && branches.length > 0 && branches.every(result => result.certain) && targets.size === 1 };
   }
   function aliasInjectors(binding: Binding, consumingScope: ProviderScope): ProviderScope[] {
-    if (!Node.isClassDeclaration(binding.scope.owner) || !moduleSet.has(binding.scope.owner)) return [binding.scope];
+    if (!Node.isClassDeclaration(binding.scope.owner) || !moduleSet.has(binding.scope.owner)) { reserveReferences(1); return [binding.scope]; }
     const declaringModule = binding.scope.owner;
     const contexts = new Set<ProviderScope>(); const visited = new Set<ProviderScope>();
-    const visit = (current: ProviderScope) => {
-      charge();
-      if (visited.has(current)) return; visited.add(current);
-      if (Node.isClassDeclaration(current.owner) && moduleRootSet.has(current.owner) && moduleReaches(current.owner, declaringModule)) contexts.add(current);
-      for (const parent of renderedParents.get(current) ?? current.parents) visit(parent);
+    const addContext = (scope: ProviderScope) => { if (!contexts.has(scope)) { reserveReferences(1); contexts.add(scope); } };
+    const visit = (current: ProviderScope, depth = 0) => {
+      model.work.checkDepth(depth, 128);
+      if (visited.has(current)) return; reserveReferences(1); visited.add(current);
+      if (Node.isClassDeclaration(current.owner) && moduleRootSet.has(current.owner) && moduleReaches(current.owner, declaringModule)) addContext(current);
+      for (const parent of renderedParents.get(current) ?? current.parents) visit(parent, depth + 1);
     };
     visit(consumingScope);
-    if (!contexts.size && consumingScope.owner === declaringModule) for (const root of moduleRoots) if (moduleReaches(root, declaringModule)) contexts.add(scopeForClass(root));
-    return contexts.size ? [...contexts] : [binding.scope];
+    if (!contexts.size && consumingScope.owner === declaringModule) for (const root of moduleRoots) if (moduleReaches(root, declaringModule)) addContext(scopeForClass(root));
+    reserveReferences(contexts.size || 1); return contexts.size ? [...contexts] : [binding.scope];
   }
   function resolveBinding(token: Node, providerScope: ProviderScope, seen = new Set<Node>()): Selection {
-    charge();
+    charge(); model.work.checkDepth(seen.size, 128);
     if (seen.has(token)) { diagnostic(`angularProvider: alias cycle at ${qn(token)}`); return { implementations: [], certain: false, token }; }
     seen.add(token);
     const selected = lookup(token, providerScope);
     const implementations = new Set<ClassDeclaration>(); let certain = selected.certain;
+    const addImplementation = (value: ClassDeclaration) => { if (!implementations.has(value)) { reserveReferences(1); implementations.add(value); } };
     for (const binding of selected.bindings) {
       charge();
       if (binding.alias) {
         const contexts = aliasInjectors(binding, providerScope);
-        const targets = contexts.map(context => resolveBinding(binding.alias!, context, new Set(seen)));
-        for (const target of targets) target.implementations.forEach(value => implementations.add(value));
-        certain = certain && targets.every(target => target.certain) && new Set(targets.flatMap(target => target.implementations)).size === 1;
-      } else if (binding.implementation) implementations.add(binding.implementation);
+        reserveReferences(contexts.length);
+        const targets: Selection[] = [];
+        const aliasTargets = new Set<ClassDeclaration>();
+        for (const context of contexts) {
+          reserveReferences(seen.size);
+          const target = resolveBinding(binding.alias, context, new Set(seen)); targets.push(target);
+          for (const value of target.implementations) {
+            addImplementation(value);
+            if (!aliasTargets.has(value)) { reserveReferences(1); aliasTargets.add(value); }
+          }
+        }
+        certain = certain && targets.every(target => target.certain) && aliasTargets.size === 1;
+      } else if (binding.implementation) addImplementation(binding.implementation);
     }
-    if (!selected.bindings.length && Node.isClassDeclaration(token)) { implementations.add(token); certain = true; }
-    return { implementations: [...implementations], certain, token };
+    if (!selected.bindings.length && Node.isClassDeclaration(token)) { addImplementation(token); certain = true; }
+    reserveReferences(implementations.size); return { implementations: [...implementations], certain, token };
   }
   for (const providerScope of scopes.values()) for (const [token, bindings] of providerScope.bindings) {
     const selected = resolveBinding(token, providerScope);
@@ -543,15 +614,16 @@ export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edge
     const modules = moduleDeclarations.get(owner) ?? [];
     if (!explicitImports && !modules.length) { visibleComponents.set(owner, undefined); return true; }
     const admitted = new Set<Node>(); const visited = new Set<Node>();
-    const exported = (cls: ClassDeclaration) => {
-      charge();
-      if (componentSet.has(cls)) { admitted.add(cls); return; }
-      if (visited.has(cls)) return; visited.add(cls);
-      for (const declaration of moduleExports.get(cls) ?? []) exported(declaration);
+    const admit = (cls: ClassDeclaration) => { if (!admitted.has(cls)) { reserveReferences(1); admitted.add(cls); } };
+    const exported = (cls: ClassDeclaration, depth = 0) => {
+      model.work.checkDepth(depth, 128);
+      if (componentSet.has(cls)) { admit(cls); return; }
+      if (visited.has(cls)) return; reserveReferences(1); visited.add(cls);
+      for (const declaration of moduleExports.get(cls) ?? []) exported(declaration, depth + 1);
     };
-    if (explicitImports) values(explicitImports).filter(Node.isClassDeclaration).forEach(exported);
+    if (explicitImports) for (const value of values(explicitImports)) if (Node.isClassDeclaration(value)) exported(value);
     for (const module of modules) {
-      for (const [child, owners] of moduleDeclarations) { charge(owners.length + 1); if (owners.includes(module)) admitted.add(child); }
+      for (const [child, owners] of moduleDeclarations) { charge(owners.length + 1); if (owners.includes(module)) admit(child); }
       for (const imported of moduleImports.get(module) ?? []) exported(imported);
     }
     visibleComponents.set(owner, admitted);
