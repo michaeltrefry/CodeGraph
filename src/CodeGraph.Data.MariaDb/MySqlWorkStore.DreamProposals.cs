@@ -128,9 +128,9 @@ public sealed partial class MySqlWorkStore : IDreamProposalStore
             }
             var id = Guid.NewGuid(); var now = Now();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO dream_proposals (id,project_id,run_id,action,target_id,target_version,other_id,other_version,rationale,prevalence,evidence_json,replacement_json,replacement_input_json,draft,author_json,created_at) " +
-                "VALUES (@id,@projectId,@runId,@action,@target,@version,@other,@otherVersion,@rationale,@prevalence,@evidence,@replacement,@input,@draft,@author,@now)",
-                new { id, projectId, runId, action = JsonName(spec.Action), target = spec.Target, version = spec.ExpectedVersion, other = spec.Other, otherVersion = spec.OtherVersion,
+                "INSERT INTO dream_proposals (id,project_id,run_id,action,target_id,target_version,other_id,other_version,rationale,prevalence,evidence_json,replacement_json,replacement_input_json,draft,author_json,created_at,execution_id) " +
+                "VALUES (@id,@projectId,@runId,@action,@target,@version,@other,@otherVersion,@rationale,@prevalence,@evidence,@replacement,@input,@draft,@author,@now,@executionId)",
+                new { id, projectId, runId, executionId = DreamPolicy.RequireScope(actor).ExecutionId, action = JsonName(spec.Action), target = spec.Target, version = spec.ExpectedVersion, other = spec.Other, otherVersion = spec.OtherVersion,
                     rationale = spec.Rationale, prevalence = spec.Prevalence, evidence = ProposalJson(evidence), replacement = spec.Replacement is null ? null : ProposalJson(spec.Replacement),
                     input = spec.ReplacementInput is null ? null : ProposalJson(spec.ReplacementInput), draft = spec.Draft, author = ProposalJson(actor), now }, tx, cancellationToken: ct));
             var stored = (await connection.QuerySingleAsync<ProposalRow>(new CommandDefinition("SELECT * FROM dream_proposals WHERE id=@id", new { id }, tx, cancellationToken: ct)));

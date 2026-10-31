@@ -71,8 +71,8 @@ public sealed partial class MySqlWorkStore : IDreamingKnowledgeStore
         if (SnapshotComparable(before) == SnapshotComparable(after)) return;
         if (string.IsNullOrWhiteSpace(DreamWriteMetadata.Prevalence)) throw WorkException.Invalid("A dream write requires prevalence.");
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO dream_write_journal (run_id,project_id,entry_id,action,before_json,after_json,evidence_json,prevalence,created_at) VALUES (@run,@project,@entry,@action,@before,@after,@evidence,@prevalence,UTC_TIMESTAMP(6))",
-            new { run = scope.RunId, project = scope.ProjectId, entry = before.EntryIds[0], action, before = JsonSerializer.Serialize(before), after = JsonSerializer.Serialize(after), evidence = JsonSerializer.Serialize(scope.Evidence, WorkJson.Options), prevalence = DreamWriteMetadata.Prevalence }, transaction, cancellationToken: ct));
+            "INSERT INTO dream_write_journal (run_id,project_id,entry_id,action,before_json,after_json,evidence_json,prevalence,created_at,execution_id) VALUES (@run,@project,@entry,@action,@before,@after,@evidence,@prevalence,UTC_TIMESTAMP(6),@executionId)",
+            new { run = scope.RunId, project = scope.ProjectId, executionId = scope.ExecutionId, entry = before.EntryIds[0], action, before = JsonSerializer.Serialize(before), after = JsonSerializer.Serialize(after), evidence = JsonSerializer.Serialize(scope.Evidence, WorkJson.Options), prevalence = DreamWriteMetadata.Prevalence }, transaction, cancellationToken: ct));
     }
 
     private static string SnapshotComparable(DreamSnapshot snapshot) => JsonSerializer.Serialize(snapshot.Tables.OrderBy(pair => pair.Key).Select(pair => new
