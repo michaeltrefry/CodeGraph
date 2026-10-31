@@ -3,7 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ExtractionWorkBudget = exports.ExtractionWorkLimitError = exports.MAX_PARSE_SOURCE_UNITS = exports.DEFAULT_OUTPUT_ITEMS = exports.DEFAULT_RETAINED_AST_NODES = exports.DEFAULT_EXTRACTION_WORK_LIMIT = void 0;
 // Sized against selected indexed frontends, including relocated checkout snapshots.
 // Keep finite shared work/output bounds with room for normal source growth.
-exports.DEFAULT_EXTRACTION_WORK_LIMIT = 500000000;
+exports.DEFAULT_EXTRACTION_WORK_LIMIT = 600000000;
 exports.DEFAULT_RETAINED_AST_NODES = 3000000;
 exports.DEFAULT_OUTPUT_ITEMS = 250000;
 exports.MAX_PARSE_SOURCE_UNITS = 2 * 1024 * 1024;
