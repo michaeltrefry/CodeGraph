@@ -855,7 +855,7 @@ public sealed class OverlayQueryTests : IDisposable
     }
 
     /// <summary>
-    /// Vitals cover languages the graph does not index (.tsx, .js, .jsx, .vue). languageIndexed
+    /// Vitals cover languages the graph does not index (such as .vue). languageIndexed
     /// still says graph indexing (false), but a hotspot answer with data must not claim that the
     /// absence of data says nothing: it says the metrics exist and graph answers have none.
     /// </summary>
@@ -863,14 +863,14 @@ public sealed class OverlayQueryTests : IDisposable
     public async Task FileHotspot_ForALanguageTheGraphDoesNotIndex_ReportsItsVitalsWithoutDisclaimingThem()
     {
         await _store.UpsertFileMetricsBatchAsync(Repo,
-            [new FileMetricsEntity { Repository = Repo, FilePath = "web/View.tsx", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
+            [new FileMetricsEntity { Repository = Repo, FilePath = "web/View.vue", RiskScore = 7, ComputedAt = DateTime.UtcNow, CommitSha = _baseSha }]);
         var mcp = Mcp(languages: IndexedLanguageCatalogTests.ApiCatalog());
 
-        var withData = await mcp.FileHotspot(Repo, "web/View.tsx");
+        var withData = await mcp.FileHotspot(Repo, "web/View.vue");
         var s = withData.StructuredContent!.Value;
         s.GetProperty("found").GetBoolean().ShouldBeTrue();
         s.GetProperty("riskScore").GetDouble().ShouldBe(7);
-        AssertLanguage(s, false, "TypeScript");
+        AssertLanguage(s, false, "Vue");
         withData.Text().ShouldNotContain("absence of data");
         withData.Text().ShouldContain("Hotspot metrics exist for this file, but graph-based answers such as analyze_impact_file have no data for it");
 

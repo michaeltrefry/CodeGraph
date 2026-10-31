@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Services.Analyzers;
 
@@ -107,6 +108,15 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try
         {
             TouchLastUsed();
+            // A reused v7 process rescans destructuring patterns and literal members per alias.
+            // Require v8 before sending source paths so mutation/binding lookups are bounded too.
+            var health = await _http.GetFromJsonAsync<JsonElement>("/health", ct);
+            if (!health.TryGetProperty("sourceBoundsVersion", out var bounds)
+                || !bounds.TryGetInt32(out var version) || version < 8)
+            {
+                _logger.LogWarning("TypeScript sidecar does not support bounded source and semantic analysis; extraction of {Repository} was refused", request.RepositoryName);
+                return null;
+            }
             using var response = await _http.PostAsJsonAsync("/extract-project", request, ct);
             if (!response.IsSuccessStatusCode)
             {
@@ -125,6 +135,7 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
             return await response.Content.ReadFromJsonAsync<ExtractProjectResponse>(
                 cancellationToken: ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (HttpRequestException ex) when (ex.InnerException is HttpIOException)
         {
             _logger.LogWarning(

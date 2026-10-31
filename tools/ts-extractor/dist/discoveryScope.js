@@ -95,6 +95,11 @@ class DiscoveryScope {
             .sort()
             .map(relative => path.join(this.rootPath, relative));
     }
+    /** Membership check without rebuilding the admitted file list for every module lookup. */
+    includesFile(absolutePath) {
+        const relative = path.relative(this.rootPath, absolutePath).replace(/\\/g, '/');
+        return !relative.startsWith('../') && !path.isAbsolute(relative) && this.files.has(normalizeRelative(relative));
+    }
     /** True when the directory (repo-relative, '' for the root) holds at least one admitted file. */
     includesDirectory(relativeDirectory) {
         return this.directories.has(normalizeRelative(relativeDirectory));

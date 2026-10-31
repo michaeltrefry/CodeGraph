@@ -412,7 +412,7 @@ public class RustScipImporterTests
     [Fact]
     public void RustProjectAnalyzer_VersionIsBumpedForTheAbiProperty() =>
         new RustProjectAnalyzer(Microsoft.Extensions.Logging.Abstractions.NullLogger<RustProjectAnalyzer>.Instance)
-            .ExtractionVersion.ShouldBe("4");
+            .ExtractionVersion.ShouldBe("6");
 
     [Fact]
     public void Import_AcceptsCanonicalScipPrintSnakeCaseAndPackedEnclosingRanges()

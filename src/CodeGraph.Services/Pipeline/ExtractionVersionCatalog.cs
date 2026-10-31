@@ -66,10 +66,17 @@ public sealed class ExtractionVersionCatalog
     /// method, never a receiver call; Rust → C++ only with C linkage), and a Swift call binds only
     /// within the caller's own module and the modules its file imports (sc-26145).
     /// </summary>
-    public const int PipelineVersion = 4;
+    /// 5 (sc-27973): JS/JSX repository analysis, semantic outgoing-slice reconciliation,
+    /// complete-output preservation and component callable ownership impact traversal.
+    /// 6 (sc-27972): native endpoint/Tauri reconciliation and local/cross-repository HTTP binding.
+    /// 7 (sc-27972): scoped callable-edge admission and case-insensitive analyzer version coverage.
+    /// 8: bounded native registration reads and language-specific analyzer case selection.
+    /// 9: admitted bounded Go manifests and contained regular-file registration input.
+    /// 10: indexed/cancellable Tauri analysis with deterministic work and depth limits.
+    public const int PipelineVersion = 20; // Bounded static alias and literal member lookup work.
 
     private static readonly string[] SolutionAnalyzerExtensions = [".cs"];
-    private static readonly string[] TypeScriptAnalyzerExtensions = [".ts", ".tsx"];
+    private static readonly string[] TypeScriptAnalyzerExtensions = [".js", ".jsx", ".ts", ".tsx"];
     private static readonly string[] RustAnalyzerExtensions = [".rs"];
 
     private readonly IReadOnlyList<ICodeExtractor> _extractors;
@@ -165,7 +172,7 @@ public sealed class ExtractionVersionCatalog
 
         if (_solutionAnalyzer is not null && Covers(SolutionAnalyzerExtensions, extension))
             Append(version, _solutionAnalyzer.GetType().Name, _solutionAnalyzer.ExtractionVersion);
-        if (_typeScriptAnalyzer is not null && Covers(TypeScriptAnalyzerExtensions, extension))
+        if (_typeScriptAnalyzer is not null && TypeScriptAnalyzerExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
             Append(version, _typeScriptAnalyzer.GetType().Name, _typeScriptAnalyzer.ExtractionVersion);
         if (_rustAnalyzer is not null && Covers(RustAnalyzerExtensions, extension))
             Append(version, _rustAnalyzer.GetType().Name, _rustAnalyzer.ExtractionVersion);

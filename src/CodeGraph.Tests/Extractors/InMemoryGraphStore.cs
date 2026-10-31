@@ -14,6 +14,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> RepositoryIndexingLocks =
         new(StringComparer.OrdinalIgnoreCase);
     private long _nextId = 1;
+    private long _nextCrossEdgeId = 1;
     private readonly List<GraphNode> _nodes = new();
     private readonly List<GraphEdge> _edges = new();
     private readonly List<CrossRepoEdge> _crossEdges = new();
@@ -36,22 +37,42 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
     public Exception? IncrementalReplacementFailure { get; set; }
     public Exception? IndexingLockFailure { get; set; }
 
-    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
-        string repository,
-        CancellationToken ct = default)
+    public Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(string repository, CancellationToken ct = default) =>
+        AcquireRepositoryIndexingLocksAsync([repository], ct);
+
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLocksAsync(
+        IReadOnlyCollection<string> repositories, CancellationToken ct = default)
     {
-        if (IndexingLockFailure is not null)
-            throw IndexingLockFailure;
-        var repositoryLock = RepositoryIndexingLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
-        await repositoryLock.WaitAsync(ct);
-        return new InMemoryIndexingLock(repositoryLock);
+        ct.ThrowIfCancellationRequested();
+        if (IndexingLockFailure is not null) throw IndexingLockFailure;
+        var acquired = new List<SemaphoreSlim>();
+        try
+        {
+            // The existing in-memory single-lock namespace is case-insensitive.
+            foreach (var repository in repositories.Order(StringComparer.OrdinalIgnoreCase).ThenBy(name => name, StringComparer.Ordinal)
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var repositoryLock = RepositoryIndexingLocks.GetOrAdd(repository, _ => new SemaphoreSlim(1, 1));
+                await repositoryLock.WaitAsync(ct);
+                acquired.Add(repositoryLock);
+            }
+            ct.ThrowIfCancellationRequested();
+            return new InMemoryIndexingLock(acquired);
+        }
+        catch
+        {
+            foreach (var repositoryLock in acquired.AsEnumerable().Reverse()) repositoryLock.Release();
+            throw;
+        }
     }
 
-    private sealed class InMemoryIndexingLock(SemaphoreSlim repositoryLock) : IAsyncDisposable
+    private sealed class InMemoryIndexingLock(IReadOnlyList<SemaphoreSlim> repositoryLocks) : IAsyncDisposable
     {
+        private int _disposed;
         public ValueTask DisposeAsync()
         {
-            repositoryLock.Release();
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                foreach (var repositoryLock in repositoryLocks.Reverse()) repositoryLock.Release();
             return ValueTask.CompletedTask;
         }
     }
@@ -228,7 +249,17 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     public Task InsertCrossRepoEdgeBatchAsync(IReadOnlyList<CrossRepoEdge> edges, CancellationToken ct = default)
     {
-        _crossEdges.AddRange(edges);
+        ct.ThrowIfCancellationRequested();
+        foreach (var edge in edges)
+        {
+            var index = _crossEdges.FindIndex(old => old.SourceRepository == edge.SourceRepository &&
+                old.TargetRepository == edge.TargetRepository && old.SourceNodeId == edge.SourceNodeId &&
+                old.TargetNodeId == edge.TargetNodeId && old.Type == edge.Type);
+            var stored = edge with { Id = index >= 0 ? _crossEdges[index].Id : edge.Id == 0 ? _nextCrossEdgeId++ : edge.Id };
+            _nextCrossEdgeId = Math.Max(_nextCrossEdgeId, stored.Id + 1);
+            if (index >= 0) _crossEdges[index] = stored;
+            else _crossEdges.Add(stored);
+        }
         return Task.CompletedTask;
     }
 
@@ -658,11 +689,7 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
 
     // ── Cross-repo edges ────────────────────────────────────────────────
 
-    public Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge)
-    {
-        _crossEdges.Add(edge);
-        return Task.CompletedTask;
-    }
+    public Task InsertCrossRepoEdgeAsync(CrossRepoEdge edge) => InsertCrossRepoEdgeBatchAsync([edge]);
 
     public Task<IReadOnlyList<CrossRepoEdge>> FindCrossRepoEdgesAsync(string repository, EdgeType? type = null) =>
         Task.FromResult<IReadOnlyList<CrossRepoEdge>>(
@@ -1612,6 +1639,14 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
             var sourceNode = _nodes.FirstOrDefault(n => n.Id == e.SourceId);
             return sourceNode?.Repository.Equals(repository, StringComparison.OrdinalIgnoreCase) == true;
         });
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var ids = edgeIds.ToHashSet();
+        _crossEdges.RemoveAll(edge => ids.Contains(edge.Id));
         return Task.CompletedTask;
     }
 

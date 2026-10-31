@@ -195,6 +195,34 @@ public class MariaDbLargeGraphWriteTests
         await using var acquired = await waiting.WaitAsync(TimeSpan.FromSeconds(30));
     }
 
+    [Fact]
+    public async Task AcquireRepositoryIndexingLocksAsync_HoldsMultipleNamesOnOnePooledConnection()
+    {
+        await using var db = await TestDatabase.CreateAsync();
+        var holder = db.StoreWithSingleConnection(new MariaDbStorageOptions());
+        await using var context = holder.Context;
+        var repositories = new[] { "lock-group-c", "lock-group-a", "lock-group-b", "lock-group-a" };
+        var lease = await holder.Value.AcquireRepositoryIndexingLocksAsync(repositories).WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            var owners = new List<long>();
+            foreach (var repository in repositories.Distinct())
+            {
+                var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(repository)));
+                owners.Add(await db.ScalarAsync<long>($"SELECT COALESCE(IS_USED_LOCK('{name}'), 0)"));
+            }
+            owners.ShouldAllBe(owner => owner > 0);
+            owners.Distinct().Count().ShouldBe(1);
+        }
+        finally { await lease.DisposeAsync(); }
+        foreach (var repository in repositories.Distinct())
+        {
+            var name = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(repository)));
+            (await db.ScalarAsync<long>($"SELECT COALESCE(IS_USED_LOCK('{name}'), 0)")).ShouldBe(0);
+            await using var single = await holder.Value.AcquireRepositoryIndexingLockAsync(repository).WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
     private static (List<GraphNode> Nodes, List<PendingEdge> Edges, Dictionary<string, string> Hashes) BuildGraph()
     {
         var nodes = Enumerable.Range(0, NodeCount).Select(i => new GraphNode
@@ -260,6 +288,10 @@ public class MariaDbLargeGraphWriteTests
 
         /// <summary>A store whose connection default command timeout is 1 s.</summary>
         public OwnedStore Store(MariaDbStorageOptions options) => CreateStore(options, _shortTimeoutConnectionString);
+
+        public OwnedStore StoreWithSingleConnection(MariaDbStorageOptions options) =>
+            CreateStore(options, new MySqlConnectionStringBuilder(_shortTimeoutConnectionString)
+            { MaximumPoolSize = 1 }.ConnectionString);
 
         /// <summary>
         /// As <see cref="Store"/>, but a timed-out command closes the socket instead of waiting for

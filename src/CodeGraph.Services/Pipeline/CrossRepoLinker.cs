@@ -1,12 +1,16 @@
 using System.Text.RegularExpressions;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Services.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services.Pipeline;
 
-public class CrossRepoLinker
+public partial class CrossRepoLinker
 {
+    internal const string OwnedLinksLockName = ".codegraph/owned-http-npm-links";
     private static readonly IReadOnlyList<NodeLabel> RustDefinitionLabels =
     [
         NodeLabel.Function,
@@ -37,11 +41,13 @@ public class CrossRepoLinker
 
     private readonly IGraphStore _store;
     private readonly ILogger<CrossRepoLinker> _logger;
+    private readonly IndexingOptions _httpOptions;
 
-    public CrossRepoLinker(IGraphStore store, ILogger<CrossRepoLinker> logger)
+    public CrossRepoLinker(IGraphStore store, ILogger<CrossRepoLinker> logger, IOptions<IndexingOptions>? options = null)
     {
         _store = store;
         _logger = logger;
+        _httpOptions = options?.Value ?? new();
     }
 
     public async Task LinkAsync(CancellationToken ct)
@@ -51,8 +57,8 @@ public class CrossRepoLinker
         var counts = await LinkCoreAsync(scopeRepository: null, ct);
 
         _logger.LogInformation(
-            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic links",
-            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
+            "Cross-repo linking complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic, {Npm} npm export links",
+            counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust, counts.Npm);
     }
 
     /// <summary>
@@ -72,26 +78,42 @@ public class CrossRepoLinker
     {
         _logger.LogInformation("Running incremental cross-repo linking for {Repository}", repository);
 
-        // Clear existing cross-repo edges for this repository so stale links are removed
-        await _store.DeleteCrossRepoEdgesForRepositoryAsync(repository);
+        // HTTP and npm export links own their bounded diffs, including third-pair ambiguity
+        // changes. Preserve them for comparison so an unchanged sync retains their identities.
 
         var counts = await LinkCoreAsync(repository, ct);
 
         _logger.LogInformation(
-            "Incremental linking for {Repository} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic",
-            repository, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust);
+            "Incremental linking for {Repository} complete: {Http} HTTP, {Messaging} messaging, {NuGet} NuGet, {Cargo} Cargo, {Swift} Swift package, {Rust} Rust semantic, {Npm} npm exports",
+            repository, counts.Http, counts.Messaging, counts.NuGet, counts.Cargo, counts.Swift, counts.Rust, counts.Npm);
     }
 
-    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust)> LinkCoreAsync(
+    private async Task<(int Http, int Messaging, int NuGet, int Cargo, int Swift, int Rust, int Npm)> LinkCoreAsync(
         string? scopeRepository, CancellationToken ct)
     {
-        var http = await LinkHttpRoutesAsync(scopeRepository, ct);
+        int http, npm;
+        // These passes reconcile global uniqueness, including pairs outside the indexed repo.
+        // Serialize their complete snapshot→diff interval across processes: an older event
+        // must never delete a newer repair using a snapshot it captured before that repair.
+        await using (var ownedLinks = await _store.AcquireRepositoryIndexingLockAsync(OwnedLinksLockName, ct))
+        {
+            http = await LinkHttpRoutesAsync(scopeRepository, ct);
+            npm = await LinkNpmExportsAsync(scopeRepository, ct);
+        }
+        if (scopeRepository is not null)
+        {
+            // HTTP budget/cancellation preflight must succeed before unrelated legacy cleanup.
+            var existing = await _store.FindCrossRepoEdgesAsync(scopeRepository);
+            await _store.DeleteCrossRepoEdgesByIdsAsync(existing
+                .Where(edge => edge.Type != EdgeType.HTTP_CALLS && !IsNpmExportLink(edge))
+                .Select(edge => edge.Id).ToArray(), ct);
+        }
         var messaging = await LinkMessagingAsync(scopeRepository, ct);
         var nuget = await LinkNuGetPackagesAsync(scopeRepository, ct);
         var cargo = await LinkManifestPackagesAsync(Cargo, scopeRepository, ct);
         var swift = await LinkManifestPackagesAsync(SwiftPm, scopeRepository, ct);
         var rust = await LinkRustSymbolsAsync(scopeRepository, ct);
-        return (http, messaging, nuget, cargo, swift, rust);
+        return (http, messaging, nuget, cargo, swift, rust, npm);
     }
 
     private static bool InScope(string? scopeRepository, string sourceRepository, string targetRepository) =>
@@ -111,125 +133,34 @@ public class CrossRepoLinker
     {
         // HTTP_CALLS edges with their source repository, the target stub's qualified name (it may carry
         // a concrete route repository hint such as route:OrdersApi:GET:api/orders/{id}) and the call keys.
-        var httpCallEdges = await ToListAsync(_store.StreamLinkEdgesAsync(
+        var work = new HttpBindingBudget(_httpOptions, ct);
+        var owners = new HashSet<string>(StringComparer.Ordinal);
+        // Discover lock names only, then re-read authoritative facts under one grouped
+        // source lease. The first unlocked projection is never used to derive bindings.
+        await foreach (var edge in _store.StreamLinkEdgesAsync(new LinkEdgeQuery([EdgeType.HTTP_CALLS]),ct).WithCancellation(ct))
+        { work.Text(edge.SourceRepository); owners.Add(edge.SourceRepository); }
+        if (owners.Count == 0) return 0;
+        var lockNames=owners.Where(owner=>!owner.Equals(OwnedLinksLockName,StringComparison.Ordinal)).Order(Comparer<string>.Create((a,b)=> { work.Text(a,b); return StringComparer.Ordinal.Compare(a,b); })).ToArray();
+        await using var sourceLocks=await _store.AcquireRepositoryIndexingLocksAsync(lockNames,ct);
+        var httpCallEdges = new List<LinkEdgeRow>();
+        await foreach (var edge in _store.StreamLinkEdgesAsync(
             new LinkEdgeQuery([EdgeType.HTTP_CALLS])
             {
-                EdgePropertyKeys = ["gateway_call", "request_dto", "service_name", "url_pattern", "http_method"]
-            }, ct), ct);
-        if (httpCallEdges.Count == 0)
-            return 0;
-
-        // Route keys across all repositories (may be empty for gateway-only calls)
-        var routes = await ToListAsync(_store.StreamLinkNodesAsync(
-            new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = ["http_method", "route_template"] }, ct), ct);
-
-        // Build route lookup: normalize templates for matching
-        var routeLookup = routes
-            .GroupBy(r => NormalizeRouteTemplate(
-                r.Properties.GetValueOrDefault("http_method") ?? "",
-                r.Properties.GetValueOrDefault("route_template") ?? ""))
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        var crossEdges = new List<CrossRepoEdge>();
-
-        // Collect all known projects for DTO→project resolution
-        var repositories = await _store.ListRepositoriesAsync();
-        var repositoryNames = repositories.Select(p => p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var edge in httpCallEdges)
+                EdgePropertyKeys = ["gateway_call", "request_dto", "service_name", "url_pattern", "http_method", "semantic_owner", "origin", "http_origin", "url_origin", "origin_pattern", "binding_ambiguous"]
+            }, ct).WithCancellation(ct))
         {
-            var isGatewayCall = GetBoolean(edge.EdgeProperties.GetValueOrDefault("gateway_call"));
-            var requestDto = edge.EdgeProperties.GetValueOrDefault("request_dto");
-
-            if (isGatewayCall && requestDto is not null && !requestDto.StartsWith("route:"))
-            {
-                var serviceName = edge.EdgeProperties.GetValueOrDefault("service_name");
-                var targetRepository = ResolveGatewayTargetRepository(serviceName, requestDto, repositoryNames);
-                if (targetRepository is null)
-                    continue;
-
-                if (edge.SourceRepository == targetRepository ||
-                    !InScope(scopeRepository, edge.SourceRepository, targetRepository))
-                    continue;
-
-                crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceRepository, targetRepository, edge.SourceId, edge.TargetId,
-                    EdgeType.HTTP_CALLS, new()
-                    {
-                        ["request_dto"] = requestDto,
-                        ["gateway_call"] = true,
-                        ["confidence_band"] = "medium"
-                    }));
-                continue;
-            }
-
-            // Standard route-based HTTP_CALLS matching
-            var urlPattern = edge.EdgeProperties.GetValueOrDefault("url_pattern");
-            var httpMethod = edge.EdgeProperties.GetValueOrDefault("http_method");
-
-            if (urlPattern is null || httpMethod is null)
-                continue;
-
-            var normalizedCall = NormalizeUrlForMatching(httpMethod, urlPattern);
-
-            // Try exact match first, then pattern match
-            var matchedRoutes = FindMatchingRoutes(normalizedCall, httpMethod, urlPattern, routeLookup);
-            var targetRepositoryHint = ResolveHttpTargetRepository(
-                edge.EdgeProperties.GetValueOrDefault("service_name"),
-                requestDto,
-                edge.TargetQualifiedName,
-                repositoryNames);
-
-            if (targetRepositoryHint is not null)
-            {
-                matchedRoutes = matchedRoutes
-                    .Where(route => route.Repository.Equals(targetRepositoryHint, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-            }
-            else
-            {
-                var matchingRepositories = matchedRoutes
-                    .Select(route => route.Repository)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                if (matchingRepositories.Count > 1)
-                {
-                    _logger.LogDebug(
-                        "Skipping ambiguous HTTP route match for {Method} {UrlPattern}: matched {RepositoryCount} repositories ({Repositories})",
-                        httpMethod,
-                        urlPattern,
-                        matchingRepositories.Count,
-                        string.Join(", ", matchingRepositories.Take(10)));
-                    continue;
-                }
-            }
-
-            foreach (var route in matchedRoutes)
-            {
-                if (edge.SourceRepository == route.Repository ||
-                    !InScope(scopeRepository, edge.SourceRepository, route.Repository))
-                    continue;
-
-                crossEdges.Add(CreateCrossRepoEdge(
-                    edge.SourceRepository, route.Repository, edge.SourceId, route.Id,
-                    EdgeType.HTTP_CALLS, new()
-                    {
-                        ["http_method"] = httpMethod,
-                        ["url_pattern"] = urlPattern,
-                        ["route_template"] = route.Properties.GetValueOrDefault("route_template") ?? "",
-                        ["confidence_band"] = "medium"
-                    }));
-            }
+            work.Text(edge.SourceRepository, edge.TargetRepository, edge.TargetQualifiedName);
+            if (!owners.Contains(edge.SourceRepository))
+                throw new InvalidOperationException("HTTP binding source owners changed during planning; retry without changing prior bindings.");
+            work.Properties(edge.EdgeProperties); httpCallEdges.Add(edge);
         }
-
-        if (crossEdges.Count > 0)
-        {
-            await _store.InsertCrossRepoEdgeBatchAsync(crossEdges, ct);
-            _logger.LogInformation("Linked {Count} HTTP call(s) to routes across repos", crossEdges.Count);
-        }
-
-        return crossEdges.Count;
+        if (httpCallEdges.Count == 0) return 0;
+        var routeLookup = new HttpRouteIndex(work);
+        await foreach (var route in _store.StreamLinkNodesAsync(
+            new LinkNodeQuery([NodeLabel.Route]) { PropertyKeys = HttpRoutePropertyKeys }, ct).WithCancellation(ct)) routeLookup.Add(route);
+        var repositoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var repository in await _store.ListRepositoriesAsync()) { work.Text(repository.Name); repositoryNames.Add(repository.Name); }
+        return await ReconcileLocalHttpBindingsAsync(scopeRepository, httpCallEdges, routeLookup, repositoryNames, work, ct);
     }
 
     private async Task<int> LinkMessagingAsync(string? scopeRepository, CancellationToken ct)
@@ -785,61 +716,144 @@ public class CrossRepoLinker
     /// Normalize a route template for matching: lowercase, strip leading slash,
     /// replace parameter placeholders with a wildcard token.
     /// </summary>
-    private static string NormalizeRouteTemplate(string httpMethod, string template)
+    internal static readonly string[] HttpMethods = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+    internal static readonly string[] HttpRoutePropertyKeys =
+    [
+        "http_method", "route_template", "route_kind", "framework", "component", "component_qn",
+        "registration_ambiguous", "origin", "http_origin", "url_origin", "service_name"
+    ];
+
+    internal static bool IsBackendHttpRoute(LinkNodeRow route)
     {
-        var normalized = template.ToLowerInvariant().TrimStart('/');
-        // Replace {anything} with {*} for matching
-        normalized = Regex.Replace(normalized, @"\{[^}]+\}", "{*}");
-        return $"{httpMethod.ToUpperInvariant()}:{normalized}";
+        if (route.Label != NodeLabel.Route || route.QualifiedName.StartsWith("ui-route:", StringComparison.OrdinalIgnoreCase)) return false;
+        var kind = route.Properties.GetValueOrDefault("route_kind")?.ToLowerInvariant();
+        if (kind is "ui" or "frontend" or "page" or "screen") return false;
+        if (GetBoolean(route.Properties.GetValueOrDefault("registration_ambiguous"))) return false;
+        // Legacy Angular pages carried GET plus component metadata before route_kind existed.
+        var explicitlyBackend = kind is "api" or "http" or "backend" or "endpoint";
+        if (!explicitlyBackend && (!string.IsNullOrWhiteSpace(route.Properties.GetValueOrDefault("component"))
+            || !string.IsNullOrWhiteSpace(route.Properties.GetValueOrDefault("component_qn")))) return false;
+        var framework = route.Properties.GetValueOrDefault("framework")?.ToLowerInvariant();
+        if (!explicitlyBackend && framework is ("angular" or "react" or "react-router" or "next" or "nextjs" or "next.js")) return false;
+        return HttpMethods.Contains(route.Properties.GetValueOrDefault("http_method")?.ToUpperInvariant(), StringComparer.Ordinal)
+            && route.Properties.ContainsKey("route_template");
     }
 
-    /// <summary>
-    /// Normalize a concrete URL for matching against route templates:
-    /// replace path segments that look like IDs with {*}.
-    /// </summary>
-    private static string NormalizeUrlForMatching(string httpMethod, string url)
+    internal static HttpRouteIndex BuildHttpRouteLookup(IEnumerable<LinkNodeRow> routes, HttpBindingBudget? work = null)
     {
-        var normalized = url.ToLowerInvariant().TrimStart('/');
-        // Replace segments that are numeric or GUIDs with {*}
+        var index = new HttpRouteIndex(work ?? new());
+        foreach (var route in routes) index.Add(route);
+        return index;
+    }
+
+    internal static string NormalizeRouteTemplate(string httpMethod, string template)
+    {
+        var normalized = HttpPath(template).ToLowerInvariant().TrimStart('/');
+        // One scan: the former unanchored brace regex retried every opening brace
+        // when a malformed long segment had no closing brace (quadratic work).
+        var rewritten = new StringBuilder(normalized.Length);
+        for (var position=0;position<normalized.Length;)
+        {
+            if (normalized[position]!='{') { rewritten.Append(normalized[position++]); continue; }
+            var close=normalized.IndexOf('}',position+1);
+            if (close<0) { rewritten.Append(normalized.AsSpan(position)); break; }
+            var length=close-position-1;
+            if (length==0) rewritten.Append("{}");
+            else rewritten.Append(normalized[position+1]=='*' && length>1 ? "{**}" : "{*}");
+            position=close+1;
+        }
+        normalized=rewritten.ToString();
         var segments = normalized.Split('/');
         for (var i = 0; i < segments.Length; i++)
         {
-            if (IsLikelyId(segments[i]))
-                segments[i] = "{*}";
+            if (Regex.IsMatch(segments[i], @"^:[a-z_][a-z0-9_]*(?:\(.+\))?$",RegexOptions.NonBacktracking)) segments[i] = "{*}";
+            else if (Regex.IsMatch(segments[i], @"^\*[a-z_][a-z0-9_]*$",RegexOptions.NonBacktracking)) segments[i] = "{**}";
         }
-        return $"{httpMethod.ToUpperInvariant()}:{string.Join("/", segments)}";
+        return $"{httpMethod.ToUpperInvariant()}:{string.Join('/', segments)}";
     }
 
-    private static bool IsLikelyId(string segment)
+    internal static string NormalizeUrlForMatching(string httpMethod, string url)
     {
-        if (string.IsNullOrEmpty(segment))
-            return false;
-        // Numeric
-        if (long.TryParse(segment, out _))
-            return true;
-        // GUID
-        if (Guid.TryParse(segment, out _))
-            return true;
-        // Already a parameter placeholder
-        if (segment.StartsWith('{') && segment.EndsWith('}'))
-            return true;
-        return false;
+        var segments = HttpPath(url).ToLowerInvariant().TrimStart('/').Split('/');
+        for (var i = 0; i < segments.Length; i++)
+            if (IsLikelyId(segments[i])) segments[i] = "{*}";
+        return $"{httpMethod.ToUpperInvariant()}:{string.Join('/', segments)}";
     }
 
-    private static List<LinkNodeRow> FindMatchingRoutes(
+    private static bool IsLikelyId(string segment) =>
+        long.TryParse(segment, out _) || Guid.TryParse(segment, out _)
+        || (segment.StartsWith('{') && segment.EndsWith('}'));
+
+    private static string HttpPath(string url)
+    {
+        var path = Regex.Replace(url.Trim(), @"^https?://[^/?#]+", "", RegexOptions.IgnoreCase);
+        var braces = 0;
+        for (var i = 0; i < path.Length; i++)
+        {
+            if (path[i] == '{') braces++;
+            if (path[i] == '}') braces--;
+            if (braces == 0 && path[i] is '?' or '#') return path[..i];
+        }
+        return path;
+    }
+
+    internal static bool IsMatchableHttpCall(string? method, string? url)
+    {
+        if (method is null || !HttpMethods.Contains(method.ToUpperInvariant(), StringComparer.Ordinal)
+            || string.IsNullOrWhiteSpace(url)) return false;
+        if (Regex.IsMatch(url, @"^[a-z][a-z0-9+.-]*:", RegexOptions.IgnoreCase)
+            && !Regex.IsMatch(url, @"^https?://", RegexOptions.IgnoreCase)) return false;
+        var path = HttpPath(url).Trim('/');
+        return path.Length == 0 || path.Split('/').Any(segment => segment.Length > 0
+            && segment is not ("*" or "unknown" or "undefined") && !segment.StartsWith('{'));
+    }
+
+    internal static string? CallOrigin(IReadOnlyDictionary<string, string?> properties, string url)
+    {
+        var origin = properties.GetValueOrDefault("origin") ?? properties.GetValueOrDefault("http_origin")
+            ?? properties.GetValueOrDefault("url_origin");
+        if (string.IsNullOrWhiteSpace(origin))
+        {
+            var match = Regex.Match(url, @"^https?://[^/?#]+", RegexOptions.IgnoreCase);
+            origin = match.Success ? match.Value : null;
+        }
+        if (string.IsNullOrWhiteSpace(origin)) return null;
+        return Uri.TryCreate(origin, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https"
+            ? uri.GetLeftPart(UriPartial.Authority).TrimEnd('/') : origin.TrimEnd('/');
+    }
+
+    internal static List<LinkNodeRow> FindMatchingRoutes(
         string normalizedCall, string httpMethod, string urlPattern,
-        Dictionary<string, List<LinkNodeRow>> routeLookup)
+        HttpRouteIndex routeLookup, Func<LinkNodeRow, bool>? eligible = null,
+        string? repositoryHint = null, string? origin = null, string? originRepository = null, bool cacheKnownEligibility = false) =>
+        routeLookup.Find(normalizedCall, httpMethod, urlPattern, eligible ?? (_ => true), repositoryHint, origin, originRepository, cacheKnownEligibility);
+
+    internal static List<LinkNodeRow> SelectHttpRouteMatches(
+        string method, string url, string? serviceName, string? requestDto, string? targetQualifiedName,
+        string? origin, HashSet<string> repositoryNames, HttpRouteIndex routeLookup)
     {
-        // Exact match after normalization
-        if (routeLookup.TryGetValue(normalizedCall, out var exact))
-            return exact;
-
-        // Fuzzy: try normalizing the URL as a template too
-        var asTemplate = NormalizeRouteTemplate(httpMethod, urlPattern);
-        if (routeLookup.TryGetValue(asTemplate, out var templateMatch))
-            return templateMatch;
-
-        return [];
+        routeLookup.Budget.Text(method, url, serviceName, requestDto, targetQualifiedName, origin);
+        if (!IsMatchableHttpCall(method, url)) return [];
+        var repositoryHint = ResolveHttpTargetRepository(serviceName, requestDto, targetQualifiedName, repositoryNames, routeLookup.Budget);
+        // An explicit but unknown service cannot be replaced with an arbitrary path match.
+        if (!string.IsNullOrWhiteSpace(serviceName) && repositoryHint is null) return [];
+        var originRepository = origin is not null && Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+            ? ResolveRepositoryName(uri.Host, repositoryNames) : null;
+        if (repositoryHint is not null && originRepository is not null
+            && !repositoryHint.Equals(originRepository, StringComparison.OrdinalIgnoreCase)) return [];
+        bool Eligible(LinkNodeRow route)
+        {
+            if (repositoryHint is not null && !route.Repository.Equals(repositoryHint, StringComparison.OrdinalIgnoreCase)) return false;
+            if (origin is null) return true;
+            var routeOrigin = routeLookup.Origin(route);
+            if (routeOrigin is not null) return routeOrigin.Equals(origin, StringComparison.OrdinalIgnoreCase);
+            return repositoryHint is not null || (originRepository is not null
+                && route.Repository.Equals(originRepository, StringComparison.OrdinalIgnoreCase));
+        }
+        var matches = FindMatchingRoutes(NormalizeUrlForMatching(method, url), method, url, routeLookup, Eligible, repositoryHint, origin, originRepository, cacheKnownEligibility: true);
+        matches = matches.DistinctBy(route => (route.Repository, route.QualifiedName)).ToList();
+        // Multiple route identities in one repository are just as ambiguous as multiple services.
+        return matches.Count == 1 ? matches : [];
     }
 
     /// <summary>
@@ -848,25 +862,27 @@ public class CrossRepoLinker
     /// from the DTO type.
     /// </summary>
     private static string? ResolveGatewayTargetRepository(
-        string? serviceName, string dtoTypeQN, HashSet<string> repositoryNames)
+        string? serviceName, string dtoTypeQN, HashSet<string> repositoryNames, HttpBindingBudget? work = null)
     {
-        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames);
+        work?.Text(serviceName,dtoTypeQN);
+        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames, work);
         if (serviceRepository is not null)
             return serviceRepository;
 
         // Fall back to namespace convention
-        return DeriveRepositoryFromDtoType(dtoTypeQN, repositoryNames);
+        return DeriveRepositoryFromDtoType(dtoTypeQN, repositoryNames, work);
     }
 
-    private static string? ResolveHttpTargetRepository(
+    internal static string? ResolveHttpTargetRepository(
         string? serviceName,
         string? requestDto,
         string? targetQualifiedName,
-        HashSet<string> repositoryNames)
+        HashSet<string> repositoryNames, HttpBindingBudget? work = null)
     {
-        var serviceRepository = ResolveRepositoryName(serviceName, repositoryNames);
-        if (serviceRepository is not null)
-            return serviceRepository;
+        string? Resolve()
+        {
+        if (!string.IsNullOrWhiteSpace(serviceName))
+            return ResolveRepositoryName(serviceName, repositoryNames, work);
 
         if (targetQualifiedName is not null)
         {
@@ -877,10 +893,12 @@ public class CrossRepoLinker
 
         return string.IsNullOrWhiteSpace(requestDto)
             ? null
-            : DeriveRepositoryFromDtoType(requestDto, repositoryNames);
+            : DeriveRepositoryFromDtoType(requestDto, repositoryNames, work);
+        }
+        return work is null ? Resolve() : work.Hint(serviceName,requestDto,targetQualifiedName,repositoryNames,Resolve);
     }
 
-    private static string? ResolveRepositoryName(string? repositoryName, HashSet<string> repositoryNames)
+    private static string? ResolveRepositoryName(string? repositoryName, HashSet<string> repositoryNames, HttpBindingBudget? work = null)
     {
         if (string.IsNullOrWhiteSpace(repositoryName))
             return null;
@@ -888,6 +906,7 @@ public class CrossRepoLinker
         if (repositoryNames.Contains(repositoryName))
             return repositoryName;
 
+        work?.Text(repositoryName,"TC.");
         var tcRepositoryName = $"TC.{repositoryName}";
         return repositoryNames.Contains(tcRepositoryName)
             ? tcRepositoryName
@@ -910,30 +929,27 @@ public class CrossRepoLinker
     /// Derive repository name from a request DTO type's namespace.
     /// Example: OrdersApi.Models.GetOrderRequest -> OrdersApi
     /// </summary>
-    private static string? DeriveRepositoryFromDtoType(string dtoTypeQN, HashSet<string> repositoryNames)
+    private static string? DeriveRepositoryFromDtoType(string dtoTypeQN, HashSet<string> repositoryNames, HttpBindingBudget? work = null)
     {
-        // Walk up the namespace segments and try progressively broader candidates.
-        // Example: OrdersApi.Models.GetOrderRequest
-        // then OrdersApi.Models -> strip .Models -> OrdersApi
-        var parts = dtoTypeQN.Split('.');
-        for (var i = parts.Length - 1; i >= 2; i--)
+        work?.Text(dtoTypeQN);
+        work?.Depth(1 + dtoTypeQN.Count(character => character == '.'));
+        var end=dtoTypeQN.LastIndexOf('.');
+        while (end > 0)
         {
-            var candidate = string.Join(".", parts[..i]);
-
-            // Try the namespace segment directly
-            if (repositoryNames.Contains(candidate))
-                return candidate;
-
-            // Try stripping known suffixes (.Models, .Contracts, .Client)
+            // Preserve the legacy minimum two-segment candidate and suffix rules.
+            var next=dtoTypeQN.LastIndexOf('.',end-1);
+            if (next < 0) break;
+            work?.Charge((long)end * 8 + 1); // before prefix allocation/hashing
+            var candidate=dtoTypeQN[..end];
+            if (repositoryNames.Contains(candidate)) return candidate;
             foreach (var suffix in new[] { ".Models", ".Contracts", ".Client", ".Shared" })
-            {
-                if (candidate.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                if (candidate.EndsWith(suffix,StringComparison.OrdinalIgnoreCase))
                 {
-                    var stripped = candidate[..^suffix.Length];
-                    if (repositoryNames.Contains(stripped))
-                        return stripped;
+                    work?.Charge((long)(candidate.Length-suffix.Length)*8+1);
+                    var stripped=candidate[..^suffix.Length];
+                    if (repositoryNames.Contains(stripped)) return stripped;
                 }
-            }
+            end=next;
         }
         return null;
     }

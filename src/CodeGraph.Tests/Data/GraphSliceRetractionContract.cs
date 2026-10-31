@@ -99,6 +99,27 @@ public class GraphSliceRetractionContract
             .ShouldBeEmpty();
 
         await VerifyStaleModuleReplacementAsync(store, repository);
+        await VerifyBoundedCrossRepoDeletionAsync(store, repository);
+    }
+
+    private static async Task VerifyBoundedCrossRepoDeletionAsync(IGraphStore store, string repository)
+    {
+        var source = (await store.FindNodeByQualifiedNameAsync(repository, "app.App"))!;
+        var target = (await store.FindNodeByQualifiedNameAsync(repository, "typescript-package:SliceContract:@demo/web"))!;
+        var edge = new CrossRepoEdge { SourceRepository = repository, TargetRepository = repository,
+            SourceNodeId = source.Id, TargetNodeId = target.Id, Type = EdgeType.HTTP_CALLS,
+            Properties = new() { ["bounded_delete_contract"] = "remove" } };
+        await store.InsertCrossRepoEdgeBatchAsync([edge, edge with { Type = EdgeType.CALLS,
+            Properties = new() { ["bounded_delete_contract"] = "retain" } }]);
+        var existing = await store.FindCrossRepoEdgesAsync(repository);
+        var selected = existing.Single(value => value.Properties.GetValueOrDefault("bounded_delete_contract")?.ToString() == "remove");
+        var retained = existing.Single(value => value.Properties.GetValueOrDefault("bounded_delete_contract")?.ToString() == "retain");
+        await store.DeleteCrossRepoEdgesByIdsAsync([selected.Id, selected.Id, long.MaxValue]);
+        var remaining = (await store.FindCrossRepoEdgesAsync(repository)).Single(value => value.Properties.ContainsKey("bounded_delete_contract"));
+        remaining.Id.ShouldBe(retained.Id);
+        remaining.Properties["bounded_delete_contract"].ToString().ShouldBe("retain");
+        await store.DeleteCrossRepoEdgesByIdsAsync([]);
+        (await store.FindCrossRepoEdgesAsync(repository)).Single(value => value.Properties.ContainsKey("bounded_delete_contract")).Id.ShouldBe(retained.Id);
     }
 
     /// <summary>

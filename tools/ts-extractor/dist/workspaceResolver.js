@@ -35,15 +35,17 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.analyzeWorkspaceImports = analyzeWorkspaceImports;
 const ts_morph_1 = require("ts-morph");
-const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const ts = __importStar(require("typescript"));
+const extractionWork_1 = require("./extractionWork");
+const viteLibraryExports_1 = require("./viteLibraryExports");
+const boundedTextReader_1 = require("./boundedTextReader");
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'coverage', '.git', '.angular']);
 const MAX_TSCONFIGS = 200;
 const MAX_WORKSPACE_PACKAGES = 500;
 const MAX_IMPORT_RESOLUTIONS = 20000;
 const MAX_BARREL_EXPORTS = 25;
-function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath, sourceFiles, log = () => { }, scope) {
+function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath, sourceFiles, log = () => { }, scope, reader = new boundedTextReader_1.BoundedTextReader(rootPath, scope ? file => scope.includesFile(file) : undefined, {}, log), work = new extractionWork_1.ExtractionWorkBudget()) {
     const diagnostics = [];
     const diag = (msg) => {
         diagnostics.push(msg);
@@ -57,10 +59,10 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
             .map(normalizeAbsolute)
             .filter(file => isInside(dir, file))
             .slice(0, limit)
-        : findFilesByName(dir, fileName, limit);
-    const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope);
+        : findFilesByName(dir, fileName, limit, reader);
+    const tsconfigs = discoverTsConfigs(normalizedRoot, requestedTsconfigPath, diag, findManifests, scope, reader, work);
     const fallbackConfig = pickFallbackConfig(tsconfigs, requestedTsconfigPath);
-    const workspacePackages = discoverWorkspacePackages(repositoryName, normalizedRoot, tsconfigs, diag, findManifests).filter(pkg => !scope || scope.includesDirectory(pkg.relativeRoot));
+    const workspacePackages = discoverWorkspacePackages(repositoryName, normalizedRoot, tsconfigs, diag, findManifests, reader, scope).filter(pkg => !scope || scope.includesDirectory(pkg.relativeRoot));
     qualifyCollidingPackages(repositoryName, workspacePackages);
     const sourceFilesByPath = new Map();
     for (const sourceFile of sourceFiles) {
@@ -74,11 +76,20 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
         workspacePackages,
         packagesByName: groupPackagesByName(workspacePackages),
         sourceFilesByPath,
-        moduleHost: ts.sys,
+        moduleHost: {
+            fileExists: file => sourceFilesByPath.has(normalizeAbsolute(file)) ||
+                (/(?:package|[tj]sconfig[^/]*)\.json$/.test(file) && reader.exists(file)),
+            readFile: file => reader.read(file),
+            directoryExists: directory => scope ? scope.includesDirectory(toRelative(normalizedRoot, directory)) : reader.directoryExists(directory),
+            realpath: file => file,
+            getCurrentDirectory: () => normalizedRoot,
+        },
         diagnostics,
+        reader,
+        work,
     };
-    const nodes = buildWorkspacePackageNodes(workspacePackages);
-    const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages);
+    const nodes = buildWorkspacePackageNodes(workspacePackages, ctx);
+    const edges = buildWorkspacePackageContainmentEdges(repositoryName, workspacePackages, work);
     const resolvedImports = [];
     const unresolvedImports = [];
     let resolutionCount = 0;
@@ -98,40 +109,38 @@ function analyzeWorkspaceImports(repositoryName, rootPath, requestedTsconfigPath
             resolutionCount++;
             const resolved = resolveImportSpec(ctx, absPath, fileQN, relPath, sourcePackage, spec);
             resolvedImports.push(resolved);
-            addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved);
+            addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved, work);
             if (resolved.classification === 'unresolved_alias' ||
                 resolved.classification === 'unsupported_dynamic_expression') {
-                unresolvedImports.push({
-                    fileQN,
-                    importedNamespace: resolved.importedNamespace,
-                });
+                unresolvedImports.push(work.createMetadata(() => ({ fileQN, importedNamespace: resolved.importedNamespace })));
             }
         }
     }
-    nodes.push(...buildExternalPackageNodes(resolvedImports));
+    nodes.push(...buildExternalPackageNodes(resolvedImports, work));
     diag(`workspaceDiscovery: ${workspacePackages.length} packages, ${tsconfigs.length} tsconfig files`);
     diag(`moduleResolution: ${resolvedImports.length} import/export/dynamic specifiers`);
     return {
         nodes,
         edges: dedupeEdges(edges),
-        workspacePackages: workspacePackages.map(toWorkspacePackageDto),
+        workspacePackages: workspacePackages.map(pkg => work.createMetadata(() => toWorkspacePackageDto(pkg))),
         resolvedImports,
         unresolvedImports,
         diagnostics,
     };
 }
-function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests, scope) {
-    const discovered = findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1);
+function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests, scope, reader, work) {
+    const discovered = [...findManifests(rootPath, 'tsconfig.json', MAX_TSCONFIGS + 1), ...findManifests(rootPath, 'jsconfig.json', MAX_TSCONFIGS + 1)];
     const normalizedRequested = normalizeAbsolute(requestedTsconfigPath);
-    if (!discovered.includes(normalizedRequested) && fs.existsSync(normalizedRequested)) {
+    if (!discovered.includes(normalizedRequested) && (!scope || scope.includesFile(normalizedRequested)) && reader.exists(normalizedRequested)) {
         discovered.unshift(normalizedRequested);
     }
     if (discovered.length > MAX_TSCONFIGS) {
         diag(`tsconfigDiscovery: limited from ${discovered.length} to ${MAX_TSCONFIGS} files`);
     }
     const configs = [];
+    const extendedConfigCache = new Map();
     for (const configPath of discovered.slice(0, MAX_TSCONFIGS)) {
-        const parsed = parseTsConfig(configPath, rootPath, diag, scope);
+        const parsed = parseTsConfig(configPath, rootPath, diag, scope, reader, work, extendedConfigCache);
         if (parsed)
             configs.push(parsed);
     }
@@ -141,7 +150,7 @@ function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests,
             dir: path.dirname(normalizedRequested),
             relativePath: toRelative(rootPath, normalizedRequested),
             options: {
-                allowJs: false,
+                allowJs: true,
                 skipLibCheck: true,
                 noResolve: true,
                 moduleResolution: ts.ModuleResolutionKind.NodeJs,
@@ -153,23 +162,50 @@ function discoverTsConfigs(rootPath, requestedTsconfigPath, diag, findManifests,
     configs.sort((a, b) => b.dir.length - a.dir.length);
     return configs;
 }
-function parseTsConfig(configPath, rootPath, diag, scope) {
+function parseTsConfig(configPath, rootPath, diag, scope, reader, work, extendedConfigCache) {
+    let budgetFailure;
     const host = {
         useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
         getCurrentDirectory: ts.sys.getCurrentDirectory,
-        fileExists: ts.sys.fileExists,
-        readFile: ts.sys.readFile,
+        fileExists: file => reader.exists(file),
+        readFile: file => {
+            try {
+                work.charge(0);
+                const text = reader.read(file);
+                if (text === undefined)
+                    return undefined;
+                // The compiler's config API owns extends resolution. Preflight with the same JSON
+                // parser, then reserve its exact hidden parse before returning text to that API.
+                const source = work.parse(text, () => ts.parseJsonText(file, text), value => value, (node, visit) => ts.forEachChild(node, child => { visit(child); }));
+                const count = work.accountAst(source, (node, visit) => ts.forEachChild(node, child => { visit(child); }));
+                work.reserveSource(text.length);
+                work.reserveAstNodes(count);
+                return text;
+            }
+            catch (error) {
+                if (error.code === 'extraction_work_incomplete')
+                    budgetFailure = error;
+                throw error;
+            }
+        },
         // With a discovery scope, include/exclude globs see the admitted files; without one the
         // config's file list is never walked (sources are discovered separately).
         readDirectory: scope ? scopedReadDirectory(scope) : () => [],
-        onUnRecoverableConfigFileDiagnostic: diagnostic => diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(diagnostic)}`),
+        onUnRecoverableConfigFileDiagnostic: diagnostic => {
+            if (budgetFailure)
+                throw budgetFailure;
+            diag(`tsconfig ${toRelative(rootPath, configPath)}: ${flattenDiagnostic(diagnostic)}`);
+        },
     };
     const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {
         noResolve: true,
         skipLibCheck: true,
-        allowJs: false,
+        allowJs: true,
         types: [],
-    }, host);
+    }, host, extendedConfigCache);
+    // TypeScript translates readFile exceptions into diagnostics; budget refusal must escape.
+    if (budgetFailure)
+        throw budgetFailure;
     if (!parsed)
         return null;
     for (const error of parsed.errors) {
@@ -217,7 +253,7 @@ function pickFallbackConfig(configs, requestedTsconfigPath) {
     const requested = normalizeAbsolute(requestedTsconfigPath);
     return configs.find(config => config.path === requested) ?? configs[0];
 }
-function discoverWorkspacePackages(repositoryName, rootPath, tsconfigs, diag, findManifests) {
+function discoverWorkspacePackages(repositoryName, rootPath, tsconfigs, diag, findManifests, reader, scope) {
     const packagesByRoot = new Map();
     const packageJsonPaths = findManifests(rootPath, 'package.json', MAX_WORKSPACE_PACKAGES + 1);
     if (packageJsonPaths.length > MAX_WORKSPACE_PACKAGES) {
@@ -225,12 +261,12 @@ function discoverWorkspacePackages(repositoryName, rootPath, tsconfigs, diag, fi
     }
     const rootPackageJson = path.join(rootPath, 'package.json');
     const workspacePatterns = [
-        ...readPackageJsonWorkspacePatterns(rootPackageJson),
-        ...readPnpmWorkspacePatterns(path.join(rootPath, 'pnpm-workspace.yaml')),
+        ...readPackageJsonWorkspacePatterns(rootPackageJson, reader),
+        ...readPnpmWorkspacePatterns(path.join(rootPath, 'pnpm-workspace.yaml'), reader),
     ];
-    const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns, findManifests);
+    const workspaceRoots = expandWorkspacePatterns(rootPath, workspacePatterns, findManifests, reader, scope);
     for (const packageJsonPath of packageJsonPaths.slice(0, MAX_WORKSPACE_PACKAGES)) {
-        const pkg = readJsonFile(packageJsonPath);
+        const pkg = readJsonFile(packageJsonPath, reader);
         const packageName = typeof pkg?.name === 'string' ? pkg.name : null;
         const packageRoot = normalizeAbsolute(path.dirname(packageJsonPath));
         const isRoot = packageRoot === rootPath;
@@ -248,7 +284,7 @@ function discoverWorkspacePackages(repositoryName, rootPath, tsconfigs, diag, fi
             tsconfigPath: findNearestTsConfigForRoot(tsconfigs, packageRoot, rootPath),
         });
     }
-    addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot);
+    addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot, reader);
     for (const config of tsconfigs) {
         for (const reference of config.references) {
             const referencedPath = normalizeAbsolute(path.join(rootPath, reference));
@@ -285,10 +321,10 @@ function addWorkspacePackage(packagesByRoot, candidate) {
         tsconfigPath: existing.tsconfigPath ?? candidate.tsconfigPath,
     });
 }
-function addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot) {
+function addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot, reader) {
     for (const workspaceFile of ['angular.json', 'workspace.json']) {
         const workspacePath = path.join(rootPath, workspaceFile);
-        const workspace = readJsonFile(workspacePath);
+        const workspace = readJsonFile(workspacePath, reader);
         const projects = workspace?.projects;
         if (!projects || typeof projects !== 'object')
             continue;
@@ -315,8 +351,9 @@ function addAngularWorkspacePackages(repositoryName, rootPath, packagesByRoot) {
         }
     }
 }
-function buildWorkspacePackageNodes(packages) {
-    return packages.map(pkg => ({
+function buildWorkspacePackageNodes(packages, ctx) {
+    const work = ctx.work;
+    return packages.map(pkg => (work.createNode(() => ({
         label: 'Module',
         name: pkg.name,
         qualifiedName: pkg.qualifiedName,
@@ -325,15 +362,164 @@ function buildWorkspacePackageNodes(packages) {
         endLine: 0,
         properties: {
             module_kind: 'typescript_workspace_package',
+            package_name: pkg.name,
+            package_entrypoints: packageEntryPoints(pkg, ctx),
             workspace_kind: pkg.kind,
             root_path: pkg.relativeRoot,
             ...(pkg.packageJsonPath ? { package_json_path: pkg.packageJsonPath } : {}),
             ...(pkg.tsconfigPath ? { tsconfig_path: pkg.tsconfigPath } : {}),
         },
-    }));
+    }))));
 }
-function buildWorkspacePackageContainmentEdges(repositoryName, packages) {
-    return packages.map(pkg => ({
+/** Public package entry identities, resolved only against already admitted ASTs. No dist or
+ * node_modules reads are needed. An explicit compiler rootDir/outDir mapping can prove where a
+ * manifest's generated JS entry originates; missing/alternative targets remain visible. */
+function packageEntryPoints(pkg, ctx) {
+    const work = ctx.work;
+    if (!pkg.packageJsonPath)
+        return [];
+    const manifest = readJsonFile(path.join(ctx.rootPath, pkg.packageJsonPath), ctx.reader);
+    if (!manifest || typeof manifest.name !== 'string' || manifest.name !== pkg.name)
+        return [];
+    const entries = new Map();
+    const runtimeTargets = (value, depth = 0) => {
+        work.checkDepth(depth, 128);
+        if (typeof value === 'string') {
+            work.text(value);
+            return [value];
+        }
+        if (Array.isArray(value)) {
+            work.charge(value.length + 1);
+            return value.flatMap(item => runtimeTargets(item, depth + 1));
+        }
+        if (!value || typeof value !== 'object')
+            return [];
+        const keys = Object.keys(value);
+        work.charge(keys.length + 1);
+        const values = [];
+        for (const key of keys) {
+            work.text(key);
+            if (key !== 'types') {
+                const nested = runtimeTargets(value[key], depth + 1);
+                work.charge(nested.length + 1);
+                for (const target of nested)
+                    values.push(target);
+            }
+        }
+        return values;
+    };
+    if (manifest.exports !== undefined) {
+        const exports = manifest.exports;
+        if (exports && typeof exports === 'object' && !Array.isArray(exports) && Object.keys(exports).some(key => key.startsWith('.'))) {
+            for (const [subpath, target] of Object.entries(exports))
+                if (subpath === '.' || subpath.startsWith('./'))
+                    entries.set(subpath, runtimeTargets(target));
+        }
+        else
+            entries.set('.', runtimeTargets(exports));
+    }
+    else {
+        const targets = [manifest.source, manifest.module, manifest.main].filter((value) => typeof value === 'string');
+        entries.set('.', targets.length ? targets : ['./index']);
+    }
+    const config = ctx.tsconfigs.find(config => config.relativePath === pkg.tsconfigPath);
+    const emittedPath = (source, output) => {
+        work.charge(source.length + output.length + (config?.options.rootDir?.length ?? 0) + 8);
+        if (!config?.options.rootDir || !isInside(normalizeAbsolute(config.options.rootDir), source))
+            return undefined;
+        const jsx = /\.[jt]sx$/.test(source);
+        if (jsx && config.options.jsx === undefined)
+            return undefined;
+        const extension = jsx && config.options.jsx === ts.JsxEmit.Preserve ? '.jsx' : '.js';
+        return normalizeAbsolute(path.join(output, path.relative(config.options.rootDir, source))).replace(/\.[jt]sx?$/, extension);
+    };
+    const sourceCandidates = (absolute) => {
+        work.charge(absolute.length + pkg.rootPath.length + 16);
+        if (ctx.sourceFilesByPath.has(absolute))
+            return [absolute];
+        const candidates = (0, viteLibraryExports_1.viteLibrarySource)(pkg.rootPath, ctx.sourceFilesByPath, absolute, message => ctx.diagnostics.push(message));
+        if (!path.extname(absolute))
+            candidates.push(...['.ts', '.tsx', '.js', '.jsx'].map(extension => absolute + extension), ...['index.ts', 'index.tsx', 'index.js', 'index.jsx'].map(index => path.join(absolute, index)));
+        if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.outDir), absolute)) {
+            const stem = normalizeAbsolute(path.join(config.options.rootDir, path.relative(config.options.outDir, absolute))).replace(/\.[jt]sx?$/, '');
+            for (const extension of ['.ts', '.tsx', '.js', '.jsx']) {
+                const source = stem + extension;
+                if (emittedPath(source, config.options.outDir) === absolute)
+                    candidates.push(source);
+            }
+        }
+        return [...new Set(candidates)].filter(candidate => isInside(ctx.rootPath, candidate) && ctx.sourceFilesByPath.has(candidate));
+    };
+    const result = [];
+    for (const [subpath, targets] of entries) {
+        work.charge(subpath.length + pkg.name.length + targets.length + 8);
+        const importPath = subpath === '.' ? pkg.name : `${pkg.name}${subpath.slice(1)}`;
+        if (!targets.length) {
+            result.push(work.createMetadata(() => ({ import_path: importPath })));
+            continue;
+        }
+        const distinctTargets = [...new Set(targets)];
+        const wildcardTargets = new Map();
+        for (const target of distinctTargets) {
+            work.charge(target.length + pkg.rootPath.length + subpath.length + 8);
+            if (!target.startsWith('./') && manifest.exports !== undefined) {
+                result.push(work.createMetadata(() => ({ import_path: importPath })));
+                continue;
+            }
+            const absolute = normalizeAbsolute(path.join(pkg.rootPath, target));
+            if (!isInside(pkg.rootPath, absolute)) {
+                result.push(work.createMetadata(() => ({ import_path: importPath })));
+                continue;
+            }
+            if (subpath.includes('*') || target.includes('*')) {
+                // Expand a single public wildcard from the admitted source universe, never a filesystem glob.
+                if (subpath.split('*').length !== 2 || target.split('*').length !== 2) {
+                    result.push(work.createMetadata(() => ({ import_path: importPath })));
+                    continue;
+                }
+                const [prefix, suffix] = absolute.split('*');
+                for (const admitted of ctx.sourceFilesByPath.keys()) {
+                    // Unmatched pairs still perform mapping and comparison work; reserve before arrays/paths.
+                    work.charge(admitted.length + prefix.length + suffix.length + (config?.options.rootDir?.length ?? 0) + (config?.options.outDir?.length ?? 0) + 16);
+                    const emitted = [admitted];
+                    if (config?.options.rootDir && config.options.outDir && isInside(normalizeAbsolute(config.options.rootDir), admitted)) {
+                        const compiled = emittedPath(admitted, config.options.outDir);
+                        if (compiled)
+                            emitted.push(compiled);
+                    }
+                    for (const candidate of emitted) {
+                        work.charge(candidate.length + prefix.length + suffix.length + 8);
+                        if (candidate.startsWith(prefix) && candidate.endsWith(suffix)) {
+                            work.charge(candidate.length + importPath.length + admitted.length + ctx.rootPath.length + 16);
+                            const wildcard = candidate.slice(prefix.length, candidate.length - suffix.length || undefined);
+                            const publicPath = importPath.replace('*', wildcard);
+                            result.push(work.createMetadata(() => ({ import_path: publicPath, file_path: toRelative(ctx.rootPath, admitted) })));
+                            if (!wildcardTargets.has(publicPath))
+                                wildcardTargets.set(publicPath, new Set());
+                            wildcardTargets.get(publicPath).add(target);
+                        }
+                    }
+                }
+            }
+            else {
+                const candidates = sourceCandidates(absolute);
+                if (!candidates.length)
+                    result.push(work.createMetadata(() => ({ import_path: importPath })));
+                for (const candidate of candidates)
+                    result.push(work.createMetadata(() => ({ import_path: importPath, file_path: toRelative(ctx.rootPath, candidate) })));
+            }
+        }
+        if (subpath.includes('*'))
+            for (const [publicPath, resolvedTargets] of wildcardTargets)
+                if (resolvedTargets.size !== distinctTargets.length)
+                    result.push(work.createMetadata(() => ({ import_path: publicPath })));
+    }
+    work.charge(result.length + 1);
+    return [...new Map(result.map(entry => { work.charge(entry.import_path.length + (entry.file_path?.length ?? 0) + 2); return [`${entry.import_path}\0${entry.file_path ?? ''}`, entry]; })).values()]
+        .sort((a, b) => { work.charge(a.import_path.length + b.import_path.length + (a.file_path?.length ?? 0) + (b.file_path?.length ?? 0) + 4); return a.import_path.localeCompare(b.import_path) || (a.file_path ?? '').localeCompare(b.file_path ?? ''); });
+}
+function buildWorkspacePackageContainmentEdges(repositoryName, packages, work) {
+    return packages.map(pkg => (work.createEdge(() => ({
         sourceQN: repositoryName,
         targetQN: pkg.qualifiedName,
         type: 'CONTAINS_PROJECT',
@@ -341,9 +527,9 @@ function buildWorkspacePackageContainmentEdges(repositoryName, packages) {
             workspace_kind: pkg.kind,
             root_path: pkg.relativeRoot,
         },
-    }));
+    }))));
 }
-function buildExternalPackageNodes(resolvedImports) {
+function buildExternalPackageNodes(resolvedImports, work) {
     const packages = new Map();
     for (const resolved of resolvedImports) {
         if (resolved.classification !== 'external_npm_package' ||
@@ -353,7 +539,7 @@ function buildExternalPackageNodes(resolvedImports) {
         }
         packages.set(resolved.targetPackageQN, resolved.externalPackageName);
     }
-    return [...packages.entries()].map(([qualifiedName, name]) => ({
+    return [...packages.entries()].map(([qualifiedName, name]) => (work.createNode(() => ({
         label: 'NuGetPackage',
         name,
         qualifiedName,
@@ -363,7 +549,7 @@ function buildExternalPackageNodes(resolvedImports) {
         properties: {
             package_type: 'npm',
         },
-    }));
+    }))));
 }
 function collectImportSpecs(sourceFile) {
     const specs = [];
@@ -390,9 +576,22 @@ function collectImportSpecs(sourceFile) {
             specs.push({ specifier: '<dynamic expression>', kind: 'dynamic' });
         }
     }
+    // Angular's pre-import() lazy syntax still goes through the normal scoped module resolver.
+    // Keep the export suffix out of the module specifier; route analysis resolves that export.
+    for (const property of sourceFile.getDescendantsOfKind(ts_morph_1.SyntaxKind.PropertyAssignment)) {
+        if (property.getName() !== 'loadChildren')
+            continue;
+        const initializer = property.getInitializer();
+        if (initializer && (ts_morph_1.Node.isStringLiteral(initializer) || ts_morph_1.Node.isNoSubstitutionTemplateLiteral(initializer))) {
+            const specifier = initializer.getLiteralText().split('#')[0];
+            if (specifier)
+                specs.push({ specifier, kind: 'dynamic' });
+        }
+    }
     return specs;
 }
 function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, spec) {
+    ctx.work.reserveOutput('metadata', fileQN.length + filePath.length + spec.specifier.length);
     if (spec.specifier === '<dynamic expression>') {
         return {
             fileQN,
@@ -404,11 +603,16 @@ function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, s
         };
     }
     const config = findConfigForFile(ctx.tsconfigs, ctx.fallbackConfig, importerPath);
-    const resolved = ts.resolveModuleName(spec.specifier, importerPath, config.options, ctx.moduleHost).resolvedModule;
+    // The compiler rejects upper-case JS/TS suffixes. An explicit relative specifier can
+    // still name one exact admitted source; preserve its case without probing or guessing.
+    const literalRelativeTarget = /^\.{1,2}\//.test(spec.specifier)
+        ? normalizeAbsolute(path.resolve(path.dirname(importerPath), spec.specifier)) : undefined;
+    const resolved = ts.resolveModuleName(spec.specifier, importerPath, config.options, ctx.moduleHost).resolvedModule ?? (literalRelativeTarget && ctx.sourceFilesByPath.has(literalRelativeTarget)
+        ? { resolvedFileName: literalRelativeTarget } : undefined);
     const localPackage = findWorkspacePackageBySpecifier(ctx.packagesByName, spec.specifier, importerPath);
     if (!resolved && localPackage) {
-        const exportedPath = resolveWorkspacePackageExport(localPackage, spec.specifier);
-        const exportedFilePath = exportedPath && isInside(ctx.rootPath, exportedPath)
+        const exportedPath = resolveWorkspacePackageExport(localPackage, spec.specifier, ctx.reader);
+        const exportedFilePath = exportedPath && ctx.sourceFilesByPath.has(normalizeAbsolute(exportedPath)) && isInside(ctx.rootPath, exportedPath)
             ? toRelative(ctx.rootPath, exportedPath)
             : undefined;
         return {
@@ -428,7 +632,7 @@ function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, s
     }
     if (!resolved) {
         const diagnostic = `unresolved import '${spec.specifier}' from ${filePath}`;
-        const classification = looksLikeAlias(config, spec.specifier) ? 'unresolved_alias' : 'external_npm_package';
+        const classification = spec.specifier.startsWith('.') || spec.specifier.startsWith('/') || looksLikeAlias(config, spec.specifier) ? 'unresolved_alias' : 'external_npm_package';
         if (classification === 'external_npm_package') {
             const packageName = getPackageNameFromSpecifier(spec.specifier);
             return {
@@ -499,7 +703,7 @@ function resolveImportSpec(ctx, importerPath, fileQN, filePath, sourcePackage, s
         targetPackageQN: buildNpmPackageQN(packageName),
     };
 }
-function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved) {
+function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePackage, resolved, work) {
     const commonProperties = {
         imported_namespace: resolved.importedNamespace,
         import_kind: resolved.importKind,
@@ -508,32 +712,32 @@ function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePac
         ...(resolved.isBarrel ? { via_barrel: true, barrel_target_file_path: resolved.barrelTargetFilePath } : {}),
     };
     if (resolved.targetFileQN) {
-        edges.push({
+        edges.push(work.createEdge(() => ({
             sourceQN: fileQN,
             targetQN: resolved.targetFileQN,
             type: 'IMPORTS',
             properties: commonProperties,
-        });
+        })));
     }
     if (resolved.targetPackageQN && resolved.classification === 'local_workspace_package') {
-        edges.push({
+        edges.push(work.createEdge(() => ({
             sourceQN: fileQN,
             targetQN: resolved.targetPackageQN,
             type: 'IMPORTS',
             properties: commonProperties,
-        });
+        })));
         if (sourcePackage && sourcePackage.qualifiedName !== resolved.targetPackageQN) {
-            edges.push({
+            edges.push(work.createEdge(() => ({
                 sourceQN: sourcePackage.qualifiedName,
                 targetQN: resolved.targetPackageQN,
                 type: 'IMPORTS',
                 properties: commonProperties,
-            });
+            })));
         }
     }
     if (resolved.targetPackageQN && resolved.classification === 'external_npm_package') {
         const packageName = resolved.externalPackageName ?? resolved.importedNamespace;
-        edges.push({
+        edges.push(work.createEdge(() => ({
             sourceQN: fileQN,
             targetQN: resolved.targetPackageQN,
             type: 'REFERENCES_PACKAGE',
@@ -542,9 +746,9 @@ function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePac
                 package_name: packageName,
                 imported_namespace: resolved.importedNamespace,
             },
-        });
+        })));
         if (sourcePackage) {
-            edges.push({
+            edges.push(work.createEdge(() => ({
                 sourceQN: sourcePackage.qualifiedName,
                 targetQN: resolved.targetPackageQN,
                 type: 'REFERENCES_PACKAGE',
@@ -552,10 +756,10 @@ function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePac
                     package_type: 'npm',
                     package_name: packageName,
                 },
-            });
+            })));
         }
         else {
-            edges.push({
+            edges.push(work.createEdge(() => ({
                 sourceQN: repositoryName,
                 targetQN: resolved.targetPackageQN,
                 type: 'REFERENCES_PACKAGE',
@@ -563,7 +767,7 @@ function addGraphEdgesForResolvedImport(edges, repositoryName, fileQN, sourcePac
                     package_type: 'npm',
                     package_name: packageName,
                 },
-            });
+            })));
         }
     }
 }
@@ -668,11 +872,11 @@ function qualifyCollidingPackages(repositoryName, packages) {
         }
     }
 }
-function resolveWorkspacePackageExport(pkg, specifier) {
+function resolveWorkspacePackageExport(pkg, specifier, reader) {
     if (!pkg.packageJsonPath)
         return undefined;
     const packageJsonPath = path.join(pkg.rootPath, path.basename(pkg.packageJsonPath));
-    const packageJson = readJsonFile(packageJsonPath);
+    const packageJson = readJsonFile(packageJsonPath, reader);
     if (!packageJson || typeof packageJson !== 'object')
         return undefined;
     const subpath = specifier === pkg.name
@@ -682,7 +886,7 @@ function resolveWorkspacePackageExport(pkg, specifier) {
         (subpath === '.' ? firstString(packageJson.module, packageJson.main, packageJson.types) : undefined);
     if (!target)
         return undefined;
-    return resolveFileWithExtensions(path.join(pkg.rootPath, target));
+    return resolveFileWithExtensions(path.join(pkg.rootPath, target), reader);
 }
 function resolvePackageExportTarget(exportsValue, subpath) {
     if (typeof exportsValue === 'string' && subpath === '.')
@@ -704,18 +908,18 @@ function resolveConditionalExport(value) {
 function firstString(...values) {
     return values.find((value) => typeof value === 'string');
 }
-function resolveFileWithExtensions(candidate) {
+function resolveFileWithExtensions(candidate, reader) {
     const normalized = normalizeAbsolute(candidate);
-    if (fs.existsSync(normalized) && fs.statSync(normalized).isFile())
+    if (reader.exists(normalized))
         return normalized;
     for (const suffix of ['.ts', '.tsx', '.js', '.jsx', '.d.ts']) {
         const withSuffix = `${normalized}${suffix}`;
-        if (fs.existsSync(withSuffix) && fs.statSync(withSuffix).isFile())
+        if (reader.exists(withSuffix))
             return withSuffix;
     }
     for (const indexName of ['index.ts', 'index.tsx', 'index.js', 'index.jsx']) {
         const indexPath = path.join(normalized, indexName);
-        if (fs.existsSync(indexPath) && fs.statSync(indexPath).isFile())
+        if (reader.exists(indexPath))
             return normalizeAbsolute(indexPath);
     }
     return undefined;
@@ -729,8 +933,8 @@ function findNearestTsConfigForRoot(tsconfigs, packageRoot, rootPath) {
         .sort((a, b) => a.dir.length - b.dir.length)[0];
     return config ? toRelative(rootPath, config.path) : undefined;
 }
-function readPackageJsonWorkspacePatterns(packageJsonPath) {
-    const pkg = readJsonFile(packageJsonPath);
+function readPackageJsonWorkspacePatterns(packageJsonPath, reader) {
+    const pkg = readJsonFile(packageJsonPath, reader);
     const workspaces = pkg?.workspaces;
     if (Array.isArray(workspaces))
         return workspaces.filter((entry) => typeof entry === 'string');
@@ -739,10 +943,11 @@ function readPackageJsonWorkspacePatterns(packageJsonPath) {
     }
     return [];
 }
-function readPnpmWorkspacePatterns(workspacePath) {
-    if (!fs.existsSync(workspacePath))
+function readPnpmWorkspacePatterns(workspacePath, reader) {
+    const text = reader.read(workspacePath);
+    if (text === undefined)
         return [];
-    const lines = fs.readFileSync(workspacePath, 'utf-8').split(/\r?\n/);
+    const lines = text.split(/\r?\n/);
     const patterns = [];
     let inPackages = false;
     for (const line of lines) {
@@ -763,7 +968,7 @@ function readPnpmWorkspacePatterns(workspacePath) {
     }
     return patterns;
 }
-function expandWorkspacePatterns(rootPath, patterns, findManifests) {
+function expandWorkspacePatterns(rootPath, patterns, findManifests, reader, scope) {
     const roots = new Set();
     for (const pattern of patterns) {
         const normalized = pattern.replace(/\\/g, '/').replace(/\/package\.json$/, '');
@@ -777,26 +982,23 @@ function expandWorkspacePatterns(rootPath, patterns, findManifests) {
         if (normalized.includes('*')) {
             const prefix = normalized.slice(0, normalized.indexOf('*')).replace(/\/$/, '');
             const parent = path.join(rootPath, prefix);
-            if (!fs.existsSync(parent))
-                continue;
-            for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
-                if (entry.isDirectory())
-                    roots.add(normalizeAbsolute(path.join(parent, entry.name)));
-            }
+            const directories = scope ? scope.fileSystemEntries(parent).directories : reader.entries(parent).filter(entry => entry.isDirectory()).map(entry => entry.name);
+            for (const directory of directories)
+                roots.add(normalizeAbsolute(path.join(parent, directory)));
             continue;
         }
         roots.add(normalizeAbsolute(path.join(rootPath, normalized)));
     }
     return [...roots];
 }
-function findFilesByName(dir, fileName, limit) {
+function findFilesByName(dir, fileName, limit, reader) {
     const results = [];
-    if (!fs.existsSync(dir))
+    if (!reader.directoryExists(dir))
         return results;
     const walk = (current) => {
         if (results.length >= limit)
             return;
-        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+        for (const entry of reader.entries(current)) {
             if (results.length >= limit)
                 return;
             const full = path.join(current, entry.name);
@@ -812,11 +1014,10 @@ function findFilesByName(dir, fileName, limit) {
     walk(dir);
     return results;
 }
-function readJsonFile(filePath) {
+function readJsonFile(filePath, reader) {
     try {
-        if (!fs.existsSync(filePath))
-            return null;
-        return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        const text = reader.read(filePath);
+        return text === undefined ? null : JSON.parse(text);
     }
     catch {
         return null;

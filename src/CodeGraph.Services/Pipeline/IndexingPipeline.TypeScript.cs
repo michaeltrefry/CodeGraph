@@ -3,6 +3,7 @@ using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
 using CodeGraph.Data;
 using CodeGraph.Models;
+using CodeGraph.Services.Extractors;
 
 namespace CodeGraph.Services.Pipeline;
 
@@ -22,18 +23,58 @@ public partial class IndexingPipeline
     /// package.json files that no discovery exclusion (skip pattern or dependency directory) hides.
     /// </summary>
     private IReadOnlyList<string> DiscoverTypeScriptScope(string rootPath) =>
-        DiscoverPaths(rootPath, "**/*.ts", "**/*.tsx", $"**/{TypeScriptConfigFileName}", "**/package.json")
+        DiscoverPaths(rootPath, "**/*.js", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.html",
+                "**/tsconfig*.json", "**/jsconfig*.json", "**/package.json", "**/angular.json", "**/next.config.*", "**/vite.config.*",
+                "**/*.rs", "**/Cargo.toml", "**/tauri.conf.json", "**/tauri.conf.json5", "**/Tauri.toml")
             .Select(path => NormalizeRelativePath(Path.GetRelativePath(rootPath, path)))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.Ordinal)
             .ToList();
+
+    private static bool IsFrontendReadInput(string path) => IsTypeScriptPath(path)
+        || Path.GetFileName(path) is "package.json" or "angular.json"
+        || Path.GetFileName(path).StartsWith("tsconfig", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("jsconfig", StringComparison.Ordinal) && path.EndsWith(".json", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("next.config.", StringComparison.Ordinal)
+        || Path.GetFileName(path).StartsWith("vite.config.", StringComparison.Ordinal);
+
+    // Preflight before ordinary source hashing/LOC reads. HTML is deliberately left unread:
+    // only the sidecar knows which admitted templates a component actually references.
+    private async Task<IReadOnlyDictionary<string, RegistrationSourceReader.Source>> ReadFrontendInputsAsync(
+        string root, IReadOnlyList<string> scope, CancellationToken ct)
+    {
+        var sources = new Dictionary<string, RegistrationSourceReader.Source>(
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (_typeScriptAnalyzer is null || !scope.Any(IsTypeScriptPath)) return sources;
+        try
+        {
+            TypeScriptSourceLimits.ValidateScope(scope, ct);
+            var inputs = scope.Where(IsFrontendReadInput).ToList();
+            if (inputs.Count > TypeScriptSourceLimits.MaxReadFiles)
+                throw new InvalidOperationException("Frontend source/config file count exceeds its bounded analysis limit.");
+            var reader = new RegistrationSourceReader(_fileSystem, _options, root, _options.MaxFrontendAnalysisTextKb);
+            foreach (var path in inputs)
+            {
+                var full = Path.GetFullPath(Path.Combine(root, path));
+                sources[full] = await reader.ReadAsync(full, ct)
+                    ?? throw new InvalidOperationException($"Required frontend source/config {path} exceeds its text limit.");
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Frontend input admission incomplete; preserving prior graph and source hashes");
+            throw new InvalidOperationException("Frontend analysis incomplete; no graph or hash replacement was committed.", ex);
+        }
+        return sources;
+    }
 
     /// <summary>
     /// The tsconfig.json whose compiler options the sidecar starts from: the root one, else the
     /// shallowest one discovery admits. The sidecar scans sources from the scope, not from it.
     /// </summary>
     private static string? SelectTypeScriptConfig(IReadOnlyList<string> scope) =>
-        scope.Where(path => Path.GetFileName(path) == TypeScriptConfigFileName)
+        scope.Where(path => Path.GetFileName(path) is TypeScriptConfigFileName or "jsconfig.json")
             .OrderBy(path => path.Count(ch => ch == '/'))
             .ThenBy(path => path, StringComparer.Ordinal)
             .FirstOrDefault();
@@ -51,22 +92,31 @@ public partial class IndexingPipeline
 
         // A copy can share its qualified name with the admitted original (a vendored package),
         // so nodes are dropped individually and edges only for names no admitted node keeps.
-        var kept = result.Nodes.Where(node => Admitted(node.FilePath)).ToList();
+        var kept = result.Nodes.Where(node => Admitted(node.FilePath)
+            && Admitted(TypeScriptNodeText(node.Properties.GetValueOrDefault("extraction_source_file")))).ToList();
         var keptQns = kept.Select(node => node.QualifiedName).ToHashSet(StringComparer.Ordinal);
         var dropped = result.Nodes
             .Select(node => node.QualifiedName)
             .Where(qualifiedName => !keptQns.Contains(qualifiedName))
             .ToHashSet(StringComparer.Ordinal);
+        // JS/TS declaration identities include a lexical suffix after their source file (and
+        // legal source filenames may themselves contain '#'). Trust exact kept declarations
+        // with a concrete admitted owner instead of interpreting the whole identity as a path.
+        var admittedDeclarationQns = kept.Where(node => !string.IsNullOrWhiteSpace(node.FilePath))
+            .Select(node => node.QualifiedName).ToHashSet(StringComparer.Ordinal);
         var filePrefix = $"{repositoryName}:";
         bool AdmittedFileQn(string qualifiedName) =>
             !qualifiedName.StartsWith(filePrefix, StringComparison.Ordinal)
+            || admittedDeclarationQns.Contains(qualifiedName)
+            // Structural file references retain their literal path, with no lexical guessing.
             || Admitted(qualifiedName[filePrefix.Length..]);
         var clamped = result with
         {
             Nodes = kept,
             Edges = result.Edges
                 .Where(edge => !dropped.Contains(edge.SourceQN) && !dropped.Contains(edge.TargetQN)
-                               && AdmittedFileQn(edge.SourceQN) && AdmittedFileQn(edge.TargetQN))
+                               && AdmittedFileQn(edge.SourceQN) && AdmittedFileQn(edge.TargetQN)
+                               && Admitted(TypeScriptNodeText(edge.Properties?.GetValueOrDefault("extraction_source_file"))))
                 .ToList(),
             UnresolvedCalls = result.UnresolvedCalls.Where(call => !dropped.Contains(call.CallerQN)).ToList(),
             UnresolvedImports = result.UnresolvedImports.Where(import => AdmittedFileQn(import.FileQN)).ToList(),
@@ -112,10 +162,12 @@ public partial class IndexingPipeline
         // moved onto a reserved slice that this write then replaces with nothing.
         var currentRoots = WorkspaceModules(analyzed)
             .Where(node => string.IsNullOrWhiteSpace(node.FilePath))
-            .Select(node => node.QualifiedName)
-            .ToHashSet(StringComparer.Ordinal);
+            .DistinctBy(node => node.QualifiedName)
+            .ToDictionary(node => node.QualifiedName, StringComparer.Ordinal);
         var staleRoots = WorkspaceModules(storedNodes)
-            .Where(node => string.IsNullOrWhiteSpace(node.FilePath) && !currentRoots.Contains(node.QualifiedName))
+            .Where(node => string.IsNullOrWhiteSpace(node.FilePath)
+                && (!currentRoots.TryGetValue(node.QualifiedName, out var currentRoot)
+                    || TypeScriptNodeSignature(node) != TypeScriptNodeSignature(currentRoot)))
             .ToList();
         foreach (var staleRoot in staleRoots)
             await _store.UpsertNodeAsync(staleRoot with { FilePath = StaleWorkspaceModuleSlice });
@@ -236,7 +288,9 @@ public partial class IndexingPipeline
 
     private static bool IsTypeScriptPath(string path) =>
         path.EndsWith(".ts", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase);
+        || path.EndsWith(".tsx", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".js", StringComparison.OrdinalIgnoreCase)
+        || path.EndsWith(".jsx", StringComparison.OrdinalIgnoreCase);
 
     private static string? TypeScriptNodeText(object? value) => value switch
     {

@@ -1066,6 +1066,18 @@ public partial class MySqlGraphStore(
         await db.SaveChangesAsync();
     }
 
+    public async Task DeleteCrossRepoEdgesByIdsAsync(IReadOnlyCollection<long> edgeIds, CancellationToken ct = default)
+    {
+        foreach (var ids in edgeIds.Distinct().Chunk(options.BatchSize))
+        {
+            ct.ThrowIfCancellationRequested();
+            // Keep EF's collection parameter on List.Contains; .NET 10 can bind an array
+            // Contains call through ReadOnlySpan, which EF cannot evaluate or translate.
+            var batchIds = ids.ToList();
+            await db.CrossRepoEdges.Where(edge => batchIds.Contains(edge.Id)).ExecuteDeleteAsync(ct);
+        }
+    }
+
     public async Task DeleteCrossRepoEdgesForRepositoryAsync(string repository)
     {
         // Delete server-side; tracking every cross-repo edge of a large repository just to remove it is wasteful.
@@ -1265,11 +1277,19 @@ public partial class MySqlGraphStore(
     public Task<IReadOnlyList<RepositoryReviewProjectSectionEntity>> GetRepositoryReviewProjectSectionsAsync(long reviewRunId)
         => reviewStore.GetRepositoryReviewProjectSectionsAsync(reviewRunId);
 
-    private async Task<MySqlConnection> GetOpenConnectionAsync()
+    private async Task<MySqlConnection> GetOpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new MySqlConnection(options.ConnectionString);
-        await connection.OpenAsync();
-        return connection;
+        try
+        {
+            await connection.OpenAsync(ct);
+            return connection;
+        }
+        catch
+        {
+            await connection.DisposeAsync();
+            throw;
+        }
     }
 
     private async Task WithDeadlockRetryAsync(Func<Task> action, int maxRetries = 3)

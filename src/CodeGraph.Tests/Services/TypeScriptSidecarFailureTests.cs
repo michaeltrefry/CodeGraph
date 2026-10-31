@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using CodeGraph.Extractors.TypeScript;
 using CodeGraph.Services;
+using CodeGraph.Services.Extractors;
 using Microsoft.Extensions.Logging;
 using Shouldly;
 
@@ -51,16 +52,167 @@ public class TypeScriptSidecarFailureTests
 
         var results = await analyzer.AnalyzeProjectAsync(
             "/repo/tsconfig.json",
-            new ExtractorContext { RepositoryName = "Lens", RootPath = "/repo" },
+            new ExtractorContext { RepositoryName = "Lens", RootPath = "/repo", TypeScriptSourceLimits = new()
+            { MaxFileSizeKb = 7, MaxFileSizeKbByExtension = new Dictionary<string, int> { [".tsx"] = 11 }, MaxAnalysisTextKb = 19 } },
             ["tsconfig.json", "src/app.ts"]);
 
         results.ShouldHaveSingleItem().ProcessedFiles.ShouldBe(["src/app.ts"]);
         var request = JsonDocument.Parse(sidecar.ExtractBodies.ShouldHaveSingleItem()).RootElement;
         request.TryGetProperty("includedFiles", out var inline).ShouldBeTrue();
         inline.ValueKind.ShouldBe(JsonValueKind.Null);
+        request.GetProperty("maxFileSizeKb").GetInt32().ShouldBe(7);
+        request.GetProperty("maxFileSizeKbByExtension").GetProperty(".tsx").GetInt32().ShouldBe(11);
+        request.GetProperty("maxAnalysisTextKb").GetInt32().ShouldBe(19);
         var scopePath = request.GetProperty("includedFilesPath").GetString().ShouldNotBeNull();
         sidecar.ScopeFileContents.ShouldHaveSingleItem().ShouldBe("""["tsconfig.json","src/app.ts"]""");
         File.Exists(scopePath).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task AnalyzeProjectAsync_IncompleteResponse_RefusesToReplacePreviousFacts()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":false,"nodes":[],"edges":[],"processedFiles":["src/good.ts"],"diagnostics":["Syntax error in broken.ts"]}""");
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        var failure = await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync(
+            "/repo/tsconfig.json", new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" },
+            ["src/good.ts", "src/broken.ts"]));
+        failure.Message.ShouldContain("incomplete");
+        failure.Message.ShouldContain("Syntax error in broken.ts");
+    }
+
+    [Fact]
+    public async Task PerFileExtractor_IncompleteResponse_DoesNotReportSuccessfulEmptyOutput()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":false,"nodes":[],"edges":[],"processedFiles":[]}""");
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var extractor = new TypeScriptExtractor(server, new RecordingLogger<TypeScriptExtractor>());
+        var result = await extractor.ExtractAsync("/repo/app.ts", "const broken = ;",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" });
+        result.Succeeded.ShouldBeFalse();
+        result.FailureReason.ShouldNotBeNull().ShouldContain("incomplete");
+    }
+
+    [Fact]
+    public async Task AnalyzerScopeMetadata_IsBoundedBeforeStartingOrSendingToSidecar()
+    {
+        using var server = new TypeScriptServerManager(1, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        var scope = Enumerable.Repeat("empty.js", TypeScriptSourceLimits.MaxAdmittedPaths + 1).ToList();
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, scope));
+        var longPaths = Enumerable.Repeat(new string('x', 1024), TypeScriptSourceLimits.MaxPathCharacters / 1024 + 1).ToList();
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, longPaths));
+    }
+
+    [Fact]
+    public async Task PerFileExtractor_RejectsOversizeBeforeTemporaryWriteOrSidecarStartup()
+    {
+        using var server = new TypeScriptServerManager(1, new RecordingLogger());
+        var extractor = new TypeScriptExtractor(server, new RecordingLogger<TypeScriptExtractor>());
+        var result = await extractor.ExtractAsync("/repo/app.tsx", new string('x', 1025),
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo", TypeScriptSourceLimits = new() { MaxFileSizeKb = 1 } });
+        result.Succeeded.ShouldBeFalse();
+        result.FailureReason.ShouldNotBeNull().ShouldContain("text limit");
+    }
+
+    [Fact]
+    public async Task OldSidecarWithoutBoundedInputCapability_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", supportsSourceBounds: false);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V1SidecarWithoutSemanticWorkLimits_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 1);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V2SidecarWithoutReactWorkLimits_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 2);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V3SidecarWithoutEarlyAllocationLimits_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 3);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V4SidecarWithoutConfigAndSemanticRetentionLimits_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 4);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V5SidecarWithoutBoundedRepeatedLookups_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 5);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V6SidecarWithoutNominalHttpProvenance_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 6);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task V7SidecarWithoutIndexedAliasBindings_NeverReceivesSourcePaths()
+    {
+        await using var sidecar = await FakeSidecar.StartAsync(HttpStatusCode.OK,
+            """{"complete":true,"nodes":[],"edges":[],"processedFiles":["app.js"]}""", sourceBoundsVersion: 7);
+        using var server = new TypeScriptServerManager(sidecar.Port, new RecordingLogger());
+        var analyzer = new TypeScriptProjectAnalyzer(server, new RecordingLogger<TypeScriptProjectAnalyzer>());
+        await Should.ThrowAsync<InvalidOperationException>(() => analyzer.AnalyzeProjectAsync("/repo/tsconfig.json",
+            new ExtractorContext { RepositoryName = "UI", RootPath = "/repo" }, ["app.js"]));
+        sidecar.ExtractBodies.ShouldBeEmpty();
     }
 
     /// <summary>A minimal stand-in for the Node sidecar on a free loopback port.</summary>
@@ -74,14 +226,15 @@ public class TypeScriptSidecarFailureTests
         public List<string> ExtractBodies { get; } = [];
         public List<string> ScopeFileContents { get; } = [];
 
-        public static async Task<FakeSidecar> StartAsync(HttpStatusCode extractStatus, string extractBody)
+        public static async Task<FakeSidecar> StartAsync(HttpStatusCode extractStatus, string extractBody, bool supportsSourceBounds = true, int sourceBoundsVersion = 8)
         {
             var builder = WebApplication.CreateSlimBuilder();
             builder.Logging.ClearProviders();
             builder.WebHost.UseUrls("http://127.0.0.1:0");
             var app = builder.Build();
             var sidecar = new FakeSidecar(app);
-            app.MapGet("/health", () => Results.Text("""{"status":"ok"}""", "application/json"));
+            app.MapGet("/health", () => Results.Text(supportsSourceBounds
+                ? JsonSerializer.Serialize(new { status = "ok", sourceBoundsVersion }) : """{"status":"ok"}""", "application/json"));
             app.MapPost("/extract-project", async (HttpRequest request) =>
             {
                 using var reader = new StreamReader(request.Body, Encoding.UTF8);

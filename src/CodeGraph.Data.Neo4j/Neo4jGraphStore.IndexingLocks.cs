@@ -8,11 +8,15 @@ public partial class Neo4jGraphStore
 {
     private const string RepositoryIndexLockConstraint = "repository_index_lock_unique";
 
-    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
-        string repository,
-        CancellationToken ct = default)
+    public Task<IAsyncDisposable> AcquireRepositoryIndexingLockAsync(
+        string repository, CancellationToken ct = default) =>
+        AcquireRepositoryIndexingLocksAsync([repository], ct);
+
+    public async Task<IAsyncDisposable> AcquireRepositoryIndexingLocksAsync(
+        IReadOnlyCollection<string> repositories, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        var names = repositories.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
         var session = sessionFactory.GetSession();
         try
         {
@@ -36,13 +40,18 @@ public partial class Neo4jGraphStore
                 config.WithTimeout(TimeSpan.FromHours(12)));
             try
             {
-                var cursor = await transaction.RunAsync("""
-                    MERGE (l:RepositoryIndexLock {repository: $repository})
-                    SET l.owner = $owner
-                    RETURN l.owner
-                    """, new { repository, owner = Guid.NewGuid().ToString("N") });
-                await cursor.ConsumeAsync();
-                return new Neo4jIndexingLock(session, transaction, logger, repository);
+                foreach (var repository in names)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var cursor = await transaction.RunAsync("""
+                        MERGE (l:RepositoryIndexLock {repository: $repository})
+                        SET l.owner = $owner
+                        RETURN l.owner
+                        """, new { repository, owner = Guid.NewGuid().ToString("N") });
+                    await cursor.ConsumeAsync();
+                }
+                ct.ThrowIfCancellationRequested();
+                return new Neo4jIndexingLock(session, transaction, logger, string.Join(", ", names));
             }
             catch
             {
@@ -63,8 +72,10 @@ public partial class Neo4jGraphStore
         MsLogger logger,
         string repository) : IAsyncDisposable
     {
+        private int _disposed;
         public async ValueTask DisposeAsync()
         {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
             try
             {
                 await transaction.RollbackAsync();

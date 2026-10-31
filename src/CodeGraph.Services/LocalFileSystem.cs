@@ -23,6 +23,14 @@ public class LocalFileSystem : IFileSystem
             ? Directory.EnumerateDirectories(path, "*", new EnumerationOptions { IgnoreInaccessible = true })
             : [];
 
+    public Stream OpenRead(string path, string? repositoryRoot = null)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var root = Path.GetFullPath(repositoryRoot ?? Path.GetDirectoryName(fullPath)!);
+        return RepoFileResolver.OpenRead("", Path.GetRelativePath(root, fullPath).Replace('\\', '/'), null, root)
+            ?? throw new IOException($"Source is not a contained regular repository file: {path}");
+    }
+
     public string ReadAllText(string path) => File.ReadAllText(path);
 
     public Task<string> ReadAllTextAsync(string path, CancellationToken ct = default)

@@ -303,10 +303,8 @@ const extractor_1 = require("./extractor");
         const firstResult = (0, extractor_1.extractProject)('Demo', first, path.join(first, 'tsconfig.json'));
         const secondResult = (0, extractor_1.extractProject)('Demo', second, path.join(second, 'tsconfig.json'));
         const injects = firstResult.edges.filter(edge => edge.type === 'INJECTS').map(edge => edge.targetQN).sort();
-        assert_1.strict.deepEqual(injects, [
-            '(error: unknown) => import("src/errors").AppError',
-            'import("src/services/foo").FooService',
-        ]);
+        assert_1.strict.deepEqual(injects, ['services.foo.FooService']);
+        // Function-type constructor arguments are not injectable application declarations.
         const fingerprint = (result) => JSON.stringify({
             nodes: result.nodes.map(node => [node.qualifiedName, node.properties]),
             edges: result.edges.map(edge => [edge.sourceQN, edge.targetQN, edge.type, edge.properties ?? {}]),
@@ -363,3 +361,630 @@ function writeFile(rootPath, relativePath, content) {
 function writeJson(rootPath, relativePath, value) {
     writeFile(rootPath, relativePath, JSON.stringify(value, null, 2));
 }
+(0, node_test_1.test)('JS/JSX without config resolves callables, aliases, callbacks, namespace renders and wrappers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-js-react-'));
+    try {
+        writeFile(root, 'src/helpers.js', 'export function send() {}\nexport const useData = () => send();');
+        writeFile(root, 'src/other.js', 'export function send() {}');
+        writeFile(root, 'src/ui/Leaf.jsx', 'export default function Leaf() { return <span/>; }');
+        writeFile(root, 'src/ui/index.js', "export { default as Leaf } from './Leaf';");
+        writeFile(root, 'src/App.jsx', `import React, { useEffect as effect, memo, forwardRef, lazy } from 'react';
+import { send as api, useData } from './helpers';
+import { send as other } from './other';
+import * as UI from './ui';
+import { Button as External } from '@shared/ui/button';
+const Wrapped = memo(forwardRef((props, ref) => <UI.Leaf/>));
+const Lazy = lazy(() => import('./ui/Leaf'));
+export default function App() {
+  const handle = () => api();
+  effect(() => { useData(); other(); }, []);
+  return <main><Wrapped/><Lazy/><External onClick={handle}/></main>;
+}`);
+        const included = ['src/helpers.js', 'src/other.js', 'src/ui/Leaf.jsx', 'src/ui/index.js', 'src/App.jsx'];
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, included);
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.deepEqual(result.processedFiles.sort(), included.sort());
+        const edge = (source, target, type) => result.edges.some(edge => edge.sourceQN === source && edge.targetQN === target && edge.type === type);
+        assert_1.strict.ok(edge('Demo:src/App.jsx#App.handle', 'Demo:src/helpers.js#send', 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN.startsWith('Demo:src/App.jsx#App.$callback') && edge.targetQN === 'Demo:src/other.js#send' && edge.type === 'CALLS'));
+        assert_1.strict.ok(edge('Demo:src/helpers.js#useData', 'Demo:src/helpers.js#send', 'CALLS'));
+        assert_1.strict.ok(edge('Demo:src/App.jsx#App', 'Demo:src/App.jsx#Wrapped', 'RENDERS'));
+        assert_1.strict.ok(edge('Demo:src/App.jsx#App', 'Demo:src/ui/Leaf.jsx#Leaf', 'RENDERS'));
+        assert_1.strict.ok(edge('Demo:src/App.jsx#Wrapped', 'Demo:src/ui/Leaf.jsx#Leaf', 'RENDERS'));
+        assert_1.strict.ok(edge('Demo:src/App.jsx#App', 'npm-symbol:@shared/ui/button#Button', 'RENDERS'));
+        assert_1.strict.ok(!result.nodes.some(node => node.name === 'main' || node.name === 'span'));
+        assert_1.strict.equal(result.nodes.filter(node => node.qualifiedName === 'Demo:src/App.jsx#Wrapped').length, 1);
+        assert_1.strict.ok(result.nodes.every(node => node.properties.extraction_owner === 'typescript'));
+        assert_1.strict.ok(result.edges.every(edge => edge.properties?.extraction_owner === 'typescript'));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('TSX jsconfig aliases and workspace export retargeting resolve declarations, never excluded files', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-tsx-alias-'));
+    try {
+        writeJson(root, 'jsconfig.json', { compilerOptions: { baseUrl: '.', paths: { '@app/*': ['src/*'] } } });
+        writeJson(root, 'package.json', { name: 'demo', workspaces: ['packages/*'] });
+        writeJson(root, 'packages/shared/package.json', { name: '@shared/ui', exports: { '.': './index.tsx' } });
+        writeFile(root, 'packages/shared/index.tsx', "export { First as Button } from './first';");
+        writeFile(root, 'packages/shared/first.tsx', 'export function First() { return <button/>; }');
+        writeFile(root, 'packages/shared/second.tsx', 'export function Second() { return <button/>; }');
+        writeFile(root, 'src/service.ts', 'export function service() {}');
+        writeFile(root, 'src/App.tsx', "import { Button } from '@shared/ui'; import { service as run } from '@app/service'; export const App = () => { run(); return <Button/>; };");
+        writeFile(root, 'excluded/Secret.tsx', 'export const Secret = () => <private/>;');
+        const included = ['jsconfig.json', 'package.json', 'packages/shared/package.json', 'packages/shared/index.tsx', 'packages/shared/first.tsx', 'packages/shared/second.tsx', 'src/service.ts', 'src/App.tsx'];
+        const analyze = () => (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, included);
+        const first = analyze();
+        assert_1.strict.ok(first.edges.some(edge => edge.sourceQN === 'Demo:src/App.tsx#App' && edge.targetQN === 'Demo:packages/shared/first.tsx#First' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(first.edges.some(edge => edge.sourceQN === 'Demo:src/App.tsx#App' && edge.targetQN === 'Demo:src/service.ts#service' && edge.type === 'CALLS'));
+        const stable = (result) => JSON.stringify({ nodes: result.nodes, edges: result.edges, processedFiles: result.processedFiles });
+        assert_1.strict.equal(stable(first), stable(analyze()));
+        writeFile(root, 'packages/shared/index.tsx', "export { Second as Button } from './second';");
+        const second = analyze();
+        assert_1.strict.ok(second.edges.some(edge => edge.sourceQN === 'Demo:src/App.tsx#App' && edge.targetQN === 'Demo:packages/shared/second.tsx#Second' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(!second.edges.some(edge => edge.sourceQN === 'Demo:src/App.tsx#App' && edge.targetQN === 'Demo:packages/shared/first.tsx#First' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(!second.nodes.some(node => node.filePath.includes('excluded')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('React context follows render scope, nested overrides, custom hooks and provider alternatives', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-context-'));
+    try {
+        writeFile(root, 'app.tsx', `import { createContext, useContext } from 'react';
+function fallback() {} function a() {} function b() {} function unused() {}
+const Ctx = createContext({ save: fallback });
+function useActions() { return useContext(Ctx); }
+function Child() { const actions = useActions(); return <button onClick={actions.save}/>; }
+function Outer() { useActions(); return <Ctx.Provider value={{save:a}}><Child/><Ctx.Provider value={{save:b}}><Child/></Ctx.Provider></Ctx.Provider>; }
+function UnusedProvider() { return <Ctx.Provider value={{save:unused}}><div/></Ctx.Provider>; }
+export function App() { return <Outer/>; }`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, ['app.tsx']);
+        const providers = result.nodes.filter(node => node.properties.context_kind === 'provider');
+        const providerFor = (target) => providers.find(provider => result.edges.some(edge => edge.sourceQN === provider.qualifiedName && edge.targetQN === target && edge.type === 'CALLS'));
+        assert_1.strict.ok(providerFor('Demo:app.tsx#a'));
+        assert_1.strict.ok(providerFor('Demo:app.tsx#b'));
+        assert_1.strict.ok(providerFor('Demo:app.tsx#unused'));
+        const bindings = result.edges.filter(edge => edge.sourceQN === 'Demo:app.tsx#useActions' && edge.properties?.context_kind === 'binding');
+        assert_1.strict.ok(bindings.some(edge => edge.targetQN === providerFor('Demo:app.tsx#a').qualifiedName));
+        assert_1.strict.ok(bindings.some(edge => edge.targetQN === providerFor('Demo:app.tsx#b').qualifiedName));
+        assert_1.strict.ok(bindings.some(edge => edge.targetQN === 'Demo:app.tsx#fallback'));
+        assert_1.strict.ok(!bindings.some(edge => edge.targetQN === providerFor('Demo:app.tsx#unused').qualifiedName));
+        assert_1.strict.ok(bindings.every(edge => edge.properties?.candidate === true));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('contextAlternatives:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('Angular declarations resolve aliases for inheritance, interfaces, injection and route handlers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-angular-qn-'));
+    try {
+        writeFile(root, 'src/base.ts', 'export class Base {} export interface Contract {} export class Service {}');
+        writeFile(root, 'src/page.ts', `import { Base as Parent, Contract, Service as Svc } from './base';
+import { Component, inject } from '@angular/core'; import { Router } from '@angular/router';
+@Component({selector:'app-page'}) export class Page extends Parent implements Contract {
+  service = inject(Svc); constructor(private second: Svc, private router: Router, callback: (x: string) => void) { super(); }
+}`);
+        writeFile(root, 'src/routes.ts', "import { Routes, provideRouter } from '@angular/router'; import { Page as View } from './page'; const routes: Routes = [{path:'home',component:View}]; provideRouter(routes);");
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        for (const [type, target] of [['INHERITS', 'base.Base'], ['IMPLEMENTS', 'base.Contract'], ['INJECTS', 'base.Service']])
+            assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'page.Page' && edge.targetQN === target && edge.type === type), `${type} -> ${target}`);
+        assert_1.strict.ok(result.edges.some(edge => edge.type === 'HANDLES' && edge.targetQN === 'page.Page'));
+        assert_1.strict.ok(!result.edges.some(edge => ['INHERITS', 'IMPLEMENTS', 'INJECTS', 'HANDLES'].includes(edge.type) && !['base.Base', 'base.Contract', 'base.Service', 'page.Page'].includes(edge.targetQN)));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('syntax and missing admitted sources report incomplete and never advance processed files', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-parse-'));
+    try {
+        writeFile(root, 'valid.jsx', 'export default () => <div/>;');
+        writeFile(root, 'broken.tsx', 'export const Broken = () => <div>');
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, ['valid.jsx', 'broken.tsx', 'missing.js']);
+        assert_1.strict.equal(result.complete, false);
+        assert_1.strict.deepEqual(result.processedFiles, []);
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('sourceParse: broken.tsx')));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('sourceAdmission: missing.js')));
+        assert_1.strict.ok(!result.nodes.some(node => node.filePath === 'broken.tsx'));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('new callable module identities preserve src and extension distinctions and lexical owners', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-identity-'));
+    try {
+        for (const file of ['src/lib/a.ts', 'lib/a.ts', 'lib/a.tsx'])
+            writeFile(root, file, 'export function same() {}');
+        writeFile(root, 'src/owners.ts', `export const one = { run() {} }; export const two = { run() {} };
+export const named = function privateName() {}; export function outer() { if (flag) { const same = () => one.run(); same(); } else { const same = () => two.run(); same(); } }`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const same = result.nodes.filter(node => node.name === 'same');
+        assert_1.strict.equal(new Set(same.map(node => node.qualifiedName)).size, 5);
+        for (const file of ['src/lib/a.ts', 'lib/a.ts', 'lib/a.tsx'])
+            assert_1.strict.ok(same.some(node => node.qualifiedName === `Demo:${file}#same`));
+        assert_1.strict.ok(result.nodes.some(node => node.qualifiedName === 'Demo:src/owners.ts#one.run'));
+        assert_1.strict.ok(result.nodes.some(node => node.qualifiedName === 'Demo:src/owners.ts#two.run'));
+        assert_1.strict.ok(result.nodes.some(node => node.qualifiedName === 'Demo:src/owners.ts#named'));
+        assert_1.strict.equal(new Set(result.nodes.map(node => node.qualifiedName)).size, result.nodes.length);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('React API imports and external JSX references cannot bind through shadowing', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-shadow-'));
+    try {
+        writeFile(root, 'app.tsx', `import React, { createContext, useContext, memo } from 'react'; import { Button } from '@shared/ui';
+const Ctx = createContext(null);
+export function App(useContext: Function, memo: Function, React: any, Button: any) {
+  useContext(Ctx); React.useContext(Ctx); const Fake = memo(() => <span/>); return <Button/>;
+}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(!result.edges.some(edge => edge.properties?.context_kind === 'consumer'));
+        assert_1.strict.ok(!result.edges.some(edge => edge.type === 'RENDERS' && edge.targetQN.startsWith('npm-symbol:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('children slots carry provider scope across imported custom provider components', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-provider-children-'));
+    try {
+        writeFile(root, 'context.tsx', `import {createContext} from 'react'; export const Ctx=createContext(null); function save(){};
+export function Provider({children}) { return <Ctx.Provider value={{save}}>{children}</Ctx.Provider>; }`);
+        writeFile(root, 'app.tsx', `import {useContext} from 'react'; import {Ctx,Provider} from './context';
+function Child(){const actions=useContext(Ctx);return <span/>;} export function App(){return <Provider><Child/></Provider>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const provider = result.nodes.find(node => node.properties.context_kind === 'provider');
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#Child' && edge.targetQN === provider.qualifiedName && edge.properties?.context_kind === 'binding'));
+        assert_1.strict.ok(!result.diagnostics?.some(message => message.startsWith('contextScopeUnresolved:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('admitted declaration/spec/generated files are parsed and processed as empty semantic slices', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-empty-slices-'));
+    try {
+        const included = ['api.d.ts', 'component.spec.ts', 'client.generated.ts', 'app.jsx'];
+        writeFile(root, included[0], 'export declare class Declared {}');
+        writeFile(root, included[1], 'export function testOnly() {}');
+        writeFile(root, included[2], 'export function generatedOnly() {}');
+        writeFile(root, included[3], 'export const App = () => <div/>;');
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, included);
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.deepEqual(result.processedFiles.sort(), included.sort());
+        assert_1.strict.ok(result.nodes.filter(node => node.filePath).every(node => node.filePath === 'app.jsx'));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('malformed or unsupported config resolution is incomplete while missing synthetic config is supported', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-config-failure-'));
+    try {
+        writeFile(root, 'app.jsx', 'export const App = () => <div/>;');
+        writeFile(root, 'tsconfig.json', '{ "extends": "./not-admitted.json" }');
+        const config = path.join(root, 'tsconfig.json');
+        assert_1.strict.equal((0, extractor_1.extractProject)('Demo', root, config, () => { }, ['app.jsx']).complete, true);
+        const failed = (0, extractor_1.extractProject)('Demo', root, config, () => { }, ['app.jsx', 'tsconfig.json']);
+        assert_1.strict.equal(failed.complete, false);
+        assert_1.strict.ok(failed.diagnostics?.some(message => message.includes('Cannot read file')));
+        writeFile(root, 'package.json', '{ broken');
+        assert_1.strict.equal((0, extractor_1.extractProject)('Demo', root, config, () => { }, ['app.jsx', 'package.json']).complete, false);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('sidecar labels and edges use the owning C# graph protocol enums', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-protocol-enums-'));
+    try {
+        writeFile(root, 'app.tsx', `import {createContext,useContext} from 'react'; const Ctx=createContext(null);
+function Child(){useContext(Ctx);return <div/>;} export function App(){const run=()=>{}; return <Ctx.Provider value={{run}}><Child/></Ctx.Provider>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const models = path.resolve(__dirname, '../../../src/CodeGraph.Models');
+        const members = (name) => new Set(fs.readFileSync(path.join(models, `${name}.cs`), 'utf8').split('\n').map(line => line.replace(/\/\/.*$/, '').trim().replace(/,$/, '')));
+        const labels = members('NodeLabel');
+        const types = members('EdgeType');
+        for (const node of result.nodes)
+            assert_1.strict.ok(labels.has(node.label), `unsupported node label ${node.label}`);
+        for (const edge of result.edges)
+            assert_1.strict.ok(types.has(edge.type), `unsupported edge type ${edge.type}`);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('discovery excludes source and config reads, including requested configs and relative import targets', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-no-excluded-read-'));
+    const nodeFs = require('fs');
+    const read = nodeFs.readFileSync;
+    try {
+        writeFile(root, 'src/App.jsx', "import { Secret } from '../excluded/Secret'; export const App = () => <Secret/>;");
+        writeFile(root, 'excluded/Secret.jsx', 'export function Secret(){return <div/>;}');
+        writeFile(root, 'excluded/tsconfig.json', '{"compilerOptions":{"baseUrl":"."}}');
+        const reads = [];
+        nodeFs.readFileSync = ((file, ...args) => {
+            if (typeof file === 'string' && file.startsWith(root) && file.includes('/excluded/'))
+                reads.push(file);
+            return read(file, ...args);
+        });
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'excluded/tsconfig.json'), () => { }, ['src/App.jsx']);
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.deepEqual(reads, []);
+        assert_1.strict.deepEqual(result.processedFiles, ['src/App.jsx']);
+        assert_1.strict.ok(!result.edges.some(edge => edge.type === 'RENDERS'));
+        assert_1.strict.ok(!result.nodes.some(node => node.qualifiedName.startsWith('npm:../')));
+    }
+    finally {
+        nodeFs.readFileSync = read;
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('memoized context values retain their supplied callable and unrelated providers do not rename owners', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-memo-context-'));
+    try {
+        writeFile(root, 'app.tsx', `import {createContext,useMemo,useContext} from 'react'; const Ctx=createContext(null); function save(){}
+function Child(){useContext(Ctx);return <span/>;} export function App(){const value=useMemo(()=>({save}),[]);return <Ctx.Provider value={value}><Child/></Ctx.Provider>;}`);
+        const config = path.join(root, 'tsconfig.json');
+        const first = (0, extractor_1.extractProject)('Demo', root, config);
+        const provider = first.nodes.find(node => node.properties.context_kind === 'provider');
+        assert_1.strict.ok(first.edges.some(edge => edge.sourceQN === provider.qualifiedName && edge.targetQN === 'Demo:app.tsx#save' && edge.type === 'CALLS'));
+        writeFile(root, 'aaa.tsx', `import {createContext} from 'react';const Other=createContext(null);export function OtherApp(){return <Other.Provider value={null}><div/></Other.Provider>;}`);
+        const second = (0, extractor_1.extractProject)('Demo', root, config);
+        assert_1.strict.ok(second.nodes.some(node => node.qualifiedName === provider.qualifiedName));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('custom hooks and factories resolve uniquely returned callables and object members', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-returned-callable-'));
+    try {
+        writeFile(root, 'hooks.ts', `function request(){} export function useRun(){return () => request();}
+export function useActions(){const reload=()=>request();return {reload};}`);
+        writeFile(root, 'app.tsx', `import {useRun,useActions} from './hooks';export function App(){const run=useRun();const actions=useActions();run();actions.reload();return <button onClick={run}/>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const returned = result.nodes.find(node => node.qualifiedName.startsWith('Demo:hooks.ts#useRun.$callback'));
+        assert_1.strict.ok(returned);
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === returned.qualifiedName && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:hooks.ts#useActions.reload' && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === returned.qualifiedName && edge.targetQN === 'Demo:hooks.ts#request' && edge.type === 'CALLS'));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('imported class instance members resolve through jsconfig aliases without installed libraries', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-class-instance-'));
+    try {
+        writeJson(root, 'jsconfig.json', { compilerOptions: { baseUrl: '.', paths: { '@app/*': ['src/*'] } } });
+        writeFile(root, 'src/service.ts', 'export class Api { request(){} }');
+        writeFile(root, 'src/app.ts', "import {Api as Client} from '@app/service';export function run(){const api=new Client();api.request();} export function typed(api:Client){api.request();}");
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        for (const caller of ['Demo:src/app.ts#run', 'Demo:src/app.ts#typed'])
+            assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === caller && edge.targetQN === 'service.Api.request' && edge.type === 'CALLS'), caller);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('declared navigation selectors preserve literal screen keys, const aliases and keep-alive active props', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-screen-metadata-'));
+    try {
+        writeFile(root, 'app.tsx', `import {useState} from 'react';
+function LibraryScreen(){return <div/>;} function WorkspaceScreen(){return <div/>;} function ImageStudio(){return <div/>;}
+function KeepAlivePane({children}){return <div>{children}</div>;} function Moon(){return <span/>;} function Hidden(){return <div/>;}
+export function App(){const [activeView,setActiveView]=useState('Library'); const theme='dark';
+const showWorkspace=activeView==='workspace'; let mutable=activeView==='mutable';
+return <><nav><button aria-current={activeView===item.id?'page':undefined}/></nav>
+{activeView==='Library'?<LibraryScreen/>:null}{showWorkspace?<WorkspaceScreen/>:null}
+{keepAliveMounted('Image')?<KeepAlivePane active={activeView==='Image'}><ImageStudio/></KeepAlivePane>:null}
+{theme==='dark'?<Moon/>:null}{mutable?<Hidden/>:null}</>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        for (const [target, key, evidence] of [['LibraryScreen', 'Library', 'conditional_guard'], ['WorkspaceScreen', 'workspace', 'conditional_guard'], ['ImageStudio', 'Image', 'active_prop']]) {
+            const edge = result.edges.find(edge => edge.type === 'RENDERS' && edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === `Demo:app.tsx#${target}`);
+            assert_1.strict.equal(edge.properties?.screen_key, key);
+            assert_1.strict.equal(edge.properties?.screen_selector, 'activeView');
+            assert_1.strict.equal(edge.properties?.screen_selector_owner, 'Demo:app.tsx#App');
+            assert_1.strict.equal(edge.properties?.screen_evidence, evidence);
+        }
+        for (const target of ['Moon', 'Hidden'])
+            assert_1.strict.equal(result.edges.find(edge => edge.type === 'RENDERS' && edge.targetQN === `Demo:app.tsx#${target}`)?.properties?.screen_key, undefined);
+        assert_1.strict.ok(!result.nodes.some(node => node.label === 'Route'));
+        const coverage = JSON.parse(result.diagnostics.find(message => message.startsWith('Link coverage: ')).slice('Link coverage: '.length));
+        assert_1.strict.equal(coverage.screens, 3); // The active wrapper and its screen share a declared key.
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('screen metadata requires explicit navigation evidence and the same selector symbol', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-screen-negative-'));
+    try {
+        writeFile(root, 'app.tsx', `function A(){return <div/>;} function B(){return <div/>;} function C(){return <div/>;} function D(){return <div/>;}
+export function App(){const activeView='library'; const theme='light'; const showTheme=theme==='light';
+return <><nav><button aria-current={activeView===item.id?'page':undefined}/></nav>
+{showTheme?<A/>:null}{activeView!== 'library'?<B/>:null}{activeView===dynamicKey?<C/>:null}
+{items.map((activeView)=>activeView==='shadow'?<D/>:null)}</>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(result.edges.filter(edge => edge.type === 'RENDERS').every(edge => edge.properties?.screen_key === undefined));
+        writeFile(root, 'app.tsx', `function A(){return <div/>;} export function App(){const activeView='library';return <>{activeView==='library'?<A/>:null}</>;}`);
+        assert_1.strict.ok((0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json')).edges.every(edge => edge.properties?.screen_key === undefined));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('source-proven lazy factories retain the bound named export through captures and state initializers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-source-lazy-wrapper-'));
+    try {
+        writeFile(root, 'factory.tsx', `import React, {useState} from 'react';
+function named(loader, exportName){return React.lazy(async()=>{const request=loader();const module=await request;const component=module[exportName];if(!component)throw new Error('missing');return {default:component};});}
+export function arbitraryFactory(load,key){const create=()=>named(load,key);function Boundary(){const [{Widget}]=useState(()=>({Widget:create()}));return <Widget/>;}Boundary.displayName='Generated';return Boundary;}`);
+        writeFile(root, 'targets.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
+        writeFile(root, 'app.tsx', `import {arbitraryFactory as build} from './factory';const Studio=build(()=>import('./targets'),'Second');
+export function App(){const activeView='Image';return <><nav><button aria-current={activeView===item.id?'page':undefined}/></nav>{activeView==='Image'?<Studio/>:null}</>;}`);
+        const analyze = () => (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const first = analyze();
+        const rendered = first.edges.find(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#Second' && edge.type === 'RENDERS');
+        assert_1.strict.ok(rendered);
+        assert_1.strict.equal(rendered.properties?.lazy_wrapper, true);
+        assert_1.strict.equal(rendered.properties?.candidate, true);
+        assert_1.strict.equal(rendered.properties?.confidence_band, 'medium');
+        assert_1.strict.equal(rendered.properties?.screen_key, 'Image');
+        assert_1.strict.ok((rendered.properties?.lazy_wrapper_chain).some(qn => qn.includes('#named')));
+        assert_1.strict.ok(!first.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#First' && edge.type === 'RENDERS'));
+        writeFile(root, 'app.tsx', fs.readFileSync(path.join(root, 'app.tsx'), 'utf8').replace("'Second'", "'First'"));
+        const second = analyze();
+        assert_1.strict.ok(second.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#First' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(!second.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#Second' && edge.type === 'RENDERS'));
+        writeFile(root, 'factory.tsx', fs.readFileSync(path.join(root, 'factory.tsx'), 'utf8').replace('module[exportName]', 'module.Second'));
+        const helperChanged = analyze(); // App and its bound argument are unchanged.
+        assert_1.strict.ok(helperChanged.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#Second' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(!helperChanged.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:targets.tsx#First' && edge.type === 'RENDERS'));
+        assert_1.strict.deepEqual(helperChanged.edges, analyze().edges);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('lazy factory names, dynamic export choices and shadowed React APIs never prove a target', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-wrapper-negative-'));
+    try {
+        writeFile(root, 'targets.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
+        writeFile(root, 'app.tsx', `import React,{useState} from 'react';
+function lazyScreen(loader,key){return function Fake(){return <div/>;};}
+function dynamic(loader,key){const Lazy=React.lazy(async()=>{const module=await loader();return {default:module[key]};});return function Wrapper(){return <Lazy/>;};}
+function shadowed(React,loader,key){const Lazy=React.lazy(async()=>{const module=await loader();return {default:module[key]};});return function Wrapper(){return <Lazy/>;};}
+const Fake=lazyScreen(()=>import('./targets'),'First');const Ambiguous=dynamic(()=>import('./targets'),flag?'First':'Second');const Shadowed=shadowed(otherReact,()=>import('./targets'),'First');
+export function App(){return <><Fake/><Ambiguous/><Shadowed/></>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(!result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.properties?.lazy_wrapper));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyUnresolved:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('shared wrapper declarations retain canonical screen selections in one persistable render edge', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-screen-selections-'));
+    try {
+        writeFile(root, 'app.tsx', `function build(){function Wrapper(){return <div/>;}return Wrapper;} const First=build();const Second=build();
+export function App(activeView){return <><nav><button aria-current={activeView===item.id?'page':undefined}/></nav>{activeView==='one'?<First/>:null}{activeView==='two'?<Second/>:null}</>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const edges = result.edges.filter(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:app.tsx#build.Wrapper' && edge.type === 'RENDERS');
+        assert_1.strict.equal(edges.length, 1);
+        assert_1.strict.equal(edges[0].properties?.screen_key, undefined);
+        assert_1.strict.deepEqual((edges[0].properties?.screen_selections).map(selection => selection.screen_key), ['one', 'two']);
+        const coverage = JSON.parse(result.diagnostics.find(message => message.startsWith('Link coverage: ')).slice('Link coverage: '.length));
+        assert_1.strict.equal(coverage.screens, 2);
+        writeFile(root, 'app.tsx', fs.readFileSync(path.join(root, 'app.tsx'), 'utf8').replace("{activeView==='two'?<Second/>:null}", ''));
+        const changed = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const edge = changed.edges.find(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:app.tsx#build.Wrapper' && edge.type === 'RENDERS');
+        assert_1.strict.equal(edge.properties?.screen_key, 'one');
+        assert_1.strict.equal(edge.properties?.screen_selections, undefined);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('conditional closures with different captured lazy exports remain uncertain', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-closure-alternatives-'));
+    try {
+        writeFile(root, 'targets.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
+        writeFile(root, 'app.tsx', `import React from 'react';function build(load,key){const Lazy=React.lazy(async()=>{const module=await load();return{default:module[key]};});return function Wrapper(){return <Lazy/>;};}
+const Choice=flag?build(()=>import('./targets'),'First'):build(()=>import('./targets'),'Second');export function App(){return <Choice/>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(!result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.properties?.lazy_wrapper));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyUnresolved: conditional')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('possible lazy wrapper renders do not invent a provider environment for their consumers', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-context-uncertainty-'));
+    try {
+        writeFile(root, 'context.tsx', "import {createContext} from 'react'; export function defaultSave(){} export const Ctx=createContext({save:defaultSave});");
+        writeFile(root, 'target.tsx', "import {useContext} from 'react';import {Ctx} from './context';export function Screen(){useContext(Ctx);return <div/>;}");
+        writeFile(root, 'app.tsx', `import React from 'react';import {Ctx} from './context';function save(){}
+function build(load,key){const Lazy=React.lazy(async()=>{const module=await load();return{default:module[key]};});return function Wrapper(){return <Ctx.Provider value={{save}}><Lazy/></Ctx.Provider>;};}
+const Screen=build(()=>import('./target'),'Screen');export function App(){return <Screen/>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:target.tsx#Screen' && edge.properties?.lazy_wrapper));
+        assert_1.strict.ok(!result.edges.some(edge => edge.sourceQN === 'Demo:target.tsx#Screen' && edge.properties?.context_kind === 'binding'));
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('contextScopeUnresolved: Demo:target.tsx#Screen')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('proven lazy-wrapper traversal exhaustion refuses complete extraction', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-wrapper-bound-'));
+    try {
+        const functions = Array.from({ length: 20 }, (_, index) => `function f${index}(load){return f${index + 1}(load);}`).join('\n');
+        writeFile(root, 'target.tsx', 'export default function Screen(){return <div/>;}');
+        writeFile(root, 'app.tsx', `import React from 'react';${functions}\nfunction f20(load){return React.lazy(load);}const Screen=f0(()=>import('./target'));export function App(){return <Screen/>;}`);
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.equal(result.complete, false);
+        assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyTraversal:')));
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('lazy wrapper export keys never reuse mutated object initializers or reference aliases', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-object-mutation-'));
+    try {
+        writeFile(root, 'target.tsx', 'export function First(){return <div/>;} export function Second(){return <span/>;}');
+        writeFile(root, 'values.ts', "export const names={key:'First'};");
+        const helper = `import React from 'react';function build(load,key){const Lazy=React.lazy(async()=>{const module=await load();return{default:module[key]};});return function Wrapper(){return <Lazy/>;};}`;
+        const variants = [
+            ["const names={key:'First'};names.key='Second';", 'names.key'],
+            ["const names={key:'First'};names['key']='Second';", 'names.key'],
+            ["const names={key:'First'};const field='key';names[field]='Second';", 'names.key'],
+            ["const names={key:'First'};const alias=names;alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const holder={names};holder.names.key='Second';", 'names.key'],
+            ["const names={key:'First'};function identity(value){return value;}const alias=identity(names);alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};function selected(){return names;}const alias=selected();alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const selected=()=>names;const alias=selected();alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const alias=names??other;alias.key='Second';", 'names.key'],
+            ["const names={key:'First'};const first=names;const alias=first;alias['key']='Second';", 'names.key'],
+            ["const names={nested:{key:'First'}};const alias=names.nested;alias.key='Second';", 'names.nested.key'],
+            ["const names={nested:{key:'First'}};const {nested:alias}=names;alias['key']='Second';", 'names.nested.key'],
+            ["const names={key:'First'};const other={key:'Second'};const alias=flag?names:other;alias.key='Other';", 'names.key'],
+            ["const names={key:'First'};names.key+='Suffix';", 'names.key'],
+            ["const names={key:'First'};names.key++;", 'names.key'],
+            ["const names={key:'First'};delete names.key;", 'names.key'],
+            ["import {names as values} from './values';values.key='Second';", 'values.key'],
+        ];
+        for (const [declaration, key] of variants) {
+            writeFile(root, 'app.tsx', `${helper}\n${declaration}\nconst Screen=build(()=>import('./target'),${key});export function App(){return <Screen/>;}`);
+            const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+            assert_1.strict.equal(result.complete, true, declaration);
+            assert_1.strict.ok(!result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.targetQN.startsWith('Demo:target.tsx#')), declaration);
+            assert_1.strict.ok(result.diagnostics?.some(message => message.startsWith('reactLazyUnresolved:')), declaration);
+        }
+        for (const declaration of ["const names={key:'First'};", "const names={key:'First'};const other={key:'Second'};other.key='Other';", "const names={key:'First'};let alias=names;alias={key:'Other'};"]) {
+            writeFile(root, 'app.tsx', `${helper}\n${declaration}\nconst Screen=build(()=>import('./target'),names.key);export function App(){return <Screen/>;}`);
+            const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+            assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.type === 'RENDERS' && edge.targetQN === 'Demo:target.tsx#First' && edge.properties?.lazy_wrapper), declaration);
+        }
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('same-target lazy factories coalesce into one canonical render edge with all wrapper witnesses', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-lazy-render-coalescing-'));
+    try {
+        writeFile(root, 'target.tsx', 'export function Shared(){return <div/>;}');
+        const helper = `import React from 'react';function named(load){return React.lazy(async()=>{const module=await load();return{default:module.Shared};});}
+function buildA(load){const create=()=>named(load);return function Wrapper(){const Lazy=create();return <Lazy/>;};}
+function buildB(load){const create=()=>named(load);return function Wrapper(){const Lazy=create();return <Lazy/>;};}
+const A=buildA(()=>import('./target'));const B=buildB(()=>import('./target'));`;
+        const extract = (jsx) => {
+            writeFile(root, 'app.tsx', `${helper}\nexport function App(){return <>${jsx}</>;}`);
+            return (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        };
+        const targetEdges = (result) => result.edges.filter(edge => edge.sourceQN === 'Demo:app.tsx#App' && edge.targetQN === 'Demo:target.tsx#Shared' && edge.type === 'RENDERS');
+        const first = targetEdges(extract('<A/><B/>'));
+        assert_1.strict.equal(first.length, 1);
+        assert_1.strict.equal(first[0].properties?.lazy_wrapper, true);
+        const alternatives = first[0].properties?.render_evidence;
+        assert_1.strict.equal(alternatives.length, 2);
+        assert_1.strict.ok(alternatives.some(witness => witness.lazy_wrapper_chain.some(qn => qn.includes('#buildA.'))));
+        assert_1.strict.ok(alternatives.some(witness => witness.lazy_wrapper_chain.some(qn => qn.includes('#buildB.'))));
+        assert_1.strict.deepEqual(targetEdges(extract('<B/><A/>')), first);
+        assert_1.strict.deepEqual(targetEdges(extract('<B/><A/>')), first);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('an explicit discovery scope admits Cypress and e2e sources without reading excluded neighbors', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-admitted-browser-tests-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-outside-browser-tests-'));
+    const nodeFs = require('fs');
+    const originalOpen = nodeFs.openSync;
+    try {
+        const sources = ['src/app.jsx', 'cypress/e2e/login.cy.ts', 'e2e/app.e2e-spec.ts', 'src/UPPER.TS', 'src/UpperPanel.JSX'];
+        writeFile(root, sources[0], "import {login} from '../cypress/e2e/login.cy';import {upper} from './UPPER.TS';import {UpperPanel} from './UpperPanel.JSX';export function App(){login();upper();return <UpperPanel/>;}");
+        writeFile(root, sources[1], 'export function login(){return true;}');
+        writeFile(root, sources[2], "import {login} from '../cypress/e2e/login.cy';export function browserFlow(){return login();}");
+        writeFile(root, sources[3], 'export function upper(){return 1;}');
+        writeFile(root, sources[4], 'export function UpperPanel(){return <aside/>;}');
+        const excluded = ['e2e/not-admitted.ts', 'node_modules/pkg/hidden.ts', '.git/hidden.ts', '.claude/worktrees/agent/hidden.ts'];
+        for (const file of excluded)
+            writeFile(root, file, 'export const invalid=(;');
+        writeFile(outside, 'secret.ts', 'export const invalid=(;');
+        try {
+            fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(root, 'e2e/outside-link.ts'));
+        }
+        catch (error) {
+            if (error.code !== 'EPERM')
+                throw error;
+        }
+        const reads = [];
+        nodeFs.openSync = ((file, ...args) => {
+            if (typeof file === 'string')
+                reads.push(path.resolve(file));
+            return originalOpen(file, ...args);
+        });
+        const result = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'), () => { }, sources);
+        assert_1.strict.equal(result.complete, true);
+        assert_1.strict.deepEqual(result.processedFiles.sort(), [...sources].sort());
+        for (const source of sources)
+            assert_1.strict.ok(reads.includes(path.join(root, source)), source);
+        for (const file of [...excluded.map(file => path.join(root, file)), path.join(root, 'e2e/outside-link.ts'), path.join(outside, 'secret.ts')])
+            assert_1.strict.ok(!reads.includes(file), file);
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:cypress/e2e/login.cy.ts#login' && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.nodes.some(node => node.filePath === 'e2e/app.e2e-spec.ts' && node.name === 'browserFlow'));
+        assert_1.strict.ok(result.nodes.some(node => node.filePath === 'src/UPPER.TS' && node.name === 'upper'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/UPPER.TS#upper' && edge.type === 'CALLS'));
+        assert_1.strict.ok(result.edges.some(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/UpperPanel.JSX#UpperPanel' && edge.type === 'RENDERS'));
+        assert_1.strict.ok(result.nodes.some(node => node.filePath === 'src/UpperPanel.JSX' && node.name === 'UpperPanel' && node.label === 'Component'));
+        const coverage = JSON.parse(result.diagnostics.find(message => message.startsWith('Link coverage: ')).slice('Link coverage: '.length));
+        assert_1.strict.equal(coverage.admitted_by_extension['.ts'], 3);
+        assert_1.strict.equal(coverage.processed_by_extension['.jsx'], 2);
+        nodeFs.openSync = originalOpen;
+        const standalone = (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        assert_1.strict.ok(!standalone.processedFiles.some(file => file.startsWith('cypress/') || file.startsWith('e2e/')));
+    }
+    finally {
+        nodeFs.openSync = originalOpen;
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true });
+    }
+});
+(0, node_test_1.test)('the final extraction boundary stores one edge identity with all callable and injection evidence', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-edge-storage-identity-'));
+    try {
+        writeFile(root, 'src/deps.ts', 'export class Service{} export class Consumer{constructor(private first:Service,private second:Service){}}');
+        writeFile(root, 'src/app.jsx', 'export function App(){const handler=()=>{};handler();return <button onClick={handler}/>;}');
+        const extract = () => (0, extractor_1.extractProject)('Demo', root, path.join(root, 'tsconfig.json'));
+        const first = extract();
+        const callback = first.edges.filter(edge => edge.sourceQN === 'Demo:src/app.jsx#App' && edge.targetQN === 'Demo:src/app.jsx#App.handler' && edge.type === 'CALLS');
+        assert_1.strict.equal(callback.length, 1);
+        const callEvidence = callback[0].properties?.extraction_evidence;
+        assert_1.strict.equal(callEvidence.length, 2);
+        assert_1.strict.ok(callEvidence.some(properties => properties.call_kind === 'event_handler'));
+        assert_1.strict.ok(callEvidence.some(properties => Object.keys(properties).length === 0));
+        const injections = first.edges.filter(edge => edge.sourceQN === 'deps.Consumer' && edge.targetQN === 'deps.Service' && edge.type === 'INJECTS');
+        assert_1.strict.equal(injections.length, 1);
+        const injectionEvidence = injections[0].properties?.extraction_evidence;
+        assert_1.strict.deepEqual(injectionEvidence.map(properties => properties.parameter_name).sort(), ['first', 'second']);
+        assert_1.strict.equal(new Set(first.edges.map(edge => JSON.stringify([edge.sourceQN, edge.targetQN, edge.type]))).size, first.edges.length);
+        assert_1.strict.deepEqual(first.edges, extract().edges);
+    }
+    finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});

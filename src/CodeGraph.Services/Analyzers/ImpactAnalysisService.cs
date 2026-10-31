@@ -17,12 +17,14 @@ public class ImpactAnalysisService(
         EdgeType.CONSUMES,
         EdgeType.USES_TYPE,
         EdgeType.INJECTS,
+        EdgeType.REGISTERS,
         EdgeType.IMPLEMENTS,
         EdgeType.INHERITS,
         EdgeType.HANDLES,
         EdgeType.REFERENCES_PACKAGE,
         EdgeType.RENDERS,
-        EdgeType.SUBSCRIBES
+        EdgeType.SUBSCRIBES,
+        EdgeType.DEFINES_METHOD
     ];
 
     // Cross-repo edge types that boost severity
@@ -226,6 +228,39 @@ public class ImpactAnalysisService(
         return preferred.Count > 0 ? preferred : [candidates[0]];
     }
 
+    /// <summary>
+    /// Both definition edges can represent structural File ownership (including Swift free
+    /// functions). Follow callable/component owners for DEFINES and actual callable/type owners
+    /// for DEFINES_METHOD; structural containers do not inherit their contents' dependency impact.
+    /// </summary>
+    private static async Task<IReadOnlyList<TraversalEntry>> TraverseDependenciesAsync(
+        IGraphReader graph, long startNodeId, int maxDepth)
+    {
+        var entries = new List<TraversalEntry>();
+        var visited = new HashSet<long> { startNodeId };
+        var frontier = new List<long> { startNodeId };
+        var types = DependencyEdges.Append(EdgeType.DEFINES).ToArray();
+        for (var depth = 1; depth <= maxDepth && frontier.Count > 0; depth++)
+        {
+            var edges = await graph.FindEdgesByTargetBatchAsync(frontier, types);
+            var sources = await graph.FindNodesByIdBatchAsync(edges.Select(edge => edge.SourceId).Distinct().ToList());
+            var next = new List<long>();
+            foreach (var edge in edges)
+            {
+                if (!sources.TryGetValue(edge.SourceId, out var source)) continue;
+                if (edge.Type == EdgeType.DEFINES && source.Label is not (NodeLabel.Function or NodeLabel.Method or NodeLabel.Component)) continue;
+                if (edge.Type == EdgeType.DEFINES_METHOD && source.Label is not (
+                    NodeLabel.Function or NodeLabel.Method or NodeLabel.Constructor or NodeLabel.Delegate or NodeLabel.Component
+                    or NodeLabel.Class or NodeLabel.Interface or NodeLabel.Struct or NodeLabel.Record or NodeLabel.Enum)) continue;
+                if (!visited.Add(source.Id)) continue;
+                entries.Add(new TraversalEntry(source, depth, edge.Type, edge.TargetId, null));
+                next.Add(source.Id);
+            }
+            frontier = next;
+        }
+        return entries;
+    }
+
     private async Task<ImpactReport> BuildImpactReportAsync(IGraphReader graph, IReadOnlyList<GraphNode> startNodes, int maxDepth)
     {
         // BFS results: nodeId → (depth, edgeType, sourceRepository)
@@ -237,8 +272,7 @@ public class ImpactAnalysisService(
         // Phase 1: Intra-repository BFS from each start node
         foreach (var startNode in startNodes)
         {
-            var entries = await graph.TraverseAsync(
-                startNode.Id, TraceDirection.Inbound, maxDepth, DependencyEdges);
+            var entries = await TraverseDependenciesAsync(graph, startNode.Id, maxDepth);
 
             foreach (var entry in entries)
             {
@@ -309,8 +343,7 @@ public class ImpactAnalysisService(
                 var remainingDepth = maxDepth - baseDepth;
                 if (remainingDepth > 0)
                 {
-                    var entries = await graph.TraverseAsync(
-                        nodeId, TraceDirection.Inbound, remainingDepth, DependencyEdges);
+                    var entries = await TraverseDependenciesAsync(graph, nodeId, remainingDepth);
 
                     foreach (var entry in entries)
                     {

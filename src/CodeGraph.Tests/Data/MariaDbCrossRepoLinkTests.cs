@@ -31,6 +31,30 @@ public class MariaDbCrossRepoLinkTests(ITestOutputHelper output)
     private const string LinkedSymbol = "rust-analyzer cargo inference 0.1.0 mod/n1().";
 
     [Fact]
+    public async Task DeleteCrossRepoEdgesByIdsAsync_DeletesOnlySelectedRelationsAndPreservesOtherIdsAndProperties()
+    {
+        await using var db = await LinkTestDatabase.CreateAsync();
+        await db.SeedFleetAsync();
+        await using var context = db.CreateContext();
+        var store = db.CreateStore(context);
+        var source = (await store.FindNodeByQualifiedNameAsync("Consumer", "Consumer:caller"))!;
+        var target = (await store.FindNodeByQualifiedNameAsync("Provider", "Provider:run"))!;
+        var selected = new CrossRepoEdge { SourceRepository = "Consumer", TargetRepository = "Provider",
+            SourceNodeId = source.Id, TargetNodeId = target.Id, Type = EdgeType.HTTP_CALLS,
+            Properties = new() { ["owner"] = "http" } };
+        await store.InsertCrossRepoEdgeBatchAsync([selected, selected with { Type = EdgeType.CALLS,
+            Properties = new() { ["owner"] = "other" } }]);
+        var previous = await store.GetAllCrossRepoEdgesAsync();
+        var retained = previous.Single(edge => edge.Type == EdgeType.CALLS);
+        await store.DeleteCrossRepoEdgesByIdsAsync([previous.Single(edge => edge.Type == EdgeType.HTTP_CALLS).Id, long.MaxValue]);
+        var remaining = (await store.GetAllCrossRepoEdgesAsync()).Single();
+        remaining.Id.ShouldBe(retained.Id);
+        remaining.Properties["owner"].ToString().ShouldBe("other");
+        await store.DeleteCrossRepoEdgesByIdsAsync([]);
+        (await store.GetAllCrossRepoEdgesAsync()).Single().Id.ShouldBe(retained.Id);
+    }
+
+    [Fact]
     public async Task LinkForRepositoryAsync_LinksEveryKindAndLeavesOtherPairsAlone()
     {
         await using var db = await LinkTestDatabase.CreateAsync();

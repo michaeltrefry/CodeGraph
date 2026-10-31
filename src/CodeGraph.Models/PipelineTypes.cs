@@ -10,6 +10,12 @@ public record ExtractionResult
     public bool Succeeded { get; init; } = true;
 
     /// <summary>
+    /// Whether repository-level output covers its intended scope. Partial output may contain
+    /// valid facts but cannot authorize deletion by absence. Per-file/legacy results default true.
+    /// </summary>
+    public bool Complete { get; init; } = true;
+
+    /// <summary>
     /// Human-readable failure context for diagnostics. This is intentionally not used
     /// to infer success: callers must inspect <see cref="Succeeded"/>.
     /// </summary>

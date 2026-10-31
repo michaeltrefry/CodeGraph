@@ -42,7 +42,9 @@ exports.buildApp = buildApp;
 const fastify_1 = __importDefault(require("fastify"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const promises_1 = require("stream/promises");
 const extractor_1 = require("./extractor");
+const boundedTextReader_1 = require("./boundedTextReader");
 const linter_1 = require("./linter");
 /**
  * Request bodies may carry an inline discovery scope (thousands of paths); CodeGraph passes large
@@ -66,17 +68,30 @@ function openLogFile(logsDir, repositoryName) {
 /** The discovery scope of a request: the file named by `includedFilesPath`, else the inline list. */
 function readIncludedFiles(request) {
     if (request.includedFilesPath) {
-        const parsed = JSON.parse(fs.readFileSync(request.includedFilesPath, 'utf-8'));
-        if (!Array.isArray(parsed) || parsed.some(entry => typeof entry !== 'string')) {
-            throw new Error(`includedFilesPath ${request.includedFilesPath} does not hold a JSON array of strings`);
+        const absolute = path.resolve(request.includedFilesPath);
+        const reader = new boundedTextReader_1.BoundedTextReader(path.dirname(absolute), file => file === absolute, { maxFileSizeKb: 65536, maxAnalysisTextKb: 65536 });
+        const text = reader.read(absolute, true);
+        if (text === undefined)
+            throw new boundedTextReader_1.SourceAdmissionError('includedFilesPath could not be read within the regular-file scope budget');
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
         }
+        catch {
+            throw new boundedTextReader_1.SourceAdmissionError('includedFilesPath is not valid JSON');
+        }
+        if (!Array.isArray(parsed) || parsed.some(entry => typeof entry !== 'string')) {
+            throw new boundedTextReader_1.SourceAdmissionError('includedFilesPath must hold a JSON array of path strings');
+        }
+        (0, boundedTextReader_1.validateSourceScope)(parsed);
         return parsed;
     }
+    (0, boundedTextReader_1.validateSourceScope)(request.includedFiles);
     return request.includedFiles;
 }
 function buildApp(logsDir = defaultLogsDir) {
     const app = (0, fastify_1.default)({ logger: false, bodyLimit: exports.BODY_LIMIT_BYTES });
-    app.get('/health', async () => ({ status: 'ok' }));
+    app.get('/health', async () => ({ status: 'ok', sourceBoundsVersion: 8 }));
     app.post('/extract-project', async (request, reply) => {
         const { repositoryName, rootPath, tsconfigPath } = request.body;
         const logStream = openLogFile(logsDir, repositoryName);
@@ -89,7 +104,7 @@ function buildApp(logsDir = defaultLogsDir) {
             const includedFiles = readIncludedFiles(request.body);
             log(`Starting extraction: ${repositoryName} root=${rootPath} tsconfig=${tsconfigPath} includedFiles=${includedFiles?.length ?? '(disk walk)'}`);
             const t0 = Date.now();
-            const result = (0, extractor_1.extractProject)(repositoryName, rootPath, tsconfigPath, log, includedFiles);
+            const result = (0, extractor_1.extractProject)(repositoryName, rootPath, tsconfigPath, log, includedFiles, request.body);
             const elapsed = Date.now() - t0;
             // Log diagnostics
             const edgeTypes = {};
@@ -108,13 +123,18 @@ function buildApp(logsDir = defaultLogsDir) {
                 for (const d of result.diagnostics)
                     log(`  diag: ${d}`);
             }
-            logStream.end();
             return result;
         }
         catch (err) {
-            log(`ERROR: ${String(err)}`);
+            const message = err instanceof boundedTextReader_1.SourceAdmissionError ? err.message : 'invalid or unreadable extraction request';
+            log(`ERROR: ${message}`);
+            reply.status(500).send({ error: message });
+        }
+        finally {
+            // Complete the request only after its log has closed. Callers may immediately remove
+            // an ephemeral log directory or inspect diagnostics once extraction has returned.
             logStream.end();
-            reply.status(500).send({ error: String(err) });
+            await (0, promises_1.finished)(logStream);
         }
     });
     app.post('/lint-project', async (request) => {

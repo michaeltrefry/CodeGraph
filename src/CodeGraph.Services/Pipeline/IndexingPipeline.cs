@@ -147,6 +147,12 @@ public partial class IndexingPipeline
             RepositoryName = repositoryName,
             RootPath = rootPath,
             FoundationalKnowledge = knowledge,
+            TypeScriptSourceLimits = new TypeScriptSourceLimits
+            {
+                MaxFileSizeKb = _options.MaxFileSizeKb,
+                MaxFileSizeKbByExtension = new Dictionary<string, int>(_options.MaxFileSizeKbByExtension, StringComparer.OrdinalIgnoreCase),
+                MaxAnalysisTextKb = _options.MaxFrontendAnalysisTextKb
+            },
             RepositoryToolingTrust = dotnetToolingTrusted
                 ? RepositoryToolingTrust.Trusted
                 : RepositoryToolingTrust.Untrusted
@@ -159,12 +165,28 @@ public partial class IndexingPipeline
         // Phase 1 — Discovery + Extraction
         var stepSw = Stopwatch.StartNew();
         var files = DiscoverFiles(rootPath, changedFilesOnly);
+        var typeScriptScope = DiscoverTypeScriptScope(rootPath);
+        var frontendInputs = await ReadFrontendInputsAsync(rootPath, typeScriptScope, ct);
+        // Templates belong to project analysis and are read only when referenced, including
+        // template-only change lists; ordinary per-file hashing must not open them first.
+        if (_typeScriptAnalyzer is not null)
+            files.RemoveAll(path => path.EndsWith(".html", StringComparison.OrdinalIgnoreCase)
+                || IsFrontendReadInput(path) && !frontendInputs.ContainsKey(Path.GetFullPath(path)));
         var deletedFiles = GetDeletedFiles(repositoryName, rootPath, changedFilesOnly, files, existingHashes);
-        var languageStats = ComputeLanguageStats(files);
+        // Prior paths keep owner cleanup active when the last participating source is removed.
+        // Repositories containing only other languages need no HTTP/Tauri store probes.
+        var sourcePaths = files.Concat(existingHashes.Keys).ToList();
+        var hasTypeScriptSources = sourcePaths.Any(IsTypeScriptPath);
+        var hasHttpSources = hasTypeScriptSources
+            || sourcePaths.Any(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase));
+        var hasRustSources = sourcePaths.Any(path => path.EndsWith(".rs", StringComparison.OrdinalIgnoreCase));
+        var hasBackendEndpointSources = hasRustSources
+            || sourcePaths.Any(path => path.EndsWith(".go", StringComparison.OrdinalIgnoreCase));
+        var languageStats = ComputeLanguageStats(files, frontendInputs);
         // Files over their size limit record their oversize version whichever component
         // processes them, so the stored version always matches what FilterByHash expects.
         var oversizeFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles);
+        var filesToProcess = FilterByHash(files, rootPath, existingHashes, buffer, oversizeFiles, out var outdatedVersionFiles, frontendInputs);
         _logger.LogInformation("[Timing] Discovery + hashing: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
         if (outdatedVersionFiles > 0)
         {
@@ -289,45 +311,56 @@ public partial class IndexingPipeline
         // workspace packages and sources itself, so it is handed exactly the files discovery
         // admits (sc-26145): agent worktrees and dependency directories are never analyzed.
         IReadOnlyList<GraphNode>? typeScriptNodes = null;
+        IReadOnlyList<ExtractionResult>? typeScriptResults = null;
+        var typeScriptProcessedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (_typeScriptAnalyzer is not null)
         {
-            var typeScriptScope = DiscoverTypeScriptScope(rootPath);
-            // The sidecar scans sources from the scope (ignoring tsconfig include/files), so one
-            // tsconfig per repo supplies the compiler options.
-            if (SelectTypeScriptConfig(typeScriptScope) is { } tsconfig)
+            if (typeScriptScope.Any(IsTypeScriptPath))
             {
+                // A synthetic path is the existing analyzer contract's default-config seam.
+                var tsconfig = SelectTypeScriptConfig(typeScriptScope) ?? TypeScriptConfigFileName;
                 _logger.LogInformation("Using TypeScript project analysis for {Tsconfig}", tsconfig);
                 stepSw.Restart();
                 try
                 {
                     var results = (await _typeScriptAnalyzer.AnalyzeProjectAsync(
                             Path.Combine(rootPath, tsconfig), context, typeScriptScope, ct))
-                        .Select(result => ClampToDiscovery(result, repositoryName, rootPath))
+                        .Select(result => OwnTypeScriptResult(ClampToDiscovery(result, repositoryName, rootPath)))
                         .ToList();
+                    if (results.Count == 0 || results.Any(result => !result.Succeeded || !result.Complete))
+                        throw new InvalidOperationException("The TypeScript analyzer did not return complete successful repository output.");
                     _logger.LogInformation("[Timing] TypeScript repository analysis: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
+                    typeScriptResults = results;
+                    typeScriptNodes = results.SelectMany(result => result.Nodes).ToList();
+                    typeScriptProcessedFiles.UnionWith(results.SelectMany(result => result.ProcessedFiles).Select(NormalizeRelativePath));
+                    var unprocessed = typeScriptScope.Where(IsTypeScriptPath)
+                        .Where(path => !typeScriptProcessedFiles.Contains(path)).Take(5).ToList();
+                    if (unprocessed.Count > 0)
+                        throw new InvalidOperationException($"The TypeScript analyzer left admitted source files unprocessed: {string.Join(", ", unprocessed)}");
+                    // Change-list runs may refresh derived facts for an unchanged entry file.
+                    // Its structural File endpoint must be reinserted with that source slice.
+                    var missingStructure = typeScriptProcessedFiles.Where(IsTypeScriptPath)
+                        .Where(path => buffer.FindByQN($"{repositoryName}:{path}") is null)
+                        .Select(path => Path.Combine(rootPath, path)).ToList();
+                    if (missingStructure.Count > 0)
+                        CreateStructuralNodes(repositoryName, rootPath, missingStructure, [], buffer);
                     AddMetadataCandidates(detectedMetadataCandidates, results);
                     MergeResults(results, buffer);
                     AddSuccessfullyProcessedFiles(results, changedRelativePaths, successfullyProcessedFiles);
-                    // No result (sidecar unavailable) says nothing about the workspace packages.
-                    if (results.Any(result => result.Succeeded))
-                    {
-                        typeScriptNodes = results.Where(result => result.Succeeded)
-                            .SelectMany(result => result.Nodes)
-                            .ToList();
-                    }
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex,
-                        "TypeScript project analysis failed for {Tsconfig} — falling back to per-file extraction",
-                        tsconfig);
+                        "TypeScript project analysis incomplete for {Repository}; preserving the prior graph and source hashes",
+                        repositoryName);
+                    throw new InvalidOperationException($"TypeScript analysis incomplete for {repositoryName}; no graph or hash replacement was committed.", ex);
                 }
             }
             else
             {
-                // No admitted tsconfig: the repository has no TypeScript workspace packages.
                 typeScriptNodes = [];
+                typeScriptResults = [];
             }
         }
 
@@ -667,13 +700,16 @@ public partial class IndexingPipeline
                 var moduleSlices = await FindChangedTypeScriptModuleSlicesAsync(repositoryName, typeScriptNodes);
                 typeScriptReplacementPaths.AddRange(moduleSlices);
                 typeScriptModulesChanged = moduleSlices.Count > 0;
+                var semanticSlices = await FindChangedTypeScriptSemanticSlicesAsync(repositoryName, typeScriptResults!, ct);
+                typeScriptReplacementPaths.AddRange(semanticSlices);
+                _logger.LogInformation("TypeScript semantic refresh of {Repository}: {Count} changed slice(s)", repositoryName, semanticSlices.Count);
             }
             var typeScriptVersionRefresh = changedRelativePaths.Any(path =>
                 IsTypeScriptPath(path)
                 && existingHashes.TryGetValue(path, out var record)
                 && buffer.AllFileHashes.TryGetValue(path, out var hash)
                 && record.ContentHash == hash);
-            if (excludedSlices.Count > 0 || typeScriptVersionRefresh)
+            if (typeScriptReplacementPaths.Count > 0 || typeScriptVersionRefresh)
                 typeScriptOrphanCandidates = await FindTypeScriptStubCandidatesAsync(repositoryName);
         }
 
@@ -690,8 +726,8 @@ public partial class IndexingPipeline
 
         // Per-file extraction for everything not successfully handled by a specialized analyzer
         var remainingFiles = filesToProcess
-            .Where(file => !successfullyProcessedFiles.Contains(
-                NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
+            .Where(file => !typeScriptProcessedFiles.Contains(NormalizeRelativePath(Path.GetRelativePath(rootPath, file)))
+                && !successfullyProcessedFiles.Contains(NormalizeRelativePath(Path.GetRelativePath(rootPath, file))))
             .ToList();
 
         if (remainingFiles.Count > 0)
@@ -706,6 +742,30 @@ public partial class IndexingPipeline
         }
 
         // Extract NuGet package references from .csproj files (reuse cached discovery)
+        var registrationSources = new RegistrationSourceReader(_fileSystem, _options, rootPath);
+        IReadOnlyList<string> endpointSlices = hasBackendEndpointSources
+            ? await PrepareBackendEndpointsAsync(repositoryName, rootPath, context, buffer,
+                successfullyProcessedFiles, deletedFiles, !replaceExistingGraph && existingHashes.Count > 0, registrationSources, ct)
+            : [];
+        typeScriptReplacementPaths.AddRange(endpointSlices);
+        IReadOnlyList<string> tauriSlices = hasRustSources || hasTypeScriptSources || typeScriptScope.Any(IsTauriConfiguration)
+            ? await PrepareTauriBindingsAsync(repositoryName, rootPath, typeScriptScope, buffer,
+                successfullyProcessedFiles.Concat(typeScriptProcessedFiles).ToHashSet(StringComparer.OrdinalIgnoreCase),
+                deletedFiles.ToHashSet(StringComparer.OrdinalIgnoreCase), !replaceExistingGraph && existingHashes.Count > 0, registrationSources, ct)
+            : [];
+        typeScriptReplacementPaths.AddRange(tauriSlices);
+        foreach (var path in tauriSlices.Where(path => _extensions.IsSupportedExtension(Path.GetExtension(path)) || IsTypeScriptPath(path)))
+        {
+            if (!existingHashes.TryGetValue(path, out var previous) || buffer.AllFileHashes.ContainsKey(path)) continue;
+            if (_fileSystem.FileExists(Path.Combine(rootPath, path)))
+            {
+                // These source bytes were unchanged; preserve their certified hash when only
+                // registration-derived facts caused the source slice to be replaced.
+                buffer.AddFileHash(path, previous.ContentHash);
+                successfullyProcessedFiles.Add(path);
+            }
+        }
+
         if (_nugetExtractor is not null)
             ExtractNuGetReferences(repositoryName, csprojFiles, buffer, replaceExistingGraph);
 
@@ -741,6 +801,11 @@ public partial class IndexingPipeline
             swiftImportRebinding);
         var swiftRebinding = Combine(swiftImportRebinding, await ResolveSwiftTypeReferencesAsync(
             repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct));
+        var httpRebinding = hasHttpSources || buffer.AllPendingEdges.Any(edge => edge.Type == EdgeType.HTTP_CALLS)
+            ? await RebindHttpCallsAsync(repositoryName, buffer, includePersistedNodes, excludedPersistedFiles, ct)
+            : HttpRebinding.None;
+        if (httpRebinding.ReboundEdges.Count > 0 || !httpRebinding.Retractions.IsEmpty)
+            typeScriptReplacementPaths.Add(HttpBindingSlice);
         CreateStubNodesForExternalTargets(repositoryName, buffer);
         _logger.LogInformation("[Timing] Resolution phase: {ElapsedMs}ms", stepSw.ElapsedMilliseconds);
 
@@ -779,10 +844,23 @@ public partial class IndexingPipeline
                 replacementPaths,
                 includeRepositoryStructure: existingHashes.Count == 0);
             AppendSwiftEdges(buffer, swiftRebinding, excludedPersistedFiles, replacementNodes, replacementEdges);
+            AppendHttpEdges(buffer, httpRebinding, replacementNodes, replacementEdges);
             if (typeScriptModulesChanged)
                 AppendTypeScriptRootModules(buffer, typeScriptNodes!, replacementNodes, replacementEdges);
+            // A change-list run can analyze unchanged callers outside its hash discovery list.
+            // Replacing those derived slices must retain their successfully processed hash too.
+            foreach (var path in typeScriptReplacementPaths.Where(path =>
+                         IsTypeScriptPath(path) && typeScriptProcessedFiles.Contains(path)
+                         && !buffer.AllFileHashes.ContainsKey(path)))
+            {
+                var fullPath = Path.Combine(rootPath, path);
+                var certified = frontendInputs.GetValueOrDefault(Path.GetFullPath(fullPath))
+                    ?? throw new InvalidOperationException($"Frontend source {path} has no bounded input snapshot; retaining prior graph and hashes.");
+                buffer.AddFileHash(path, certified.Hash);
+            }
             var sourceHashes = buffer.AllFileHashes
-                .Where(hash => successfullyProcessedFiles.Contains(hash.Key))
+                .Where(hash => successfullyProcessedFiles.Contains(hash.Key)
+                    || (typeScriptProcessedFiles.Contains(hash.Key) && typeScriptReplacementPaths.Contains(hash.Key, StringComparer.OrdinalIgnoreCase)))
                 .ToDictionary(hash => hash.Key, hash => hash.Value, StringComparer.OrdinalIgnoreCase);
             var (replacementHashes, replacementVersions) = WithManifestRecords(
                 sourceHashes, ExtractionVersionsFor(sourceHashes.Keys, oversizeFiles), manifestHashRecords);
@@ -794,7 +872,10 @@ public partial class IndexingPipeline
                 replacementEdges,
                 replacementHashes,
                 replacementVersions,
-                WithOrphanCandidates(swiftRebinding.Retractions, typeScriptOrphanCandidates),
+                WithOrphanCandidates(new GraphSliceRetractions(
+                    swiftRebinding.Retractions.Edges.Concat(httpRebinding.Retractions.Edges).ToList(),
+                    swiftRebinding.Retractions.OrphanCandidateQNs.Concat(httpRebinding.Retractions.OrphanCandidateQNs).Distinct(StringComparer.Ordinal).ToList()),
+                    typeScriptOrphanCandidates),
                 ct);
             _logger.LogInformation(
                 "[Timing] Atomic file-slice replacement ({FileCount} files, {NodeCount} nodes, {EdgeCount} edges): {ElapsedMs}ms",
@@ -899,7 +980,12 @@ public partial class IndexingPipeline
             .Select(entry => (Extension: entry.Key.ToLowerInvariant(), Limit: entry.Value))
             .OrderBy(entry => entry.Extension, StringComparer.Ordinal)
             .Select(entry => $"{entry.Extension}={entry.Limit}")
-            .Prepend($"*={_options.MaxFileSizeKb}"));
+            .Prepend($"*={_options.MaxFileSizeKb}")
+            .Append($"registration-text={_options.MaxRegistrationAnalysisTextKb}")
+            .Append($"frontend-text={_options.MaxFrontendAnalysisTextKb}")
+            .Append($"endpoint-work={_options.MaxBackendEndpointAnalysisWork};endpoint-depth={_options.MaxBackendEndpointAnalysisDepth}")
+            .Append($"tauri-work={_options.MaxTauriAnalysisWork};tauri-depth={_options.MaxTauriAnalysisDepth}")
+            .Append($"http-work={_options.MaxHttpBindingWork};http-depth={_options.MaxHttpBindingDepth}"));
 
     private const string CargoManifestFileName = "Cargo.toml";
 
@@ -1168,6 +1254,8 @@ public partial class IndexingPipeline
         if (changedFilesOnly != null)
             return changedFilesOnly
                 .Select(f => Path.Combine(rootPath, f))
+                // Go module metadata is read only by the admitted, bounded registration pass.
+                .Where(path => Path.GetFileName(path) != "go.mod")
                 .Where(_fileSystem.FileExists)
                 .ToList();
 
@@ -1176,7 +1264,7 @@ public partial class IndexingPipeline
             throw new DirectoryNotFoundException($"Repository checkout not found at '{rootPath}'.");
 
         return DiscoverPaths(rootPath, "**/*")
-            .Where(f => _extensions.IsSupportedExtension(Path.GetExtension(f)))
+            .Where(f => _extensions.IsSupportedExtension(Path.GetExtension(f)) || (_typeScriptAnalyzer is not null && IsTypeScriptPath(f)))
             .ToList();
     }
 
@@ -1243,17 +1331,18 @@ public partial class IndexingPipeline
     /// </summary>
     private List<string> FilterByHash(List<string> files, string rootPath,
         Dictionary<string, FileHashRecord> existingHashes, GraphBuffer buffer, ISet<string> oversizeFiles,
-        out int outdatedVersionFiles)
+        out int outdatedVersionFiles, IReadOnlyDictionary<string, RegistrationSourceReader.Source>? frontendInputs = null)
     {
         var changed = new List<string>();
         outdatedVersionFiles = 0;
         foreach (var file in files)
         {
             var relPath = NormalizeRelativePath(Path.GetRelativePath(rootPath, file));
-            var bytes = _fileSystem.ReadAllBytes(file);
-            var hash = Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes));
+            var bounded = frontendInputs?.GetValueOrDefault(Path.GetFullPath(file));
+            var bytes = bounded is null ? _fileSystem.ReadAllBytes(file) : null;
+            var hash = bounded?.Hash ?? Convert.ToHexString(System.IO.Hashing.XxHash3.Hash(bytes!));
             buffer.AddFileHash(relPath, hash);
-            var oversize = IsOversize(file, relPath, bytes.Length);
+            var oversize = bounded is null && IsOversize(file, relPath, bytes!.Length);
             if (oversize)
                 oversizeFiles.Add(relPath);
 
@@ -1819,7 +1908,8 @@ public partial class IndexingPipeline
                 });
     }
 
-    private Dictionary<string, LanguageStatAccumulator> ComputeLanguageStats(IReadOnlyList<string> files)
+    private Dictionary<string, LanguageStatAccumulator> ComputeLanguageStats(IReadOnlyList<string> files,
+        IReadOnlyDictionary<string, RegistrationSourceReader.Source>? frontendInputs = null)
     {
         var result = new Dictionary<string, LanguageStatAccumulator>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in files)
@@ -1831,7 +1921,7 @@ public partial class IndexingPipeline
             string content;
             try
             {
-                content = _fileSystem.ReadAllText(file);
+                content = frontendInputs?.GetValueOrDefault(Path.GetFullPath(file))?.Content ?? _fileSystem.ReadAllText(file);
             }
             catch (Exception ex)
             {

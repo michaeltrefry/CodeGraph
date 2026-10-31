@@ -1,0 +1,992 @@
+import { Node, SyntaxKind, ClassDeclaration, InterfaceDeclaration, ObjectLiteralExpression } from 'ts-morph';
+import { BoundedTextReader } from './boundedTextReader';
+import * as path from 'path';
+import { SemanticModel } from './semanticModel';
+import { DiscoveryScope } from './discoveryScope';
+import type { GraphNodeDto, PendingEdgeDto } from './protocol';
+
+type Binding = { token: Node; implementation?: ClassDeclaration; alias?: Node; multi: boolean; scope: ProviderScope };
+type ProviderScope = { owner: Node; qn: string; identity: string; bindings: Map<Node, Binding[]>; parents: ProviderScope[]; uncertain: boolean };
+type Selection = { implementations: ClassDeclaration[]; certain: boolean; token?: Node; runtime?: boolean };
+type Receiver = { contract?: InterfaceDeclaration; selection?: Selection; injected?: boolean };
+
+/** Derive Angular links exclusively from admitted declarations and imported framework APIs.
+ * Provider tables remain scoped: overrides never leak into a sibling application's injector.
+ */
+export function analyzeAngular(model: SemanticModel, nodes: GraphNodeDto[], edges: PendingEdgeDto[],
+  scope?: DiscoveryScope, diagnostic: (message: string) => void = model.diagnostic,
+  reader = new BoundedTextReader(model.root, scope ? file => scope.includesFile(file) : undefined, {}, diagnostic)): { complete: boolean; processedTemplates: string[] } {
+  const charge = (units = 1) => model.work.charge(units);
+  charge(0);
+  let complete = true;
+  const processedTemplates = new Set<string>();
+  const classes: ClassDeclaration[] = [];
+  const interfaces: InterfaceDeclaration[] = [];
+  type SourceFile = import('ts-morph').SourceFile;
+  type ImportDeclaration = import('ts-morph').ImportDeclaration;
+  const importsByFile = new Map<SourceFile, ImportDeclaration[]>();
+  const angularFiles = new Set<SourceFile>(); const externalPackagesByFile=new Map<SourceFile,Set<string>>();
+  for (const file of model.files) {
+    charge(file.getFullWidth() + 1);
+    classes.push(...file.getClasses()); interfaces.push(...file.getInterfaces());
+    const imports = model.importDeclarations(file); importsByFile.set(file, imports);
+    for (const imp of imports) {
+      // Full declaration text was reserved by the shared immutable import index.
+      charge();
+      const name = imp.getModuleSpecifierValue();
+      if (name.startsWith('@angular/')) angularFiles.add(file);
+    }
+  }
+  // Local barrels, provider/config imports and inherited framework types retain
+  // Angular evidence. A React file with no such path never needs framework API scans.
+  const importers = new Map<SourceFile, Set<SourceFile>>();
+  for (const imported of model.imports) {
+    charge(imported.filePath.length + imported.importedNamespace.length + (imported.resolvedFilePath?.length ?? 0) + 1);
+    const file = model.byPath.get(imported.filePath); if (!file) continue;
+    if(imported.classification==='external_npm_package'&&imported.importKind==='static') { if(!externalPackagesByFile.has(file)) externalPackagesByFile.set(file,new Set()); externalPackagesByFile.get(file)!.add(imported.importedNamespace); }
+    if (imported.importedNamespace.startsWith('@angular/')) angularFiles.add(file);
+    const target = imported.resolvedFilePath ? model.byPath.get(imported.resolvedFilePath) : undefined;
+    if (target) { const parents = importers.get(target) ?? new Set<SourceFile>(); parents.add(file); importers.set(target, parents); }
+  }
+  const angularQueue = [...angularFiles];
+  for (let index = 0; index < angularQueue.length; index++) for (const importer of importers.get(angularQueue[index]) ?? []) {
+    charge();
+    if (!angularFiles.has(importer)) { angularFiles.add(importer); angularQueue.push(importer); }
+  }
+  const apiIdentities = new Map<Node, Map<string, string | undefined>>();
+  const externalIdentities = new Map<Node, ReturnType<SemanticModel['externalReference']>>();
+  charge(nodes.length + 1);
+  const graphNodes = new Map(nodes.map(node => [node.qualifiedName, node]));
+  const tokenQNs = new Map<Node, string>();
+  const tokenIdentities = new Map<string, Node>();
+  function qn(node: Node): string {
+    const known = tokenQNs.get(node) ?? model.declarations.get(node);
+    if (known) return known;
+    if (Node.isPropertyDeclaration(node) || Node.isParameterDeclaration(node)) {
+      const owner = classOf(node);
+      return `${owner ? qn(owner) : model.fileQN(node)}.${node.getName()}`;
+    }
+    return model.fileQN(node);
+  }
+  // The semantic pass resolves declared types before Angular selects an injector binding.
+  // Keep its edge identities so only superseded call evidence is retracted below.
+  const callKey = (source: string, target: string) => JSON.stringify([source, target]);
+  const provisionalCalls = new Map<string, Set<PendingEdgeDto>>();
+  const injectionsBySource = new Map<string, Map<string, PendingEdgeDto[]>>();
+  const supersededEdges = new Set<PendingEdgeDto>();
+  for (const edge of edges) {
+    charge(edge.sourceQN.length + edge.targetQN.length + 1);
+    if (edge.type === 'INJECTS' && typeof edge.properties?.parameter_name === 'string') {
+      const source = injectionsBySource.get(edge.sourceQN) ?? new Map<string, PendingEdgeDto[]>();
+      const name = edge.properties.parameter_name; charge(name.length + 1);
+      const member = source.get(name) ?? []; member.push(edge); source.set(name, member); injectionsBySource.set(edge.sourceQN, source);
+    }
+    if (edge.type === 'CALLS' && !edge.properties?.call_kind) {
+      const key = callKey(edge.sourceQN, edge.targetQN);
+      const existing = provisionalCalls.get(key) ?? new Set<PendingEdgeDto>();
+      existing.add(edge); provisionalCalls.set(key, existing);
+    }
+  }
+  const directCalls = new Map([...provisionalCalls].map(([key, values]) => [key, values.values()]));
+  const redirectedCallSites = new Set<Node>();
+  const redirectedCallKeys = new Set<string>();
+  const edgeKeys = new Set<string>();
+  function addEdge(sourceQN: string, targetQN: string, type: string, properties: Record<string, unknown> = {}) {
+    // Charge the serialized output/key size before constructing either, including
+    // repeated edges that would later deduplicate. Input bytes alone do not bound this.
+    let output = (sourceQN.length + targetQN.length + type.length) * 6 + 96;
+    for (const name in properties) output += name.length + (typeof properties[name] === 'string' ? (properties[name] as string).length * 6 : 8) + 8;
+    charge(output);
+    const props = { framework: 'angular', ...properties };
+    const key = `${type}|${sourceQN}|${targetQN}|${JSON.stringify(props)}`;
+    if (!edgeKeys.has(key)) {
+      edgeKeys.add(key);
+      const direct = type === 'CALLS' ? directCalls.get(callKey(sourceQN, targetQN))?.next().value : undefined;
+      if (direct) direct.properties = model.work.createMetadata(()=>({...direct.properties, ...props}));
+      else edges.push(model.work.createEdge(()=>({ sourceQN, targetQN, type, properties: props })));
+    }
+  }
+  function emit(node: Node, qualifiedName: string, label: string, name: string, properties: Record<string, unknown> = {}) {
+    charge(qualifiedName.length + name.length + 96);
+    const existing = graphNodes.get(qualifiedName);
+    if (existing) { Object.assign(existing.properties, properties); return; }
+    const value = model.work.createNode(()=>({ label, name, qualifiedName, filePath: model.relative(node), startLine: node.getStartLineNumber(), endLine: node.getEndLineNumber(), properties }));
+    nodes.push(value); graphNodes.set(qualifiedName, value);
+  }
+  function imported(node: Node | undefined, packageName: string): string | undefined {
+    charge();
+    if (!node || packageName.startsWith('@angular/') && !angularFiles.has(node.getSourceFile())) return undefined;
+    const cached = apiIdentities.get(node);
+    if (cached?.has(packageName)) return cached.get(packageName);
+    charge(packageName.length + 1);
+    let name=model.importedApi(node,packageName);
+    if (!name && angularFiles.has(node.getSourceFile())) {
+      // Reuse admitted package provenance for named/namespace barrels and const
+      // aliases; spelling alone cannot identify a framework API.
+      if (!externalIdentities.has(node)) externalIdentities.set(node, model.externalReference(node));
+      const external = externalIdentities.get(node)?.properties;
+      if (external?.import_path === packageName && !external.member_path && typeof external.export_name === 'string') name = external.export_name;
+    }
+    const identities = cached ?? new Map<string, string | undefined>(); identities.set(packageName, name); apiIdentities.set(node, identities);
+    return name;
+  }
+
+  function decorator(node: ClassDeclaration, name: string): ObjectLiteralExpression | undefined {
+    const dec = node.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === name);
+    const value = reference(dec?.getArguments()[0]);
+    return value && Node.isObjectLiteralExpression(value) ? value : undefined;
+  }
+  function property(object: ObjectLiteralExpression | undefined, name: string): Node | undefined {
+    const member = object ? model.objectProperty(object,name) : undefined;
+    return member && Node.isPropertyAssignment(member) ? member.getInitializer() : undefined;
+  }
+  function classOf(node: Node): ClassDeclaration | undefined { return Node.isClassDeclaration(node) ? node : node.getFirstAncestorByKind(SyntaxKind.ClassDeclaration); }
+  function reference(node: Node | undefined, seen = new Set<Node>()): Node | undefined {
+    charge();
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) return reference(node.getExpression(), seen);
+    if (Node.isPropertyAccessExpression(node) && node.getExpression().getKind() === SyntaxKind.ThisKeyword) {
+      const owner = classOf(node);
+      const field = owner ? classField(owner, node.getName()) : undefined;
+      return field ? reference(field, seen) : undefined;
+    }
+    if (Node.isPropertyDeclaration(node) || Node.isParameterDeclaration(node) || Node.isPropertyAssignment(node)) {
+      const initial = node.getInitializer();
+      return initial ? reference(initial, seen) : node;
+    }
+    if (Node.isCallExpression(node) && imported(node.getExpression(), '@angular/core') === 'forwardRef') {
+      const callback = node.getArguments()[0];
+      if (callback && Node.isArrowFunction(callback)) {
+        const body = callback.getBody();
+        return reference(Node.isBlock(body) ? body.getStatements().find(Node.isReturnStatement)?.getExpression() : body, seen);
+      }
+    }
+    const resolved = model.resolve(node);
+    if (resolved && resolved !== node && (Node.isPropertyDeclaration(resolved) || Node.isPropertyAssignment(resolved) || Node.isVariableDeclaration(resolved))) return reference(resolved, seen);
+    return resolved ?? node.getSymbol()?.getDeclarations().find(declaration =>
+      model.byPath.has(model.relative(declaration)) && (Node.isVariableDeclaration(declaration) || Node.isParameterDeclaration(declaration) || Node.isPropertyDeclaration(declaration)));
+  }
+  function tokenReference(node: Node | undefined): Node | undefined {
+    const resolved = reference(node);
+    if (resolved) return resolved;
+    if (!node) return undefined;
+    let identity: string | undefined;
+    if (Node.isStringLiteral(node)) identity = `angular-token:literal:${node.getLiteralText()}`;
+    for (const origin of model.importOrigins(node)) {
+      charge(origin.specifier.length+1); const resolution=model.importResolution(node,origin.specifier);
+      if(resolution?.classification!=='external_npm_package') continue;
+      const name=imported(node,origin.specifier); if(name) identity=`angular-token:${origin.specifier}:${name}`;
+    }
+    // Preserve the prior admitted-barrel fallback without scanning unrelated imports.
+    if(!identity&&angularFiles.has(node.getSourceFile())) {
+      if(!externalIdentities.has(node)) externalIdentities.set(node,model.externalReference(node)); const external=externalIdentities.get(node)?.properties;
+      if(typeof external?.import_path==='string'&&externalPackagesByFile.get(node.getSourceFile())?.has(external.import_path)) {
+        const name=imported(node,external.import_path); if(name) identity=`angular-token:${external.import_path}:${name}`;
+      }
+    }
+    if (!identity) return undefined;
+    const previous = tokenIdentities.get(identity);
+    if (previous) return previous;
+    tokenIdentities.set(identity, node); tokenQNs.set(node, identity); return node;
+  }
+  function classField(cls: ClassDeclaration, name: string, seen = new Set<Node>()): Node | undefined {
+    if (seen.has(cls)) return undefined; seen.add(cls);
+    charge(); const field = model.classProperty(cls,name) ?? model.constructorParameter(cls,name);
+    if (field) return field;
+    const parent = reference(model.baseExpression(cls));
+    return parent && Node.isClassDeclaration(parent) ? classField(parent, name, seen) : undefined;
+  }
+  // Only raw immutable AST expansions are cached. Injector selection remains per scope.
+  const expandedValues = new Map<Node, readonly Node[]>();
+  const noValues: readonly Node[] = [];
+  const reserveReferences = (slots: number) => model.work.reserveArrayReferences(slots);
+  function values(node: Node | undefined, active = new Set<Node>()): readonly Node[] {
+    charge();
+    if (!node) return noValues;
+    model.work.checkDepth(active.size, 128);
+    if (active.has(node)) model.work.checkDepth(129, 128); // Poison cyclic metadata instead of caching a partial result.
+    const cached = expandedValues.get(node);
+    if (cached) return cached;
+    active.add(node);
+    try {
+      const value = reference(node);
+      let result: readonly Node[];
+      if (value && value !== node && !Node.isClassDeclaration(value) && !Node.isInterfaceDeclaration(value)) result = values(value, active);
+      else if (Node.isVariableDeclaration(node) || Node.isPropertyDeclaration(node)) result = values(node.getInitializer(), active);
+      else if (Node.isArrayLiteralExpression(node)) {
+        // getElements itself materializes an array; reserve before asking ts-morph for it.
+        const count = node.compilerNode.elements.length;
+        reserveReferences(count);
+        const elements = node.getElements();
+        reserveReferences(count);
+        const chunks: (readonly Node[])[] = [];
+        let length = 0;
+        for (const item of elements) {
+          const child = values(Node.isSpreadElement(item) ? item.getExpression() : item, active);
+          charge(); length += child.length; chunks.push(child);
+        }
+        reserveReferences(length);
+        const output: Node[] = new Array(length);
+        let offset = 0;
+        for (const chunk of chunks) for (const item of chunk) output[offset++] = item;
+        result = output;
+      } else if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) result = values(node.getExpression(), active);
+      else { reserveReferences(1); result = [value ?? node]; }
+      expandedValues.set(node, result); return result;
+    } finally { active.delete(node); }
+  }
+  function string(node: Node | undefined, seen = new Set<Node>()): string | undefined {
+    if (!node || seen.has(node)) return undefined; seen.add(node);
+    if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) return node.getLiteralText();
+    const value = reference(node);
+    if (value && value !== node && (Node.isVariableDeclaration(value) || Node.isPropertyDeclaration(value))) return string(value.getInitializer(), seen);
+    return undefined;
+  }
+  const interfaceTypes = new Map<Node, InterfaceDeclaration | undefined>();
+  function typeInterface(node: Node | undefined): InterfaceDeclaration | undefined {
+    charge();
+    if (!node) return undefined;
+    if (interfaceTypes.has(node)) return interfaceTypes.get(node);
+    const value = resolveInterfaceType(node); interfaceTypes.set(node, value); return value;
+  }
+  function resolveInterfaceType(node: Node): InterfaceDeclaration | undefined {
+    const value = reference(node);
+    if (value && Node.isInterfaceDeclaration(value)) return value;
+    if (Node.isTypeReference(node) && ['InjectionToken', 'ProviderToken', 'Type'].includes(imported(node.getTypeName(), '@angular/core') ?? '')) return typeInterface(node.getTypeArguments()[0]);
+    if (Node.isUnionTypeNode(node)) {
+      const candidates = new Set(node.getTypeNodes().map(typeInterface).filter((value): value is InterfaceDeclaration => !!value));
+      return candidates.size === 1 ? [...candidates][0] : undefined;
+    }
+    return undefined;
+  }
+  function tokenInterface(token: Node | undefined, seen = new Set<Node>()): InterfaceDeclaration | undefined {
+    if (!token || seen.has(token)) return undefined; seen.add(token);
+    if (Node.isInterfaceDeclaration(token)) return token;
+    if (Node.isVariableDeclaration(token) || Node.isPropertyDeclaration(token) || Node.isParameterDeclaration(token)) {
+      const typed = typeInterface(token.getTypeNode());
+      if (typed) return typed;
+      const initial = token.getInitializer();
+      if (initial && Node.isNewExpression(initial) && imported(initial.getExpression(), '@angular/core') === 'InjectionToken') return typeInterface(initial.getTypeArguments()[0]);
+      const resolved = reference(initial);
+      if (resolved && resolved !== token) return tokenInterface(resolved, seen);
+    }
+    return undefined;
+  }
+  const angular = classes.flatMap(declaration => {
+    charge(declaration.getFullWidth() + 1);
+    for (const kind of ['Component', 'NgModule', 'Directive', 'Injectable']) {
+      if (declaration.getDecorators().some(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === kind)) return [{ declaration, metadata: decorator(declaration, kind), kind }];
+    }
+    return [];
+  });
+  charge(angular.length + 1);
+  const angularByClass = new Map(angular.map(item => [item.declaration, item]));
+  const components = angular.filter(value => value.kind === 'Component');
+  const componentSet = new Set(components.map(component => component.declaration));
+  for (const cls of classes) {
+    const node = graphNodes.get(qn(cls));
+    if (!node) continue;
+    charge();
+    const angularClass = angularByClass.get(cls);
+    node.properties.is_service = angularClass?.kind === 'Injectable';
+    node.properties.is_ng_module = angularClass?.kind === 'NgModule';
+    if (componentSet.has(cls)) {
+      node.label = 'Component'; node.properties.framework = 'angular';
+      const selector = string(property(angularClass?.metadata, 'selector'));
+      const templateUrl = string(property(angularClass?.metadata, 'templateUrl'));
+      if (selector !== undefined) node.properties.selector = selector;
+      if (templateUrl !== undefined) node.properties.templateUrl = templateUrl;
+    }
+    else if (node.properties.framework === 'angular' && node.label === 'Component') {
+      node.label = 'Class'; delete node.properties.framework; delete node.properties.selector; delete node.properties.templateUrl;
+    }
+  }
+  const interfaceMembers = new Map<InterfaceDeclaration, Map<string, Node>>();
+  function members(iface: InterfaceDeclaration, seen = new Set<Node>()): Map<string, Node> {
+    charge();
+    if (interfaceMembers.has(iface)) return interfaceMembers.get(iface)!;
+    if (seen.has(iface)) return new Map(); seen.add(iface);
+    const result = new Map<string, Node>();
+    for (const parent of iface.getExtends()) {
+      const value = reference(parent.getExpression());
+      if (value && Node.isInterfaceDeclaration(value)) for (const [name, method] of members(value, seen)) { charge(); result.set(name, method); }
+    }
+    for (const member of iface.getMembers()) {
+      if (Node.isMethodSignature(member) || (Node.isPropertySignature(member) && member.getType().getCallSignatures().length > 0)) {
+        result.set(member.getName(), member);
+        const methodQN = `${qn(iface)}.${member.getName()}`;
+        emit(member, methodQN, 'Method', member.getName(), { callable: true, is_interface_member: true, is_function_property: Node.isPropertySignature(member) });
+        addEdge(qn(iface), methodQN, 'DEFINES_METHOD');
+      }
+    }
+    interfaceMembers.set(iface, result); return result;
+  }
+  for (const iface of interfaces) members(iface);
+  const implementers = new Map<InterfaceDeclaration, ClassDeclaration[]>();
+  function contracts(cls: ClassDeclaration, seen = new Set<Node>()): Set<InterfaceDeclaration> {
+    charge();
+    if (seen.has(cls)) return new Set(); seen.add(cls);
+    const result = new Set<InterfaceDeclaration>();
+    const add = (iface: InterfaceDeclaration) => {
+      charge();
+      if (result.has(iface)) return; result.add(iface);
+      for (const parent of iface.getExtends()) { const value = reference(parent.getExpression()); if (value && Node.isInterfaceDeclaration(value)) add(value); }
+    };
+    for (const expression of model.implementedExpressions(cls)) { const value = reference(expression); if (value && Node.isInterfaceDeclaration(value)) add(value); }
+    const base = reference(model.baseExpression(cls));
+    if (base && Node.isClassDeclaration(base)) for (const item of contracts(base, seen)) add(item);
+    return result;
+  }
+  function implementationMethod(cls: ClassDeclaration, name: string, seen = new Set<Node>()): string | undefined {
+    if (seen.has(cls)) return undefined; seen.add(cls);
+    charge(); const method = model.classMethod(cls,name);
+    if (method) return qn(method);
+    const prop = model.classProperty(cls,name)?.getInitializer();
+    if (prop) {
+      if (Node.isArrowFunction(prop) || Node.isFunctionExpression(prop)) return model.callables.get(prop);
+      const callable = reference(prop);
+      if (callable && model.callables.has(callable)) return model.callables.get(callable);
+    }
+    const base = reference(model.baseExpression(cls));
+    return base && Node.isClassDeclaration(base) ? implementationMethod(base, name, seen) : undefined;
+  }
+  for (const cls of classes) for (const iface of contracts(cls)) {
+    const existing = implementers.get(iface) ?? []; existing.push(cls); implementers.set(iface, existing);
+    for (const [name, member] of members(iface)) {
+      const target = implementationMethod(cls, name);
+      const owner = member.getFirstAncestorByKind(SyntaxKind.InterfaceDeclaration)!;
+      if (target) addEdge(`${qn(owner)}.${name}`, target, 'CALLS', { call_kind: 'interface_dispatch', confidence_band: 'medium', candidate: true, interface_qn: qn(iface) });
+    }
+  }
+  const scopes = new Map<Node, ProviderScope>();
+  function makeScope(owner: Node): ProviderScope {
+    let value = scopes.get(owner);
+    if (!value) { value = { owner, qn: qn(owner), identity: qn(owner), bindings: new Map(), parents: [], uncertain: false }; scopes.set(owner, value); }
+    return value;
+  }
+  const moduleDeclarations = new Map<ClassDeclaration, ClassDeclaration[]>();
+  const moduleImports = new Map<ClassDeclaration, ClassDeclaration[]>();
+  const moduleExports = new Map<ClassDeclaration, ClassDeclaration[]>();
+  const scopeForClass = (cls: ClassDeclaration): ProviderScope => makeScope(cls);
+  for (const item of angular.filter(item => item.kind === 'NgModule' || item.kind === 'Component' || item.kind === 'Directive')) {
+    const providerScope = makeScope(item.declaration);
+    if (item.kind === 'NgModule') for (const value of values(property(item.metadata, 'declarations'))) {
+      if (Node.isClassDeclaration(value)) { const owners = moduleDeclarations.get(value) ?? []; reserveReferences(1); owners.push(item.declaration); moduleDeclarations.set(value, owners); }
+    }
+    const importedValues = values(property(item.metadata, 'imports'));
+    const imports: ClassDeclaration[] = [];
+    for (const value of importedValues) {
+      if (Node.isClassDeclaration(value)) { reserveReferences(1); imports.push(value); }
+      else if (Node.isObjectLiteralExpression(value)) {
+        const module = reference(property(value, 'ngModule'));
+        collectProviders(property(value, 'providers'), providerScope);
+        if (module && Node.isClassDeclaration(module)) { reserveReferences(1); imports.push(module); }
+      }
+    }
+    moduleImports.set(item.declaration, imports);
+    const exports: ClassDeclaration[] = [];
+    for (const value of values(property(item.metadata, 'exports'))) if (Node.isClassDeclaration(value)) { reserveReferences(1); exports.push(value); }
+    moduleExports.set(item.declaration, exports);
+    for (const imported of imports) if (angularByClass.get(imported)?.kind === 'NgModule') { reserveReferences(1); providerScope.parents.push(makeScope(imported)); }
+
+  }
+  function collectProviders(node: Node | undefined, providerScope: ProviderScope, active = new Set<Node>()): void {
+    charge();
+    if (!node) return;
+    model.work.checkDepth(active.size, 128);
+    if (active.has(node)) model.work.checkDepth(129, 128);
+    active.add(node);
+    try {
+      if (Node.isParenthesizedExpression(node) || Node.isAsExpression(node) || Node.isNonNullExpression(node) || Node.isTypeAssertion(node)) { collectProviders(node.getExpression(), providerScope, active); return; }
+      if (Node.isArrayLiteralExpression(node)) {
+        for (const element of values(node)) collectProviders(element, providerScope, active);
+        return;
+      }
+      if (Node.isCallExpression(node)) {
+        const api = imported(node.getExpression(), '@angular/core');
+        if (api === 'makeEnvironmentProviders') { collectProviders(node.getArguments()[0], providerScope, active); return; }
+        if (api === 'importProvidersFrom') {
+          charge(node.getFullWidth()+1);
+          for (const argument of node.getArguments()) for (const module of values(argument)) if (Node.isClassDeclaration(module)) {
+            reserveReferences(1); providerScope.parents.push(makeScope(module));
+          }
+          return;
+        }
+      }
+      if (Node.isConditionalExpression(node)) {
+        // Set uncertainty before either branch, preserving single-provider accumulation.
+        providerScope.uncertain = true;
+        collectProviders(node.getWhenTrue(), providerScope, active); collectProviders(node.getWhenFalse(), providerScope, active); return;
+      }
+      const value = reference(node);
+      if (value && Node.isVariableDeclaration(value)) { collectProviders(value.getInitializer(), providerScope, active); return; }
+      if (value && Node.isClassDeclaration(value)) {
+        reserveReferences(1); charge(32);
+        providerScope.bindings.set(value, [{ token: value, implementation: value, multi: false, scope: providerScope }]); return;
+      }
+      if (value && value !== node && (Node.isArrayLiteralExpression(value) || Node.isObjectLiteralExpression(value))) { collectProviders(value, providerScope, active); return; }
+      if (!Node.isObjectLiteralExpression(node)) {
+        providerScope.uncertain = true; diagnostic(`angularProvider: unsupported provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
+      }
+      const token = tokenReference(property(node, 'provide'));
+      const useClass = reference(property(node, 'useClass'));
+      const alias = tokenReference(property(node, 'useExisting'));
+      if (!token || (!alias && (!useClass || !Node.isClassDeclaration(useClass)))) {
+        providerScope.uncertain = true; diagnostic(`angularProvider: unresolved provider in ${providerScope.qn}: ${node.getText().slice(0, 120)}`); return;
+      }
+      const multi = property(node, 'multi')?.getText() === 'true';
+      reserveReferences(1); charge(32);
+      const binding: Binding = { token, implementation: useClass && Node.isClassDeclaration(useClass) ? useClass : undefined, alias, multi, scope: providerScope };
+      const previous = providerScope.bindings.get(token);
+      // These arrays are built before any injector lookup. Append multi entries without
+      // repeatedly copying their entire prefix; duplicates and source order are retained.
+      if (previous && (multi || providerScope.uncertain)) previous.push(binding);
+      else providerScope.bindings.set(token, [binding]);
+    } finally { active.delete(node); }
+  }
+  for (const item of angular) {
+    const providerScope = makeScope(item.declaration);
+    collectProviders(property(item.metadata, 'providers'), providerScope);
+    collectProviders(property(item.metadata, 'viewProviders'), providerScope);
+  }
+  // Each top-level provider configuration gets its own injector table, even when two
+  // bootstraps share a source file. REGISTERS remains owned by the source file slice.
+  const configScopes = new Map<Node, ProviderScope>();
+  const configuredScopes = new Set<Node>();
+  function configScope(owner: Node, providers?: Node): ProviderScope {
+    let value = configScopes.get(owner);
+    if (!value) { value = makeScope(owner); value.qn = model.fileQN(owner); configScopes.set(owner, value); }
+    if (providers && !configuredScopes.has(owner)) { configuredScopes.add(owner); collectProviders(providers, value); }
+    return value;
+  }
+  for (const file of model.files) if (angularFiles.has(file)) for (const declaration of file.getVariableDeclarations()) {
+    const initial = declaration.getInitializer();
+    if (!initial || declaration.getFirstAncestorByKind(SyntaxKind.ClassDeclaration)) continue;
+    if (Node.isObjectLiteralExpression(initial) && property(initial, 'providers')) configScope(declaration, property(initial, 'providers'));
+    else if (Node.isArrayLiteralExpression(initial) && initial.getDescendantsOfKind(SyntaxKind.ObjectLiteralExpression).some(object => property(object, 'provide'))) configScope(declaration, initial);
+  }
+  for (const file of model.files) if (angularFiles.has(file)) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (imported(call.getExpression(), '@angular/platform-browser') !== 'bootstrapApplication') continue;
+    const component = reference(call.getArguments()[0]);
+    if (!component || !Node.isClassDeclaration(component)) continue;
+    const config = call.getArguments()[1];
+    const resolved = reference(config);
+    const declaration = config?.getSymbol()?.getDeclarations().find(Node.isVariableDeclaration) ?? resolved?.getFirstAncestorByKind(SyntaxKind.VariableDeclaration);
+    const value = configScope(declaration ?? config ?? call, resolved && Node.isObjectLiteralExpression(resolved) ? property(resolved, 'providers') : undefined);
+    if (!declaration) value.identity = `${model.fileQN(call)}#bootstrap:${qn(component)}`;
+    if (config && (!resolved || !Node.isObjectLiteralExpression(resolved))) { value.uncertain = true; diagnostic(`angularProvider: unsupported application config in ${model.relative(call)}`); }
+    reserveReferences(1); scopeForClass(component).parents.push(value);
+  }
+  const modules = angular.filter(item => item.kind === 'NgModule').map(item => item.declaration);
+  const moduleSet = new Set(modules);
+  function moduleReaches(root: ClassDeclaration, target: ClassDeclaration, seen = new Set<Node>()): boolean {
+    charge();
+    if (root === target) return true;
+    if (seen.has(root)) return false; seen.add(root);
+    return (moduleImports.get(root) ?? []).some(child => moduleSet.has(child) && moduleReaches(child, target, seen));
+  }
+  const importedModules = new Set<ClassDeclaration>();
+  for (const module of modules) for (const imported of moduleImports.get(module) ?? []) { charge(); if (module !== imported && moduleSet.has(imported)) importedModules.add(imported); }
+  const moduleRoots = modules.filter(module => !importedModules.has(module));
+  const moduleRootSet = new Set(moduleRoots);
+  for (const [cls, owners] of moduleDeclarations) {
+    const contexts: ClassDeclaration[] = [];
+    for (const root of moduleRoots) if (owners.some(owner => moduleReaches(root, owner))) { reserveReferences(1); contexts.push(root); }
+    for (const owner of contexts.length ? contexts : owners) { reserveReferences(1); scopeForClass(cls).parents.push(scopeForClass(owner)); }
+  }
+  const renderedParents = new Map<ProviderScope, Set<ProviderScope>>();
+  for (const providerScope of scopes.values()) for (const bindings of providerScope.bindings.values()) for (const binding of bindings) {
+    if (binding.implementation && binding.implementation !== providerScope.owner) { reserveReferences(1); scopeForClass(binding.implementation).parents.push(providerScope); }
+  }
+  function lookup(token: Node, providerScope: ProviderScope, seen = new Set<ProviderScope>()): { bindings: Binding[]; certain: boolean } {
+    charge(); model.work.checkDepth(seen.size, 128);
+    if (seen.has(providerScope)) return { bindings: [], certain: false }; seen.add(providerScope);
+    const local = providerScope.bindings.get(token);
+    if (local) return { bindings: local, certain: !providerScope.uncertain && local.length === 1 && !local[0].multi };
+    const parentSources = renderedParents.get(providerScope) ?? providerScope.parents;
+    reserveReferences(parentSources instanceof Set ? parentSources.size : parentSources.length);
+    const parents = [...parentSources];
+    const branches: { bindings: Binding[]; certain: boolean }[] = [];
+    for (const parent of parents) {
+      reserveReferences(seen.size);
+      const branch = lookup(token, parent, new Set(seen));
+      if (branch.bindings.length) { reserveReferences(1); branches.push(branch); }
+    }
+    // NgModule imports are ordered in one injector: later imported providers win.
+    if (Node.isClassDeclaration(providerScope.owner) && moduleSet.has(providerScope.owner) && branches.length) return branches[branches.length - 1];
+    const unique = new Set<Binding>();
+    for (const branch of branches) for (const binding of branch.bindings) {
+      charge(); if (!unique.has(binding)) { reserveReferences(1); unique.add(binding); }
+    }
+    reserveReferences(unique.size); const bindings = [...unique];
+    const targets = new Set<Node | undefined>();
+    for (const binding of bindings) { const target = binding.implementation ?? binding.alias; if (!targets.has(target)) { reserveReferences(1); targets.add(target); } }
+    return { bindings, certain: !providerScope.uncertain && branches.length > 0 && branches.every(result => result.certain) && targets.size === 1 };
+  }
+  function aliasInjectors(binding: Binding, consumingScope: ProviderScope): ProviderScope[] {
+    if (!Node.isClassDeclaration(binding.scope.owner) || !moduleSet.has(binding.scope.owner)) { reserveReferences(1); return [binding.scope]; }
+    const declaringModule = binding.scope.owner;
+    const contexts = new Set<ProviderScope>(); const visited = new Set<ProviderScope>();
+    const addContext = (scope: ProviderScope) => { if (!contexts.has(scope)) { reserveReferences(1); contexts.add(scope); } };
+    const visit = (current: ProviderScope, depth = 0) => {
+      model.work.checkDepth(depth, 128);
+      if (visited.has(current)) return; reserveReferences(1); visited.add(current);
+      if (Node.isClassDeclaration(current.owner) && moduleRootSet.has(current.owner) && moduleReaches(current.owner, declaringModule)) addContext(current);
+      for (const parent of renderedParents.get(current) ?? current.parents) visit(parent, depth + 1);
+    };
+    visit(consumingScope);
+    if (!contexts.size && consumingScope.owner === declaringModule) for (const root of moduleRoots) if (moduleReaches(root, declaringModule)) addContext(scopeForClass(root));
+    reserveReferences(contexts.size || 1); return contexts.size ? [...contexts] : [binding.scope];
+  }
+  function resolveBinding(token: Node, providerScope: ProviderScope, seen = new Set<Node>()): Selection {
+    charge(); model.work.checkDepth(seen.size, 128);
+    if (seen.has(token)) { diagnostic(`angularProvider: alias cycle at ${qn(token)}`); return { implementations: [], certain: false, token }; }
+    seen.add(token);
+    const selected = lookup(token, providerScope);
+    const implementations = new Set<ClassDeclaration>(); let certain = selected.certain;
+    const addImplementation = (value: ClassDeclaration) => { if (!implementations.has(value)) { reserveReferences(1); implementations.add(value); } };
+    for (const binding of selected.bindings) {
+      charge();
+      if (binding.alias) {
+        const contexts = aliasInjectors(binding, providerScope);
+        reserveReferences(contexts.length);
+        const targets: Selection[] = [];
+        const aliasTargets = new Set<ClassDeclaration>();
+        for (const context of contexts) {
+          reserveReferences(seen.size);
+          const target = resolveBinding(binding.alias, context, new Set(seen)); targets.push(target);
+          for (const value of target.implementations) {
+            addImplementation(value);
+            if (!aliasTargets.has(value)) { reserveReferences(1); aliasTargets.add(value); }
+          }
+        }
+        certain = certain && targets.every(target => target.certain) && aliasTargets.size === 1;
+      } else if (binding.implementation) addImplementation(binding.implementation);
+    }
+    if (!selected.bindings.length && Node.isClassDeclaration(token)) { addImplementation(token); certain = true; }
+    reserveReferences(implementations.size); return { implementations: [...implementations], certain, token };
+  }
+  for (const providerScope of scopes.values()) for (const [token, bindings] of providerScope.bindings) {
+    const selected = resolveBinding(token, providerScope);
+    for (const target of selected.implementations) addEdge(providerScope.qn, qn(target), 'REGISTERS', {
+      provider_scope: providerScope.identity, token_qn: qn(token), provider_kind: bindings.some(binding => binding.alias) ? 'useExisting' : token === target ? 'class' : 'useClass',
+      confidence_band: selected.certain ? 'high' : 'medium', candidate: !selected.certain,
+    });
+  }
+  type Selector = { selector: string; component: ClassDeclaration };
+  const byElement = new Map<string, Selector[]>();
+  const byAttribute = new Map<string, Selector[]>();
+  const byClass = new Map<string, Selector[]>();
+  const universal: Selector[] = [];
+  const indexSelector = (index: Map<string, Selector[]>, key: string, item: Selector) => {
+    charge(key.length + 1);
+    const bucket = index.get(key) ?? []; bucket.push(item); index.set(key, bucket);
+  };
+  for (const component of components) {
+    const text = string(property(component.metadata, 'selector')) ?? '';
+    charge(text.length + 1);
+    for (const raw of text.split(',')) {
+      charge(raw.length + 1);
+      const selector = raw.trim(); if (!selector) continue;
+      // The existing selector grammar uses bounded regular expressions. Charge their
+      // conservative quadratic scan cost before parsing a potentially malformed selector.
+      charge(selector.length * selector.length + 1);
+      const positive = selector.replace(/:not\(([^)]+)\)/g, '');
+      const item = {selector, component: component.declaration};
+      const element = positive.match(/^[\w-]+/);
+      const attribute = positive.match(/\[([^\]=\s]+)/);
+      const className = positive.match(/\.([\w-]+)/);
+      if (element) indexSelector(byElement, element[0].toLowerCase(), item);
+      else if (attribute) indexSelector(byAttribute, attribute[1], item);
+      else if (className) indexSelector(byClass, className[1], item);
+      else { charge(); universal.push(item); }
+    }
+  }
+  // A template's compilation scope is immutable during one extraction. Build it once
+  // per component instead of rewalking every module for each selector/tag comparison.
+  const visibleComponents = new Map<ClassDeclaration, Set<Node> | undefined>();
+  function available(owner: ClassDeclaration, target: ClassDeclaration): boolean {
+    charge();
+    if (visibleComponents.has(owner)) return visibleComponents.get(owner)?.has(target) ?? true;
+    const item = angularByClass.get(owner);
+    const explicitImports = property(item?.metadata, 'imports');
+    const modules = moduleDeclarations.get(owner) ?? [];
+    if (!explicitImports && !modules.length) { visibleComponents.set(owner, undefined); return true; }
+    const admitted = new Set<Node>(); const visited = new Set<Node>();
+    const admit = (cls: ClassDeclaration) => { if (!admitted.has(cls)) { reserveReferences(1); admitted.add(cls); } };
+    const exported = (cls: ClassDeclaration, depth = 0) => {
+      model.work.checkDepth(depth, 128);
+      if (componentSet.has(cls)) { admit(cls); return; }
+      if (visited.has(cls)) return; reserveReferences(1); visited.add(cls);
+      for (const declaration of moduleExports.get(cls) ?? []) exported(declaration, depth + 1);
+    };
+    if (explicitImports) for (const value of values(explicitImports)) if (Node.isClassDeclaration(value)) exported(value);
+    for (const module of modules) {
+      for (const [child, owners] of moduleDeclarations) { charge(owners.length + 1); if (owners.includes(module)) admit(child); }
+      for (const imported of moduleImports.get(module) ?? []) exported(imported);
+    }
+    visibleComponents.set(owner, admitted);
+    return admitted.has(target);
+  }
+
+  function htmlReference(owner: ClassDeclaration, expression: string): ClassDeclaration[] {
+    charge(expression.length * 2 + owner.getSourceFile().getFullWidth() + 1);
+    const names = expression.trim().replace(/;.*$/, '').split('.');
+    if (!names.every(name => /^[\w$]+$/.test(name))) return [];
+    if (names[0] === 'this') names.shift();
+    let declaration: Node | undefined = classField(owner, names[0]);
+    if (!declaration) {
+      const file = owner.getSourceFile();
+      declaration = model.localValueDeclaration(file,names[0]);
+      for(const binding of model.templateImports(file,names[0])) {
+        const target=model.module(file,binding.specifier);
+        if(binding.kind==='namespace') { if(names.length>1) { declaration=target?model.exported(target,names[1]):undefined; names.splice(1,1); } }
+        else declaration=target?model.exported(target,binding.name):undefined;
+      }
+    }
+    let value = reference(declaration);
+    for (const name of names.slice(1)) {
+      if (value && Node.isClassDeclaration(value)) value = reference(model.classProperty(value,name));
+      else if (value && Node.isObjectLiteralExpression(value)) value = reference(property(value, name));
+      else value = undefined;
+    }
+    return value && Node.isClassDeclaration(value) && componentSet.has(value) ? [value] : [];
+  }
+  function render(owner: ClassDeclaration, target: ClassDeclaration, templatePath: string, properties: Record<string, unknown> = {}) {
+    charge();
+    addEdge(qn(owner), qn(target), 'RENDERS', { template_path: templatePath, confidence_band: 'high', ...properties });
+    if (owner !== target) { const parents = renderedParents.get(scopeForClass(target)) ?? new Set<ProviderScope>(); parents.add(scopeForClass(owner)); renderedParents.set(scopeForClass(target), parents); }
+  }
+  for (const item of components) {
+    const inline = string(property(item.metadata, 'template'));
+    const templateUrl = string(property(item.metadata, 'templateUrl'));
+    if ((property(item.metadata, 'templateUrl') && templateUrl === undefined) || (property(item.metadata, 'template') && inline === undefined)) { complete = false; diagnostic(`angularTemplateUnresolved: ${model.relative(item.declaration)}`); continue; }
+    let html = inline; let templatePath = model.relative(item.declaration);
+    if (templateUrl !== undefined) {
+      const absolute = path.resolve(path.dirname(item.declaration.getSourceFile().getFilePath()), templateUrl);
+      templatePath = path.relative(model.root, absolute).replace(/\\/g, '/');
+      if (templatePath === '..' || templatePath.startsWith('../') || path.isAbsolute(templatePath)) { complete = false; diagnostic(`angularTemplateScope: refused ${templatePath.slice(0, 240)}`); continue; }
+      // Authoritative discovery absence represents deletion/exclusion, so recompute this
+      // owner's facts without reading the template. An admitted but unreadable file below
+      // remains incomplete and preserves prior facts.
+      if (scope && !scope.includesFile(absolute)) { diagnostic(`angularTemplateScope: outside admitted scope ${templatePath.slice(0, 240)}`); continue; }
+      html = reader.read(absolute, true);
+      if (html === undefined) { complete = false; diagnostic(`angularTemplateRead: refused ${templatePath}`); continue; }
+      processedTemplates.add(templatePath);
+    }
+    if (html === undefined) continue;
+    const seenPatterns = new Set<string>();
+    for (const tag of templateTags(html, charge)) {
+      charge(tag.attributes.length * 2 + tag.name.length + 1);
+      const attributes = new Map<string, string>();
+      for (const attr of tag.attributes.matchAll(/([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g)) {
+        charge(attr[0].length + 1);
+        attributes.set(attr[1].replace(/^(?:\[\(|\[|\(|\*)|(?:\)\]|\]|\))$/g, ''), attr[2] ?? attr[3] ?? attr[4] ?? '');
+      }
+      // Repeating an identical static tag cannot add a new render dependency or injector
+      // parent. Cache before candidate lookup/matching/rendering, not after edge dedup.
+      charge(tag.name.length + tag.attributes.length * 8 + attributes.size * 8 + 1);
+      const pattern = `${tag.name}\0${JSON.stringify([...attributes])}`;
+      if (seenPatterns.has(pattern)) continue;
+      seenPatterns.add(pattern);
+      const candidates = new Set<Selector>();
+      const append = (bucket: Selector[] | undefined) => {
+        charge((bucket?.length ?? 0) + 1);
+        for (const candidate of bucket ?? []) { charge(); candidates.add(candidate); }
+      };
+      append(byElement.get(tag.name.toLowerCase())); append(universal);
+      for (const name of attributes.keys()) { charge(name.length + 1); append(byAttribute.get(name)); }
+      const classText = attributes.get('class') ?? ''; charge(classText.length + 1);
+      for (const name of classText.split(/\s+/)) { charge(name.length + 1); append(byClass.get(name)); }
+      const matches: Selector[] = []; const targets = new Set<ClassDeclaration>();
+      for (const candidate of candidates) {
+        charge();
+        if (available(item.declaration, candidate.component) && matchesSelector(candidate.selector, tag.name, attributes, charge)) {
+          charge(2); matches.push(candidate); targets.add(candidate.component);
+        }
+      }
+      for (const {selector, component} of matches) {
+        charge();
+        render(item.declaration, component, templatePath, { render_kind: 'selector', selector, ...(targets.size > 1 ? {confidence_band:'medium', candidate:true} : {}) });
+      }
+      const outlet = attributes.get('ngComponentOutlet');
+      if (outlet) {
+        const targets = htmlReference(item.declaration, outlet);
+        if (!targets.length) diagnostic(`angularDynamicComponent: unresolved outlet ${model.relative(item.declaration)}: ${outlet.slice(0, 120)}`);
+        for (const target of targets) render(item.declaration, target, templatePath, { render_kind: 'ngComponentOutlet' });
+      }
+    }
+  }
+  const fieldDeclarations = new Map<Node, Node | undefined>();
+  function fieldDeclaration(expression: Node): Node | undefined {
+    charge();
+    if (fieldDeclarations.has(expression)) return fieldDeclarations.get(expression);
+    const declaration = declaredField(expression); fieldDeclarations.set(expression, declaration); return declaration;
+  }
+  function declaredField(expression: Node): Node | undefined {
+    if (Node.isPropertyAccessExpression(expression) && expression.getExpression().getKind() === SyntaxKind.ThisKeyword) {
+      const cls = classOf(expression);
+      return cls ? classField(cls, expression.getName()) : undefined;
+    }
+    const declarations = expression.getSymbol()?.getDeclarations() ?? []; charge(declarations.length + 1);
+    for (const declaration of declarations) {
+      if (!model.byPath.has(model.relative(declaration))) continue;
+      if (Node.isParameterDeclaration(declaration) || Node.isPropertyDeclaration(declaration) || Node.isVariableDeclaration(declaration)) return declaration;
+      if (Node.isImportSpecifier(declaration) || Node.isImportClause(declaration)) {
+        const imp = declaration.getFirstAncestorByKind(SyntaxKind.ImportDeclaration)!;
+        const file = model.module(expression, imp.getModuleSpecifierValue());
+        const target = file ? model.exported(file, Node.isImportSpecifier(declaration) ? declaration.getName() : 'default') : undefined;
+        // Preserve the declared type rather than resolving its initializer: a JS caller
+        // can use a TS-exported interface-typed value without importing Angular itself.
+        if (target && Node.isVariableDeclaration(target)) return target;
+      }
+    }
+    return undefined;
+  }
+
+  function typeNode(declaration: Node | undefined): Node | undefined { return declaration && (Node.isPropertyDeclaration(declaration) || Node.isParameterDeclaration(declaration) || Node.isVariableDeclaration(declaration)) ? declaration.getTypeNode() : undefined; }
+  function initialNode(declaration: Node | undefined): Node | undefined { return declaration && (Node.isPropertyDeclaration(declaration) || Node.isParameterDeclaration(declaration) || Node.isVariableDeclaration(declaration)) ? declaration.getInitializer() : undefined; }
+  function frameworkType(expression: Node, packageName: string, expected: string, seen = new Set<Node>()): boolean {
+    if (seen.has(expression)) return false; seen.add(expression);
+    const declaration = fieldDeclaration(expression);
+    const typed = typeNode(declaration);
+    if (typed && Node.isTypeReference(typed) && imported(typed.getTypeName(), packageName) === expected) return true;
+    const initial = initialNode(declaration);
+    if (initial && Node.isCallExpression(initial) && imported(initial.getExpression(), '@angular/core') === 'inject' && imported(initial.getArguments()[0], packageName) === expected) return true;
+    return !!initial && initial !== expression && frameworkType(initial, packageName, expected, seen);
+  }
+  const injectionCalls = new Map<Node, boolean>();
+  function injectionCall(call: Node): boolean {
+    charge();
+    if (!Node.isCallExpression(call) || !angularFiles.has(call.getSourceFile())) return false;
+    if (injectionCalls.has(call)) return injectionCalls.get(call)!;
+    const injected = isInjectionCall(call); injectionCalls.set(call, injected); return injected;
+  }
+  function isInjectionCall(call: import('ts-morph').CallExpression): boolean {
+    if (imported(call.getExpression(), '@angular/core') === 'inject') return true;
+    const expression = call.getExpression();
+    return Node.isPropertyAccessExpression(expression) && expression.getName() === 'get' && frameworkType(expression.getExpression(), '@angular/core', 'Injector');
+  }
+  // Render context must be established before any child injection is resolved.
+  for (const cls of classes) if (angularFiles.has(cls.getSourceFile())) for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (classOf(call) !== cls) continue;
+    const expression = call.getExpression();
+    let dynamic: string | undefined;
+    if (imported(expression, '@angular/core') === 'createComponent') dynamic = 'createComponent';
+    if (Node.isPropertyAccessExpression(expression)) {
+      if (expression.getName() === 'createComponent' && frameworkType(expression.getExpression(), '@angular/core', 'ViewContainerRef')) dynamic = 'viewContainer.createComponent';
+      if (expression.getName() === 'open' && frameworkType(expression.getExpression(), '@angular/material/dialog', 'MatDialog')) dynamic = 'dialog.open';
+      if (expression.getName() === 'openFromComponent' && frameworkType(expression.getExpression(), '@angular/material/snack-bar', 'MatSnackBar')) dynamic = 'snackbar.openFromComponent';
+    }
+    if (dynamic) {
+      const target = reference(call.getArguments()[0]);
+      if (target && Node.isClassDeclaration(target) && componentSet.has(target)) render(cls, target, model.relative(cls), { render_kind: dynamic, owning_callable: model.owner(call) });
+      else diagnostic(`angularDynamicComponent: unresolved ${dynamic} in ${model.relative(cls)}`);
+    }
+  }
+  function select(tokenExpression: Node | undefined, context: Node, contract?: InterfaceDeclaration): Selection {
+    const field = tokenExpression ? fieldDeclaration(tokenExpression) : undefined;
+    const token = tokenReference(tokenExpression);
+    const runtime = (!!field && Node.isPropertyDeclaration(field) && field.getDecorators().some(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Input')) || !!token && (Node.isParameterDeclaration(token) || Node.isPropertyDeclaration(token));
+    const providerScope = scopeForContext(context);
+    if (!runtime && token) return resolveBinding(token, providerScope);
+    const iface = contract ?? tokenInterface(field ?? token);
+    const implementations = new Set<ClassDeclaration>();
+    const candidateTokens = new Set<Node>(); const seenScopes = new Set<ProviderScope>();
+    const visit = (current: ProviderScope) => {
+      if (seenScopes.has(current)) return; seenScopes.add(current);
+      for (const candidate of current.bindings.keys()) if (iface && tokenInterface(candidate) === iface) candidateTokens.add(candidate);
+      current.parents.forEach(visit);
+    };
+    visit(providerScope);
+    for (const candidate of candidateTokens) resolveBinding(candidate, providerScope).implementations.forEach(value => implementations.add(value));
+    if (!implementations.size && iface && !providerScope.parents.length && !providerScope.bindings.size && !renderedParents.has(providerScope)) (implementers.get(iface) ?? []).forEach(value => implementations.add(value));
+    return { implementations: [...implementations], certain: false, token, runtime: true };
+  }
+  function receiver(expression: Node, context: Node, seen = new Set<Node>()): Receiver {
+    if (seen.has(expression)) return {}; seen.add(expression);
+    if (Node.isCallExpression(expression) && injectionCall(expression)) {
+      const typed = typeInterface(expression.getTypeArguments()[0]);
+      const contract = typed ?? tokenInterface(reference(expression.getArguments()[0]));
+      return { contract, selection: select(expression.getArguments()[0], context, contract), injected: true };
+    }
+    const declaration = fieldDeclaration(expression);
+    if (declaration) {
+      const typed = typeInterface(typeNode(declaration));
+      const initial = initialNode(declaration);
+      if (initial) {
+        const evidence = receiver(initial, context, seen);
+        if (evidence.selection || evidence.contract) return { ...evidence, contract: typed ?? evidence.contract };
+      }
+      if (Node.isParameterDeclaration(declaration)) {
+        const inject = declaration.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
+        if (inject) return { contract: typed, selection: select(inject.getArguments()[0], context, typed), injected: true };
+      }
+      if (typed) return { contract: typed };
+      const declaredType = reference(typeNode(declaration));
+      if (declaredType && Node.isClassDeclaration(declaredType)) {
+        const injected = isConstructorInjection(declaration, context);
+        return { selection: injected ? resolveBinding(declaredType, scopeForContext(context)) : { implementations: [declaredType], certain: true }, injected };
+      }
+    }
+    return {};
+  }
+  function isConstructorInjection(declaration: Node, context: Node): boolean {
+    if (!Node.isParameterDeclaration(declaration) || !Node.isConstructorDeclaration(declaration.getParent()) || !Node.isClassDeclaration(context)) return false;
+    const injector = scopes.get(context);
+    return angularByClass.has(context) || !!injector && (injector.bindings.size > 0 || injector.parents.length > 0);
+  }
+  function scopeForContext(context: Node): ProviderScope {
+    return configScopes.get(context) ?? makeScope(context);
+  }
+  function dispatch(call: import('ts-morph').CallExpression, context: Node): void {
+    const expression = call.getExpression();
+    if (!Node.isPropertyAccessExpression(expression)) return;
+    const evidence = receiver(expression.getExpression(), context);
+    const member = evidence.contract ? members(evidence.contract).get(expression.getName()) : undefined;
+    if (!member && (evidence.contract || !evidence.selection?.implementations.length)) return;
+    const targets = evidence.selection?.implementations ?? [];
+    const targetQNs = targets.map(target => implementationMethod(target, expression.getName())).filter((target): target is string => !!target);
+    if (evidence.injected && targets.length) {
+      const original = model.target(expression);
+      if (original && !targetQNs.includes(original)) {
+        const key = callKey(model.owner(call), original);
+        if (provisionalCalls.has(key)) { redirectedCallSites.add(call); redirectedCallKeys.add(key); }
+      }
+    }
+    const properties = {
+      call_kind: evidence.contract ? 'interface_dispatch' : evidence.injected ? 'injected_dispatch' : 'typed_dispatch',
+      ...(evidence.contract ? { interface_qn: qn(evidence.contract) } : {}),
+      confidence_band: evidence.selection?.certain ? 'high' : 'medium', candidate: !evidence.selection?.certain,
+      ...(evidence.selection?.token ? { token_qn: qn(evidence.selection.token) } : {}),
+    };
+    if (targets.length) {
+      for (const targetQN of targetQNs) addEdge(model.owner(call), targetQN, 'CALLS', properties);
+    } else if (member) {
+      const owner = member.getFirstAncestorByKind(SyntaxKind.InterfaceDeclaration)!;
+      addEdge(model.owner(call), `${qn(owner)}.${expression.getName()}`, 'CALLS', properties);
+    }
+  }
+  for (const cls of classes) {
+    const sites: { name: string; expression?: Node; contract?: InterfaceDeclaration }[] = [];
+    for (const ctor of cls.getConstructors()) for (const parameter of ctor.getParameters()) {
+      const inject = parameter.getDecorators().find(dec => imported(dec.getCallExpression()?.getExpression() ?? dec.getExpression(), '@angular/core') === 'Inject');
+      if (inject) sites.push({ name: parameter.getName(), expression: inject.getArguments()[0], contract: typeInterface(parameter.getTypeNode()) });
+      else if (isConstructorInjection(parameter, cls)) {
+        const token = reference(parameter.getTypeNode());
+        if (token && Node.isClassDeclaration(token)) sites.push({ name: parameter.getName(), expression: parameter.getTypeNode() });
+      }
+    }
+    for (const field of cls.getProperties()) {
+      const initial = field.getInitializer();
+      if (initial && injectionCall(initial) && Node.isCallExpression(initial)) sites.push({ name: field.getName(), expression: initial.getArguments()[0], contract: typeInterface(field.getTypeNode()) ?? typeInterface(initial.getTypeArguments()[0]) });
+    }
+    if (angularFiles.has(cls.getSourceFile())) for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (classOf(call) !== cls || !injectionCall(call) || Node.isPropertyDeclaration(call.getParent())) continue;
+      sites.push({ name: model.owner(call), expression: call.getArguments()[0], contract: typeInterface(call.getTypeArguments()[0]) });
+    }
+    if (sites.length) {
+      charge(sites.length + 1);
+      const existing = injectionsBySource.get(qn(cls));
+      for (const site of sites) for (const edge of existing?.get(site.name) ?? []) { charge(); supersededEdges.add(edge); }
+    }
+    for (const site of sites) {
+      const selected = select(site.expression, cls, site.contract);
+      for (const target of selected.implementations) addEdge(qn(cls), qn(target), 'INJECTS', {
+        parameter_name: site.name, token_qn: selected.token ? qn(selected.token) : undefined, provider_scope: scopeForClass(cls).qn,
+        confidence_band: selected.certain ? 'high' : 'medium', candidate: !selected.certain, runtime_token: !!selected.runtime, ...(selected.runtime && site.expression ? { runtime_token_expression: site.expression.getText() } : {}),
+      });
+      if (!selected.implementations.length && site.contract) addEdge(qn(cls), qn(site.contract), 'INJECTS', { parameter_name: site.name, confidence_band: 'medium', candidate: true });
+    }
+    for (const call of cls.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (classOf(call) !== cls) continue;
+      dispatch(call, cls);
+    }
+  }
+  for (const file of model.files) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (classOf(call)) continue;
+    dispatch(call, call.getAncestors().find(ancestor => configScopes.has(ancestor)) ?? file);
+  }
+  if (redirectedCallKeys.size) {
+    const retainedKeys = new Set<string>();
+    for (const file of model.files) for (const call of file.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (redirectedCallSites.has(call)) continue;
+      const target = model.target(call.getExpression());
+      if (!target) continue;
+      const key = callKey(model.owner(call), target);
+      if (redirectedCallKeys.has(key)) retainedKeys.add(key);
+    }
+    for (const key of redirectedCallKeys) if (!retainedKeys.has(key)) for (const edge of provisionalCalls.get(key) ?? []) { charge(); supersededEdges.add(edge); }
+  }
+  if (supersededEdges.size) {
+    charge(edges.length + 1);
+    let retained = 0;
+    for (const edge of edges) if (!supersededEdges.has(edge)) edges[retained++] = edge;
+    edges.length = retained;
+  }
+  charge(edges.length * 5 + interfaceMembers.size + 1);
+  diagnostic(`angularLinks: ${JSON.stringify({ components: components.length, interfaceMembers: [...interfaceMembers.values()].reduce((sum, values) => sum + values.size, 0), providerScopes: scopes.size, processedTemplates: processedTemplates.size, renders: edges.filter(edge => edge.type === 'RENDERS' && edge.properties?.framework === 'angular').length, injections: edges.filter(edge => edge.type === 'INJECTS').length, registrations: edges.filter(edge => edge.type === 'REGISTERS' && edge.properties?.framework === 'angular').length, dispatchCalls: edges.filter(edge => edge.type === 'CALLS' && edge.properties?.framework === 'angular').length })}`);
+  return { complete: complete && reader.complete, processedTemplates: [...processedTemplates].sort() };
+}
+
+function matchesSelector(selector: string, tag: string, attributes: Map<string, string>, charge: (units?: number) => void): boolean {
+  charge(selector.length * selector.length + tag.length + (attributes.get('class')?.length ?? 0) + 1);
+  const negatives: string[] = [];
+  const positive = selector.replace(/:not\(([^)]+)\)/g, (_, value: string) => { negatives.push(value); return ''; });
+  if (negatives.some(value => matchesSelector(value, tag, attributes, charge))) return false;
+  const element = positive.match(/^[\w-]+/);
+  if (element && element[0].toLowerCase() !== tag.toLowerCase()) return false;
+  for (const match of positive.matchAll(/\[([^\]=\s]+)(?:\s*=\s*["']?([^\]"']+)["']?)?\]/g)) {
+    charge(match[1].length + (match[2]?.length ?? 0) + (attributes.get(match[1])?.length ?? 0) + 1);
+    if (!attributes.has(match[1]) || (match[2] !== undefined && attributes.get(match[1]) !== match[2])) return false;
+  }
+  const classNames = new Set((attributes.get('class') ?? '').split(/\s+/));
+  for (const match of positive.matchAll(/\.([\w-]+)/g)) if (!classNames.has(match[1])) return false;
+  return !!positive && !positive.replace(/^[\w-]+/, '').replace(/\[[^\]]+\]/g, '').replace(/\.[\w-]+/g, '').trim();
+}
+
+
+/** Linear HTML scan: malformed repeated comment/script/tag prefixes must not make a
+ * backtracking search retry the rest of the template for every opening prefix. */
+function* templateTags(html: string, charge: (units?: number) => void): Generator<{name: string; attributes: string}> {
+  let index = 0;
+  let rawText: string | undefined;
+  const nameCharacter = (code: number) => code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code === 95 || code === 58 || code === 46 || code === 45;
+  while (index < html.length) {
+    charge();
+    if (html[index] !== '<') { index++; continue; }
+    if (rawText) {
+      charge(rawText.length + 3);
+      if (html.slice(index, index + rawText.length + 2).toLowerCase() !== `</${rawText}` || nameCharacter(html.charCodeAt(index + rawText.length + 2))) { index++; continue; }
+      rawText = undefined;
+    }
+    charge(4);
+    if (html.startsWith('<!--', index)) {
+      index += 4;
+      while (index < html.length) { charge(3); if (html.startsWith('-->', index)) { index += 3; break; } index++; }
+      continue;
+    }
+    const start = ++index;
+    const first = html.charCodeAt(index);
+    if (!(first >= 65 && first <= 90 || first >= 97 && first <= 122)) continue;
+    while (index < html.length && nameCharacter(html.charCodeAt(index))) { charge(); index++; }
+    charge(index - start + 1);
+    const name = html.slice(start, index);
+    const attributesStart = index;
+    let quote: string | undefined;
+    while (index < html.length) {
+      charge(); const character = html[index];
+      if (quote) { if (character === quote) quote = undefined; }
+      else if (character === '"' || character === "'") quote = character;
+      else if (character === '>' || character === '<') break;
+      index++;
+    }
+    if (html[index] !== '>') continue;
+    charge(index - attributesStart + name.length + 1);
+    const attributes = html.slice(attributesStart, index++);
+    const lower = name.toLowerCase();
+    if ((lower === 'script' || lower === 'style') && !attributes.trimEnd().endsWith('/')) { rawText = lower; continue; }
+    yield {name, attributes};
+  }
+}

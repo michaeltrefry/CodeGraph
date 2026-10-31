@@ -8,6 +8,10 @@ public record ExtractProjectRequest
     [JsonPropertyName("rootPath")]    public required string RootPath { get; init; }
     [JsonPropertyName("tsconfigPath")] public required string TsconfigPath { get; init; }
 
+    [JsonPropertyName("maxFileSizeKb")] public int MaxFileSizeKb { get; init; } = 512;
+    [JsonPropertyName("maxFileSizeKbByExtension")] public IReadOnlyDictionary<string, int> MaxFileSizeKbByExtension { get; init; } = new Dictionary<string, int>();
+    [JsonPropertyName("maxAnalysisTextKb")] public int MaxAnalysisTextKb { get; init; } = 64 * 1024;
+
     /// <summary>Repo-relative files discovery admits; the sidecar reads no file outside them.</summary>
     [JsonPropertyName("includedFiles")] public List<string>? IncludedFiles { get; init; }
 
@@ -20,6 +24,8 @@ public record ExtractProjectRequest
 
 public record ExtractProjectResponse
 {
+    /// <summary>False when any admitted source could not be read or parsed. Legacy responses default to complete.</summary>
+    [JsonPropertyName("complete")] public bool Complete { get; init; } = true;
     [JsonPropertyName("nodes")]            public List<GraphNodeDto> Nodes { get; init; } = [];
     [JsonPropertyName("edges")]            public List<PendingEdgeDto> Edges { get; init; } = [];
     [JsonPropertyName("workspacePackages")] public List<WorkspacePackageDto> WorkspacePackages { get; init; } = [];
