@@ -69,7 +69,7 @@ function extractProject(repositoryName, rootPath, tsconfigPath, log = () => { },
     }
     catch (error) {
         const refusal = error;
-        const reason = error instanceof boundedTextReader_1.SourceAdmissionError ? error.message : refusal.code === 'vite_library_analysis_incomplete' ? 'Vite library analysis work limit or cancellation' : refusal.code === 'extraction_work_incomplete' ? 'semantic analysis work limit or cancellation' : `analysis failure (${refusal.code ?? refusal.name ?? 'unknown'})`;
+        const reason = error instanceof boundedTextReader_1.SourceAdmissionError ? error.message : refusal.code === 'vite_library_analysis_incomplete' ? 'Vite library analysis work limit or cancellation' : refusal.code === 'extraction_work_incomplete' ? `semantic analysis work limit or cancellation (${(refusal.reason ?? 'unknown').slice(0, 32)})` : `analysis failure (${refusal.code ?? refusal.name ?? 'unknown'})`;
         const message = `sourceAdmission: extraction refused: ${reason.slice(0, 240)}`;
         log(message);
         return { complete: false, nodes: [], edges: [], workspacePackages: [], resolvedImports: [], unresolvedImports: [], unresolvedCalls: [], processedFiles: [], diagnostics: [message] };
@@ -301,15 +301,20 @@ function extractProjectCore(repositoryName, rootPath, tsconfigPath, log, include
     for (let index = 0; index < canonicalEdges.length; index++)
         edges[index] = canonicalEdges[index];
     edges.length = canonicalEdges.length;
+    // All producer passes are finished and every fact has the same owner. Property writes
+    // do not allocate DTOs; preserve shared canonical properties instead of cloning them.
     for (const node of nodes) {
-        work.reserveOutput('metadata', 32);
+        work.charge(192);
         node.properties.extraction_owner = 'typescript';
     }
     for (const edge of edges) {
-        work.reserveOutput('metadata', 32);
-        const keys = Object.keys(edge.properties ?? {});
-        work.charge(keys.length * 8 + 1);
-        edge.properties = { ...edge.properties, extraction_owner: 'typescript' };
+        if (edge.properties === undefined) {
+            work.reserveOutput('metadata', 32);
+            edge.properties = {};
+        }
+        else
+            work.charge(192);
+        edge.properties.extraction_owner = 'typescript';
     }
     const screenSelections = edges.filter(edge => edge.type === 'RENDERS').flatMap(edge => Array.isArray(edge.properties?.screen_selections) ? edge.properties.screen_selections :
         edge.properties?.screen_key !== undefined ? [edge.properties] : []);

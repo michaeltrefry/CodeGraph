@@ -240,3 +240,50 @@ function observe(root, action) {
         f.dispose();
     }
 });
+(0, node_test_1.default)('ownership writes do not consume DTO slots and absent edge properties reserve their one new object', () => {
+    const f = fixture({ 'only.ts': 'export function Only(){return 1;}' });
+    try {
+        // One function + one DEFINES edge + canonical planning + the edge's absent properties.
+        const result = f.run({ maxOutputItems: 4 }).result;
+        strict_1.default.equal(result.complete, true, result.diagnostics?.join('\n'));
+        strict_1.default.equal(result.nodes.length, 1);
+        strict_1.default.equal(result.edges.length, 1);
+        strict_1.default.equal(result.nodes[0].properties.extraction_owner, 'typescript');
+        strict_1.default.deepEqual(result.edges[0].properties, { extraction_owner: 'typescript' });
+        const refused = f.run({ maxOutputItems: 3 }).result;
+        empty(refused);
+        strict_1.default.ok(refused.diagnostics?.some(message => message.includes('retention_limit')));
+    }
+    finally {
+        f.dispose();
+    }
+});
+(0, node_test_1.default)('final ownership preserves canonical property identity and does not stamp nested evidence witnesses', () => {
+    const f = fixture({ 'app.tsx': 'export function handler(){} export function App(){handler();return <button onClick={handler}/>;}' });
+    const module = require('./extractionEdges');
+    const original = module.canonicalExtractionEdges;
+    const before = new Map();
+    module.canonicalExtractionEdges = edges => {
+        const result = original(edges);
+        for (const edge of result)
+            if (edge.properties)
+                before.set(edge, edge.properties);
+        return result;
+    };
+    try {
+        const result = f.run().result;
+        strict_1.default.equal(result.complete, true, result.diagnostics?.join('\n'));
+        const call = result.edges.find(edge => edge.type === 'CALLS' && edge.sourceQN === 'Core:app.tsx#App' && edge.targetQN === 'Core:app.tsx#handler');
+        strict_1.default.ok(call);
+        strict_1.default.equal(call.properties, before.get(call), 'an existing canonical property object needs no replacement');
+        strict_1.default.equal(call.properties?.extraction_owner, 'typescript');
+        strict_1.default.equal(call.properties?.call_kind, 'event_handler');
+        const evidence = call.properties?.extraction_evidence;
+        strict_1.default.deepEqual(evidence.map(value => JSON.stringify(value)).sort(), [{}, { call_kind: 'event_handler' }].map(value => JSON.stringify(value)).sort());
+        strict_1.default.ok(evidence.every(value => value.extraction_owner === undefined), 'canonical evidence remains independent of the output stamp');
+    }
+    finally {
+        module.canonicalExtractionEdges = original;
+        f.dispose();
+    }
+});
