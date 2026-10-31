@@ -108,11 +108,11 @@ public sealed class TypeScriptServerManager : ILintRunner, IDisposable, IAsyncDi
         try
         {
             TouchLastUsed();
-            // A reused v4 process omits config ASTs and semantic output from retention limits.
-            // Require v5 before sending source paths so every parser/emitter shares the bounds.
+            // A reused v5 process lacks bounded heritage and HTTP import lookups.
+            // Require v6 before sending source paths so repeated lookup work is bounded too.
             var health = await _http.GetFromJsonAsync<JsonElement>("/health", ct);
             if (!health.TryGetProperty("sourceBoundsVersion", out var bounds)
-                || !bounds.TryGetInt32(out var version) || version < 5)
+                || !bounds.TryGetInt32(out var version) || version < 6)
             {
                 _logger.LogWarning("TypeScript sidecar does not support bounded source and semantic analysis; extraction of {Repository} was refused", request.RepositoryName);
                 return null;

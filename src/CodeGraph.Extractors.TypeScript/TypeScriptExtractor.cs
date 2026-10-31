@@ -33,7 +33,7 @@ public class TypeScriptExtractor : ICodeExtractor
     /// 4 (sc-27972): frontend extensions and module-relative file-scoped identities.
     /// 5 (sc-27972): complete admitted coverage and conservative aliased request values.
     /// </remarks>
-    public string GetExtractionVersion(string extension) => "10"; // Shared configuration AST and semantic output bounds.
+    public string GetExtractionVersion(string extension) => "11"; // Shared indexed heritage and HTTP imports.
 
     public async Task<ExtractionResult> ExtractAsync(string filePath, string content,
         ExtractorContext context, CancellationToken ct = default)
