@@ -11,7 +11,7 @@ internal static class DreamModelContract
         string? Kind=null,string? Id=null,Guid? Item=null,string? Detail=null,string? ExpectedHash=null);
     internal sealed record ChallengeInput(string Id,string Reason);
     internal sealed record SearchInput(string Repository,string NamePattern="%",string? Label=null,int Limit=20);
-    internal sealed record SourceInput(string? Repository=null,string? Path=null,long? NodeId=null);
+    internal sealed record SourceInput(string? Repository=null,string? Path=null,long? NodeId=null,string Detail="auto");
 
     private const string ExampleId = "d915b0cc-f63c-4fb6-9fca-6de2af91f062";
     private static readonly string[] EvidenceKinds = ["entry", "lesson_event", "item", "challenge", "message", "graph_node", "review", "attempt", "handoff", "thread"];
@@ -109,6 +109,7 @@ internal static class DreamModelContract
                 break;
             case "dream_challenge": Require(root, "id", "reason"); break;
             case "dream_read_source":
+                properties["detail"]!["enum"] = Names("auto", "full");
                 properties["repository"]!["type"] = "string";
                 properties["path"]!["type"] = "string";
                 properties["node_id"]!["type"] = "integer";

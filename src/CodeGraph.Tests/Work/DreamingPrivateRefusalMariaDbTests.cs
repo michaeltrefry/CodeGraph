@@ -42,6 +42,8 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
             Call("trail_since", "dream_work_trail", new { since = "not a timestamp" }),
             Call("cursor_type", "dream_read", new { cursor = 42 }),
             Call("cursor_encoding", "dream_read", new { cursor = "dr:not-base64" }),
+            Call("source_detail_type", "dream_read_source", new { repository="codegraph", path="Source.cs", detail=42 }),
+            Call("source_detail_value", "dream_read_source", new { repository="codegraph", path="Source.cs", detail="preview" }),
             new CodeGraph.Services.Work.DreamToolCall("duplicate", "dream_read", JsonDocument.Parse("""{"detail":"summary","detail":"full"}""").RootElement.Clone()),
             Call("independent", "dream_read", new { id = entry.Id })
         };

@@ -42,6 +42,8 @@ public sealed class DreamExecutionScope : IDisposable
     { var old = Evidence; Evidence = evidence; return new Restore(() => Evidence = old); }
     public void MarkSourceRead(string repository, string path, long? nodeId = null, string? contentHash = null, string? indexHash = null)
     { sourceReads.Add(FileKey(repository,path)); sourceHashes[FileKey(repository,path)]=(contentHash,indexHash); if (nodeId is { } id) sourceReads.Add($"node:{id}"); }
+    public void InvalidateSourceRead(string repository,string path,long? nodeId=null)
+    { sourceReads.Remove(FileKey(repository,path));sourceHashes.Remove(FileKey(repository,path));if(nodeId is {} id)sourceReads.Remove($"node:{id}"); }
     public string? ReadFileHash(string repository,string path)=>sourceHashes.TryGetValue(FileKey(repository,path),out var proof)
         &&proof.Content is not null&&string.Equals(proof.Content,proof.Index,StringComparison.OrdinalIgnoreCase)?proof.Index:null;
     private static string FileKey(string repository,string path)=>$"file:{repository.ToLowerInvariant()}:{path.Replace('\\','/')}";
