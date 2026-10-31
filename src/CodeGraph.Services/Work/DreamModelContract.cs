@@ -48,6 +48,10 @@ internal static class DreamModelContract
         if (properties["expected_version"] is JsonObject version) version["description"] = "Current target version returned by dream_read. Reread after conflict.";
         switch (tool)
         {
+            case "dream_work_trail":
+                properties["kind"]!["enum"] = new JsonArray("revision", "attempt", "handoff", "thread", "message", "review", (JsonNode?)null);
+                properties["detail"]!["enum"] = new JsonArray("summary", "full", (JsonNode?)null);
+                break;
             case "dream_lessons":
                 // A continuation has only cursor/limit: View is required for the first page,
                 // but asking the model to repeat it would violate the executor's cursor API.

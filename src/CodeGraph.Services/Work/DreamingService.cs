@@ -53,15 +53,16 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
             await store.SaveRunAsync(run,ct);
             using var scope=DreamExecutionScope.Begin(run.Id,projectId,settings.DefaultModel);
             var messages=new List<DreamModelMessage> {new("user",JsonSerializer.Serialize(new {untrusted_data=digest.Data},WorkJson.Options))};
-            long newEntryCount=0,newLessonCount=0;
+            long newEntryCount=0,newLessonCount=0,lastInputTokens=0;
             var unknownNewEntries=false;
             for(var turn=0;turn<settings.MaxTurns;turn++)
             {
                 var remaining=settings.MaxTokensPerRun-run.InputTokens-run.OutputTokens;
                 if(remaining<=0) return await FinishAsync(run,"budget_exhausted","token_budget",ct);
-                var system=instructions.Base.Content+"\n\n"+instructions.Project.Content
-                    +DreamModelContext.RuntimeBudget(settings,turn+1,AddTokens(run.InputTokens,run.OutputTokens),remaining);
                 var tools=DreamToolSelection.Select(ModelTools,digest.Data,newEntryCount,newLessonCount,unknownNewEntries);
+                var system=instructions.Base.Content+"\n\n"+instructions.Project.Content
+                    +DreamModelContext.RuntimeBudget(settings,turn+1,AddTokens(run.InputTokens,run.OutputTokens),remaining,
+                        lastInputTokens,InputFramingBudget(messages,tools));
                 var request=new DreamModelRequest(settings.DefaultProvider,settings.DefaultModel,system,messages,tools,(int)Math.Min(remaining,8192));
                 var prepared=await model.PrepareAsync(request,ct);
                 var inputReserve=ConservativeInputBudget(system,messages,tools);
@@ -78,6 +79,7 @@ public sealed class DreamingService(IDreamingStore store, IWorkStore work, IKnow
                 var deliveredMessageCount=messages.Count;
                 var response=prepared is null?await model.CompleteAsync(request with {MaxTokens=outputLimit},ct):await prepared.CompleteAsync(outputLimit,ct);
                 if(response.InputTokens<0||response.OutputTokens<0) throw new InvalidOperationException("Provider returned invalid token usage.");
+                lastInputTokens=response.InputTokens;
                 var inputTotal=AddTokens(run.InputTokens,response.InputTokens);
                 var outputTotal=AddTokens(run.OutputTokens,response.OutputTokens);
                 run=run with {InputTokens=inputTotal,OutputTokens=outputTotal,

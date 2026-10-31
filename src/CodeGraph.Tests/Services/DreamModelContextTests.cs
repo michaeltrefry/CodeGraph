@@ -134,6 +134,22 @@ public sealed class DreamModelContextTests(Xunit.Abstractions.ITestOutputHelper 
         messages[^1].Content!.ShouldContain("NEW_UNSEEN_SOURCE");
     }
 
+    [Fact]
+    public void Replay_forecast_exposes_real_recent_charge_without_changing_the_allowance_or_overflowing()
+    {
+        var settings=new DreamSettings();
+        var text=DreamModelContext.RuntimeBudget(settings,4,70000,58000,20000,4096);
+        text.ShouldContain("Most recent generation charged 20000 input tokens");
+        text.ShouldContain("roughly 64096 tokens");
+        text.ShouldContain("planning estimate, not a new allowance");
+        text.ShouldContain("remaining balance is 58000");
+        text.ShouldContain("read.arguments");
+        text.ShouldContain("same kind, id and expected_hash");
+        DreamModelContext.RuntimeBudget(settings,1,0,128000).ShouldNotContain("Most recent generation");
+        DreamModelContext.RuntimeBudget(settings,2,1,127999,long.MaxValue,4096).ShouldContain($"roughly {long.MaxValue} tokens");
+        settings.ShouldBe(new DreamSettings());
+    }
+
     private static List<DreamModelMessage> TrailMessages(string cited, string untouched) =>
     [
         new("assistant", null, [new("trail", "dream_work_trail", JsonSerializer.SerializeToElement(new { kind = "thread", id = cited, detail = "full", expected_hash = new string('a', 64) }))]),
