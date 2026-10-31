@@ -55,7 +55,7 @@ describe('DreamingPageComponent', () => {
   });
 
   it('shows continuation lineage and separates recovered outcomes and uncertain usage from new activity', async () => {
-    const continued = { ...run, continued_from: 'previous-run', continuation_available: true, usage_uncertain: true,
+    const continued = { ...run, status: 'running', continued_from: 'previous-run', continuation_available: true, usage_uncertain: true,
       previously_applied: [{ run_id: 'previous-run', action: run.actions[0] }] };
     api['run'].mockReturnValue(of(continued));
     const fixture = await create(); await fixture.componentInstance.select(run.id); fixture.detectChanges();

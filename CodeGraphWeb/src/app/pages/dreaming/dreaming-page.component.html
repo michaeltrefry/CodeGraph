@@ -43,7 +43,7 @@
               </dl>
               @if (run.continued_from) { <p>Continued from <button type="button" class="cg-btn secondary" (click)="select(run.continued_from!)">{{ run.continued_from }}</button>. Usage and actions below belong to this attempt.</p> }
               @if (run.continuation_available) { <p class="adm-banner">Progress checkpoint saved. A later scheduled attempt can continue unfinished work.</p> }
-              @if (run.usage_uncertain) { <p role="alert" class="adm-banner err">A generation was interrupted before its usage was recorded. The totals shown exclude that uncertain usage.</p> }
+              @if (run.usage_uncertain) { <p role="alert" class="adm-banner err">Usage for a generation has not been recorded. The totals shown exclude that uncertain usage.</p> }
               @if (run.reason) { <p>{{ run.reason }}</p> }
               @if (run.previously_applied?.length) {
                 <section aria-label="Recovered prior outcomes"><h3>Previously applied outcomes</h3><p>Recovered from earlier attempts; these are not new writes by this attempt. Reverts and later edits may have changed their current state.</p>
