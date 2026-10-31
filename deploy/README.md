@@ -158,7 +158,9 @@ The `WorkImport` job and the admin routes under `/api/work/imports` (sc-27876) b
 and the KanbanBoard "SceneWorks Code Review 2026-10-27" epic into the work tracker. Both sources are only read.
 
 - **Tokens:** MCP Hub credentials `shortcut/apiToken` (read access is enough) and `kanban/apiToken` (a read-scoped
-  KanbanBoard PAT). Nothing runs without them.
+  KanbanBoard PAT). Nothing runs without them. The KanbanBoard import reads through KanbanBoard's MCP server
+  (`WorkImport__KanbanMcpUrl`, default `https://kanban-mcp.trefry.net/mcp`), the only KanbanBoard endpoint a PAT
+  authenticates; its REST API takes only a browser sign-in.
 - **Approval:** the admin routes take a web sign-in only, never a personal access token. `GET
   /api/work/imports/shortcut/settings` returns the proposed team → project table. A dry run
   (`POST .../shortcut/runs {"mode":"dry_run"}`) reports the mapping. `PUT .../shortcut/settings` with

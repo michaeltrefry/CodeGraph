@@ -279,7 +279,8 @@ public sealed class WorkImportOptions
     /// <summary>Requests per minute to Shortcut's REST API; Shortcut allows 200.</summary>
     public int ShortcutRequestsPerMinute { get; set; } = 180;
     public string ShortcutBaseUrl { get; set; } = "https://api.app.shortcut.com/api/v3/";
-    public string KanbanBaseUrl { get; set; } = "https://kanban.trefry.net/";
+    /// <summary>KanbanBoard's MCP server: the only KanbanBoard endpoint a PAT authenticates (sc-28194).</summary>
+    public string KanbanMcpUrl { get; set; } = "https://kanban-mcp.trefry.net/mcp";
     /// <summary>
     /// Where downloaded attachments are stored, relative to the host's working directory (/app in the
     /// containers). Both the API and the Jobs host read and write it, so it must be shared storage: the

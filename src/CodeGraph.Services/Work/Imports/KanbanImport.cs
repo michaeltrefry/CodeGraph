@@ -1,9 +1,10 @@
-using System.Net;
-using System.Net.Http.Headers;
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Work;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace CodeGraph.Services.Work.Imports;
 
@@ -68,61 +69,81 @@ public static class KanbanPayload
     }
 }
 
-/// <summary>KanbanBoard's REST API, authenticated with a KanbanBoard PAT stored in MCP Hub credentials as kanban/apiToken.</summary>
-public sealed class KanbanRestSource(HttpClient http, string token, RequestRateLimiter limiter) : IKanbanSource
+/// <summary>
+/// KanbanBoard read through its MCP server (sc-28194). A KanbanBoard PAT authenticates only there: the REST API takes a
+/// browser sign-in or the MCP server's internal secret, never a PAT. The PAT is stored in MCP Hub credentials as
+/// kanban/apiToken. The tools answer with the REST API's JSON, so <see cref="KanbanPayload"/> reads them as it is.
+/// </summary>
+public sealed class KanbanMcpSource(Func<string, IReadOnlyDictionary<string, object?>, CancellationToken, Task<JsonElement?>> call) : IKanbanSource
 {
     public const string HttpClientName = "work-import-kanban";
 
-    public static async Task<KanbanRestSource> CreateAsync(IHttpClientFactory factory, IMcpHubStore hub, IOptions<WorkImportOptions> options, CancellationToken ct)
+    public static async Task<KanbanMcpSource> CreateAsync(IHttpClientFactory factory, IMcpHubStore hub, IOptions<WorkImportOptions> options, CancellationToken ct)
     {
         var token = await hub.GetCredentialValueAsync("kanban", "apiToken", ct);
         if (string.IsNullOrWhiteSpace(token))
             throw WorkException.Invalid("No KanbanBoard token is configured. Set kanban/apiToken (a read-scoped KanbanBoard PAT) in MCP Hub credentials before running the KanbanBoard import.");
-        var client = factory.CreateClient(HttpClientName);
-        client.BaseAddress ??= new Uri(options.Value.KanbanBaseUrl);
-        return new KanbanRestSource(client, token.Trim(), new RequestRateLimiter(600));
+        var endpoint = new Uri(options.Value.KanbanMcpUrl);
+        var headers = new Dictionary<string, string> { ["Authorization"] = $"Bearer {token.Trim()}" };
+        var limiter = new RequestRateLimiter(600);
+        // A connection per call, as the MCP Hub shim does: an import makes a handful of calls.
+        return new KanbanMcpSource(async (tool, arguments, callCt) =>
+        {
+            await limiter.WaitAsync(callCt);
+            await using var transport = new HttpClientTransport(
+                new HttpClientTransportOptions { Endpoint = endpoint, Name = "codegraph-work-import", AdditionalHeaders = headers },
+                factory.CreateClient(HttpClientName), NullLoggerFactory.Instance, ownsHttpClient: true);
+            await using var client = await McpClient.CreateAsync(transport, cancellationToken: callCt);
+            return Read(tool, await client.CallToolAsync(tool, arguments, cancellationToken: callCt));
+        });
     }
 
-    private async Task<JsonElement?> GetAsync(string path, CancellationToken ct)
+    /// <summary>A tool's JSON answer; null for a KanbanBoard not_found, which the REST API answered 404.</summary>
+    public static JsonElement? Read(string tool, CallToolResult result)
     {
-        await limiter.WaitAsync(ct);
-        using var request = new HttpRequestMessage(HttpMethod.Get, path);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        using var response = await http.SendAsync(request, ct);
-        if (response.StatusCode == HttpStatusCode.NotFound)
-            return null;
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"KanbanBoard answered {(int)response.StatusCode} for GET {path}.", null, response.StatusCode);
-        await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var document = await JsonDocument.ParseAsync(stream, cancellationToken: ct);
+        var text = string.Concat(result.Content.OfType<TextContentBlock>().Select(block => block.Text));
+        if (result.IsError == true)
+        {
+            if (text.Contains("not_found", StringComparison.OrdinalIgnoreCase))
+                return null;
+            throw new InvalidOperationException($"KanbanBoard's {tool} failed: {text}");
+        }
+
+        using var document = JsonDocument.Parse(text);
         return document.RootElement.Clone();
     }
 
     public async Task<KanbanEpic?> GetEpicAsync(string epicId, CancellationToken ct) =>
-        await GetAsync($"api/epics/{Uri.EscapeDataString(epicId)}", ct) is { } epic ? KanbanPayload.Epic(epic) : null;
+        await call("get_epic", new Dictionary<string, object?> { ["epicId"] = epicId }, ct) is { } epic ? KanbanPayload.Epic(epic) : null;
 
     public async Task<IReadOnlyList<ShortcutDocument>> ListEpicDocumentsAsync(string epicId, CancellationToken ct) =>
-        await GetAsync($"api/epics/{Uri.EscapeDataString(epicId)}/documents", ct) is { } documents
+        await call("list_epic_documents", new Dictionary<string, object?> { ["epicId"] = epicId }, ct) is { } documents
             ? documents.EnumerateArray().Select(KanbanPayload.Document).ToList()
             : [];
 
     public async Task<IReadOnlyList<KanbanItem>> ListItemsAsync(string epicId, CancellationToken ct)
     {
-        var ids = new List<string>();
-        string? cursor = null;
-        do
+        // The list carries each item's comments, blockers and links. It hides Closed items unless asked for them.
+        var items = new Dictionary<string, KanbanItem>(StringComparer.Ordinal);
+        foreach (var status in new string?[] { null, "Closed" })
         {
-            var page = (await GetAsync($"api/items?epicId={Uri.EscapeDataString(epicId)}&limit=200" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"), ct))!.Value;
-            ids.AddRange(page.GetProperty("items").EnumerateArray().Select(item => ShortcutPayload.Str(item, "id")).OfType<string>());
-            cursor = ShortcutPayload.Str(page, "next_cursor");
-        } while (cursor is not null);
+            string? cursor = null;
+            do
+            {
+                var arguments = new Dictionary<string, object?> { ["epicId"] = epicId, ["limit"] = 200, ["include_comments"] = true };
+                if (status is not null)
+                    arguments["status"] = status;
+                if (cursor is not null)
+                    arguments["cursor"] = cursor;
+                var page = await call("list_work_items", arguments, ct)
+                    ?? throw new InvalidOperationException($"KanbanBoard's list_work_items found no epic {epicId}.");
+                foreach (var item in page.GetProperty("items").EnumerateArray().Select(KanbanPayload.Item))
+                    items.TryAdd(item.Id, item);
+                cursor = ShortcutPayload.Str(page, "next_cursor");
+            } while (cursor is not null);
+        }
 
-        var items = new List<KanbanItem>();
-        // The item read carries its comments, blockers and links.
-        foreach (var id in ids)
-            if (await GetAsync($"api/items/{id}", ct) is { } item)
-                items.Add(KanbanPayload.Item(item));
-        return items;
+        return items.Values.ToList();
     }
 }
 
