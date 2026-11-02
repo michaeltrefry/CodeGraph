@@ -206,6 +206,8 @@ public sealed partial class WorkService
         var challenge = await Knowledge.GetChallengeAsync(challengeId, ct)
             ?? throw WorkException.NotFound($"There is no challenge {challengeId}.");
         var current = await RequireEntryAsync(challenge.EntryId.ToString(), "resolve.challenge_id", null, session, ct);
+        if (actor.IsAgent)
+            AgentRefusal.ThrowIfChangingPersonsLesson(resolve.Outcome, current);
         var reason = Text(resolve.Reason, "resolve.reason", KnowledgeLimits.MaxReasonLength);
 
         KnowledgeSpec? amended = null;

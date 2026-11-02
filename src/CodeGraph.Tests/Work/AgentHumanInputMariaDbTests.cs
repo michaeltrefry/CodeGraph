@@ -156,6 +156,20 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
                 supersedes = new { id = ruleId, expected_version = await VersionAsync(ruleId) } }
         });
         (await RuleStateAsync(ruleId)).ShouldBe("rule");
+
+        // A challenge is open to the agent; amending or retracting the owner's rule through it is not.
+        var challenge = (await db.CallAsAsync(WorkTools.Challenge, new
+        {
+            open = new { id = ruleId, reason = "Contradicted by the source", evidence = new[] { new { kind = "source", summary = "Docs say otherwise" } } }
+        }, Agent)).GetProperty("challenge").GetProperty("id").GetString()!;
+        await RefusedAsync(WorkTools.Challenge, new
+        {
+            resolve = new { challenge_id = challenge, expected_version = await VersionAsync(ruleId), outcome = "amend", reason = "r", amend = new { summary = "Agent wording" } }
+        });
+        await RefusedAsync(WorkTools.Challenge, new { resolve = new { challenge_id = challenge, expected_version = await VersionAsync(ruleId), outcome = "retract", reason = "r" } });
+        await RefusedAsync(WorkTools.Record, new { project, retract = new { id = ruleId, expected_version = await VersionAsync(ruleId), reason = "r" } });
+        (await RuleStateAsync(ruleId)).ShouldBe("rule");
+
         // Merging the agent's lesson into the owner's rule is allowed: it is one more recurrence of it.
         await db.CallAsAsync(WorkTools.Record, new { project, relate = new { id = own, expected_version = await VersionAsync(own), same_as = ruleId } }, Agent);
     }

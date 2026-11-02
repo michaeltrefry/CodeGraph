@@ -42,15 +42,15 @@ internal static class AgentRefusal
 
     /// <summary>
     /// A lesson recorded from a person's prompt or review keeps its authority only as the person
-    /// wrote it: an agent may not revise it, nor merge it (relate same_as) into another lesson,
+    /// wrote it: an agent may not revise or retract it, nor merge it (relate same_as) into another lesson,
     /// which would pass its rule status on to the agent's words. A challenge is the agent's way.
     /// </summary>
     public static void ThrowIfReshapingPersonsLesson(RecordRequest request, KnowledgeView current)
     {
         if (current.Details?.Source?.Kind is not (CorrectionSourceKind.Prompt or CorrectionSourceKind.Review))
             return;
-        if (request.Revise is not null)
-            throw Forbidden($"Lesson {current.Id} is a person's own correction; an agent cannot revise it. Challenge it with your evidence instead." + Unchanged);
+        if (request.Revise is not null || request.Retract is not null)
+            throw Forbidden($"Lesson {current.Id} is a person's own correction; an agent cannot {(request.Revise is not null ? "revise" : "retract")} it. Challenge it with your evidence instead." + Unchanged);
         if (request.Relate?.SameAs is not null)
             throw Forbidden($"Lesson {current.Id} is a person's own correction; an agent cannot merge it into another lesson. " +
                 "Merge your lesson into it (relate with your lesson's id and same_as this one), or challenge it." + Unchanged);
@@ -61,6 +61,15 @@ internal static class AgentRefusal
     {
         if (replaced.Details?.Source?.Kind is CorrectionSourceKind.Prompt or CorrectionSourceKind.Review)
             throw Forbidden($"Lesson {replaced.Id} is a person's own correction; an agent cannot supersede it with its own wording. Challenge it with your evidence instead." + Unchanged);
+    }
+
+    /// <summary>Amending or retracting a person's lesson through a challenge is the owner's call; upholding it changes nothing.</summary>
+    public static void ThrowIfChangingPersonsLesson(ChallengeOutcome outcome, KnowledgeView lesson)
+    {
+        if (outcome == ChallengeOutcome.Uphold || lesson.Details?.Source?.Kind is not (CorrectionSourceKind.Prompt or CorrectionSourceKind.Review))
+            return;
+        throw Forbidden($"Lesson {lesson.Id} is a person's own correction; an agent cannot {(outcome == ChallengeOutcome.Amend ? "amend" : "retract")} it by resolving a challenge. " +
+            "The challenge stays open in the review queue for the owner." + Unchanged);
     }
 
     public static WorkException DreamSettings() =>
