@@ -21,8 +21,6 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<PruneWorkMessagesJob>();
         services.AddTransient<IIndexerRunRetentionService, IndexerRunRetentionService>();
         services.AddTransient<IndexerRunRetentionJob>();
-        // Needs IWorkImportRunner (AddCodeGraphWorkImports) where it runs.
-        services.AddTransient<WorkImportJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();
         services.AddSingleton<IJobScheduleClock, SystemJobScheduleClock>();
         services.AddTransient<IJobScheduleService, JobScheduleService>();

@@ -16,7 +16,6 @@ public class JobCommandDispatcher(
     IngestConventionEmbeddingsJob ingestConventionEmbeddingsJob,
     PruneWorkSessionsJob pruneWorkSessionsJob,
     PruneWorkMessagesJob pruneWorkMessagesJob,
-    WorkImportJob workImportJob,
     IndexerRunRetentionJob indexerRunRetentionJob,
     DreamProjectsJob dreamProjectsJob) : IJobCommandDispatcher
 {
@@ -37,7 +36,6 @@ public class JobCommandDispatcher(
             JobTypes.IngestConventionEmbeddings => Serialize(new EmptyJobRequest()),
             JobTypes.PruneWorkSessions => Serialize(new EmptyJobRequest()),
             JobTypes.PruneWorkMessages => Serialize(new EmptyJobRequest()),
-            JobTypes.WorkImport => Serialize(DeserializeOrDefault<WorkImportJobRequest>(args)),
             JobTypes.IndexerRunRetention => NormalizeRetentionArgs(args),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
@@ -66,7 +64,6 @@ public class JobCommandDispatcher(
             JobTypes.IngestConventionEmbeddings => ingestConventionEmbeddingsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.PruneWorkSessions => pruneWorkSessionsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.PruneWorkMessages => pruneWorkMessagesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
-            JobTypes.WorkImport => workImportJob.ExecuteAsync(Deserialize<WorkImportJobRequest>(argsJson), ct),
             JobTypes.IndexerRunRetention => indexerRunRetentionJob.ExecuteAsync(Deserialize<IndexerRunRetentionJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };

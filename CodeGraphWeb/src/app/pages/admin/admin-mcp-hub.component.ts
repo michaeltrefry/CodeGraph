@@ -124,7 +124,7 @@ import { extractAdminError, runAdminMutation } from './admin-resource.helpers';
           <header class="section-head">
             <div>
               <h2>Config</h2>
-              <p>Provider settings used by hub shims.</p>
+              <p>Provider settings used by hub providers.</p>
             </div>
           </header>
           <div class="form-list">
@@ -238,11 +238,9 @@ export class AdminMcpHubComponent implements OnInit {
   success = signal('');
 
   credentialRows = [
-    { providerKey: 'shortcut', credentialKey: 'apiToken', value: '' },
     { providerKey: 'rabbitmq', credentialKey: 'username', value: '' },
     { providerKey: 'rabbitmq', credentialKey: 'password', value: '' },
-    { providerKey: 'mysql', credentialKey: 'connectionString', value: '' },
-    { providerKey: 'kanban', credentialKey: 'apiToken', value: '' }
+    { providerKey: 'mysql', credentialKey: 'connectionString', value: '' }
   ];
 
   configRows = [

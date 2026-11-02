@@ -5,7 +5,6 @@ using CodeGraph.Models.Work;
 using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
 using CodeGraph.Services.Work;
-using CodeGraph.Services.Work.Imports;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
@@ -13,95 +12,16 @@ using Microsoft.Extensions.Options;
 namespace CodeGraph.Api.Controllers;
 
 /// <summary>
-/// The import administration (sc-27876, design §10): settings (the team → project table the owner
-/// approves), dry runs, imports and delta syncs as recorded runs with their mapping reports. Admins
-/// only, signed in through the web scheme: a personal access token is refused, because approving the
-/// table and starting an import are the human decisions of the migration. Shortcut and KanbanBoard are
-/// only read. Bodies and answers use the work tools' JSON (snake_case, strict).
-/// </summary>
-[ApiController]
-[Authorize(Policy = CodeGraphAuthenticationDefaults.AdminPolicy)]
-[Route("api/work/imports")]
-public sealed class WorkImportsAdminController(
-    IServiceScopeFactory scopes,
-    IHostApplicationLifetime lifetime,
-    ILogger<WorkImportsAdminController> logger,
-    WorkImportService? imports = null,
-    IWorkImportStore? store = null) : ControllerBase
-{
-    /// <summary>Said with every settings answer: the delta schedule is the owner's to create, and to remove.</summary>
-    public const string ScheduleNote =
-        "No WorkImport schedule is seeded: it needs the source token (MCP Hub credentials) and approved settings first. After the full import, " +
-        "create a WorkImport schedule (no args = Shortcut delta sync) under Admin > Schedules for the delta syncs until cutover, and remove it at cutover.";
-
-    private string User => WorkService.ActorFor(base.User).Name;
-
-    private WorkImportService Imports => imports ?? throw new WorkStoreUnavailableException();
-    private IWorkImportStore Store => store ?? throw new WorkStoreUnavailableException();
-
-    /// <summary>The saved settings of a source, or the proposal a dry run would use.</summary>
-    [HttpGet("{source}/settings")]
-    public Task<IActionResult> GetSettings(string source) =>
-        WorkImportsHttp.Answer(this, async () => new { settings = await Imports.GetSettingsAsync(source, HttpContext.RequestAborted), schedule = ScheduleNote });
-
-    /// <summary>Saves the team → project table (and member map); with approve: true it is approved and imports may run.</summary>
-    [HttpPut("{source}/settings")]
-    public Task<IActionResult> SaveSettings(string source, [FromBody] JsonElement body) =>
-        WorkImportsHttp.Answer(this, async () =>
-        {
-            var request = WorkImportsHttp.Read<ImportSettingsRequest>(body);
-            var settings = new ImportSettings(request.HoldingProjectKey.Trim().ToUpperInvariant(),
-                (request.Teams ?? []).Select(team => team with { ProjectKey = team.ProjectKey.Trim().ToUpperInvariant() }).ToList(),
-                request.Members, request.KanbanEpicId, RepositoryAliases: request.RepositoryAliases);
-            return new { settings = await Imports.SaveSettingsAsync(source, settings, request.Approve == true, User, HttpContext.RequestAborted), schedule = ScheduleNote };
-        });
-
-    /// <summary>Starts a run (dry_run, import or delta) and answers 202 with its id; read the run for its status and report.</summary>
-    [HttpPost("{source}/runs")]
-    public Task<IActionResult> StartRun(string source, [FromBody] JsonElement body) =>
-        WorkImportsHttp.Answer(this, async () =>
-        {
-            var request = body.ValueKind == JsonValueKind.Undefined ? new ImportRunRequest() : WorkImportsHttp.Read<ImportRunRequest>(body);
-            var run = await Imports.StartAsync(source, request.Mode, request.UpdatedSince, User, HttpContext.RequestAborted);
-            // A full Shortcut run takes about an hour at Shortcut's rate limit: it runs in the background,
-            // in its own scope, until it finishes or the host stops.
-            _ = Task.Run(async () =>
-            {
-                using var scope = scopes.CreateScope();
-                try
-                {
-                    await scope.ServiceProvider.GetRequiredService<WorkImportService>().ExecuteAsync(run, lifetime.ApplicationStopping);
-                }
-                catch (Exception exception)
-                {
-                    logger.LogError(exception, "Import run {RunId} stopped", run.RunId);
-                }
-            });
-            return new { run_id = run.RunId, status = ImportRunStatuses.Running, mode = run.Mode, updated_since = run.UpdatedSince, retrying = run.Retry };
-        }, StatusCodes.Status202Accepted);
-
-    [HttpGet("{source}/runs")]
-    public Task<IActionResult> ListRuns(string source, [FromQuery] int? limit) =>
-        WorkImportsHttp.Answer(this, async () => await Store.ListImportRunsAsync(source, limit ?? 20, HttpContext.RequestAborted));
-
-    /// <summary>A run with its mapping report.</summary>
-    [HttpGet("runs/{runId:guid}")]
-    public Task<IActionResult> GetRun(Guid runId) =>
-        WorkImportsHttp.Answer(this, async () => await Store.GetImportRunAsync(runId, HttpContext.RequestAborted)
-            ?? throw WorkException.NotFound($"There is no import run {runId}."));
-}
-
-/// <summary>
 /// What agents use of the imports, with a personal access token or a sign-in: the files stored with
-/// imported items, and the native-memory candidate parser of the verify-before-import flow (D18, design
-/// §10.3), which stores nothing.
+/// items imported before the 2026-11-02 cutover, and the native-memory candidate parser of the
+/// verify-before-import flow (D18, design §10.3), which stores nothing.
 /// </summary>
 [ApiController]
 [Authorize(AuthenticationSchemes = CodeGraphAuthenticationDefaults.Scheme + "," + McpPatAuthenticationDefaults.Scheme)]
 public sealed class WorkImportsController(
     ILogger<WorkImportsController> logger,
     IOptions<RepositorySourceOptions> repositorySource,
-    IWorkImportStore? store = null,
+    IWorkAttachmentStore? store = null,
     IWorkAttachmentStorage? files = null,
     IGraphStore? graph = null) : ControllerBase
 {

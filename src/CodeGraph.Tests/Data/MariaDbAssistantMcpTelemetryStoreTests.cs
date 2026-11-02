@@ -168,68 +168,35 @@ public class MariaDbAssistantMcpTelemetryStoreTests
             var encryptor = new PassthroughEncryptor();
             var hubStore = new MySqlMcpHubStore(context, encryptor);
             (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeTrue();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeFalse();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeFalse();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeFalse();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "dream_settings")).ShouldBeFalse();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "store_memory_v2")).ShouldBeFalse();
             await hubStore.ReplaceTokenEntitlementsAsync(
                 token.Id,
-                ["shortcut-shared-api", "stories-stage-file", "stories-upload-file"]);
+                ["dream_settings", "store_memory_v2"]);
             await tokenStore.SetMcpPersonalAccessTokenEntitlementModeAsync(
                 "michael", token.Id, "selected");
             (await hubStore.IsTokenEntitledAsync(token.Id, "search_graph")).ShouldBeFalse();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "shortcut-shared-api")).ShouldBeTrue();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-stage-file")).ShouldBeTrue();
-            (await hubStore.IsTokenEntitledAsync(token.Id, "stories-upload-file")).ShouldBeTrue();
-
-            var delegatedStore = new MySqlMcpProviderCredentialStore(context, encryptor);
-            await delegatedStore.UpsertAsync(new McpProviderCredentialEntity
-            {
-                ProviderKey = "shortcut",
-                Username = "alice",
-                CredentialKey = "apiToken",
-                ValidationState = "valid",
-                ProviderIdentity = "Alice Shortcut (@alice)",
-                LastValidatedAtUtc = DateTime.UtcNow,
-            }, "alice-token");
-            await delegatedStore.UpsertAsync(new McpProviderCredentialEntity
-            {
-                ProviderKey = "shortcut",
-                Username = "bob",
-                CredentialKey = "apiToken",
-                ValidationState = "valid",
-                ProviderIdentity = "Bob Shortcut (@bob)",
-                LastValidatedAtUtc = DateTime.UtcNow,
-            }, "bob-token");
-            (await delegatedStore.GetValueAsync("shortcut", " ALICE ", "apiToken"))
-                .ShouldBe("alice-token");
-            (await delegatedStore.GetValueAsync("shortcut", "bob", "apiToken"))
-                .ShouldBe("bob-token");
-            var bobSnapshot = await delegatedStore.GetSnapshotAsync("shortcut", "bob", "apiToken");
-            bobSnapshot.ShouldNotBeNull();
-            bobSnapshot.ValidationState.ShouldBe("valid");
-            bobSnapshot.ProviderIdentity.ShouldBe("Bob Shortcut (@bob)");
-            bobSnapshot.Value.ShouldBe("bob-token");
-            (await delegatedStore.DeleteAsync("shortcut", "alice", "apiToken")).ShouldBeTrue();
-            (await delegatedStore.GetValueAsync("shortcut", "alice", "apiToken")).ShouldBeNull();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "dream_settings")).ShouldBeTrue();
+            (await hubStore.IsTokenEntitledAsync(token.Id, "store_memory_v2")).ShouldBeTrue();
 
             await hubStore.CreateAuditAsync(new McpHubAuditEntity
             {
                 Username = "bob",
                 TokenId = token.Id,
-                ProviderKey = "shortcut",
-                ToolName = "stories-get-by-id",
+                ProviderKey = "rabbitmq",
+                ToolName = "rabbitmq_get_queue",
                 Action = "invoke",
                 Operation = "get",
-                CredentialMode = "delegated",
-                ProviderIdentity = "Bob Shortcut (@bob)",
+                CredentialMode = "shared",
+                ProviderIdentity = "rabbit-reader",
                 AuthorizationDecision = "allowed",
                 StatusClass = "ok",
                 Success = true,
                 CreatedAtUtc = DateTime.UtcNow,
             });
             var audit = (await hubStore.ListAuditAsync(10)).ShouldHaveSingleItem();
-            audit.CredentialMode.ShouldBe("delegated");
-            audit.ProviderIdentity.ShouldBe("Bob Shortcut (@bob)");
+            audit.CredentialMode.ShouldBe("shared");
+            audit.ProviderIdentity.ShouldBe("rabbit-reader");
 
             (await tokenStore.RevokeMcpPersonalAccessTokenAsync("michael", token.Id, DateTime.UtcNow)).ShouldBeTrue();
 

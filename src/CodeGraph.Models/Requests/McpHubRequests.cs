@@ -22,5 +22,3 @@ public sealed record McpHubSensitiveColumnWriteRequest(
     string ColumnName,
     string? Reason,
     bool Allowed);
-
-public sealed record McpProviderCredentialWriteRequest(string Value);

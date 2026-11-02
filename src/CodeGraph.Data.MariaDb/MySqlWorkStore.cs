@@ -668,16 +668,18 @@ public sealed partial class MySqlWorkStore(
 
     /// <summary>
     /// sc-N naming a Shortcut epic (sc-27930): Shortcut's epics and stories share one number space, so
-    /// people name an epic as sc-N too. It resolves through the epic's import record to its feature.
+    /// people name an epic as sc-N too. It resolves to the feature imported from that epic, whose
+    /// imported provenance names it (external_id sc-epic-N).
     /// </summary>
     private static async Task<TargetRow?> FindImportedEpicAsync(MySqlConnection connection, string value, CancellationToken ct)
     {
         if (WorkReferences.NormalizeAlias(value) is not { } alias || !alias.StartsWith("sc-", StringComparison.Ordinal))
             return null;
-        return await connection.QuerySingleOrDefaultAsync<TargetRow>(new CommandDefinition(
-            "SELECT 'feature' AS kind, f.id, f.project_id FROM work_import_records r JOIN work_features f ON f.id = r.entity_id " +
-            "WHERE r.source = 'shortcut' AND r.external_kind = 'epic' AND r.external_id = @externalId",
-            new { externalId = alias["sc-".Length..] }, cancellationToken: ct));
+        return await connection.QueryFirstOrDefaultAsync<TargetRow>(new CommandDefinition(
+            "SELECT 'feature' AS kind, f.id, f.project_id FROM work_features f " +
+            "WHERE f.imported_json IS NOT NULL AND JSON_VALUE(f.imported_json, '$.source') = 'shortcut' " +
+            "AND JSON_VALUE(f.imported_json, '$.external_id') = @externalId ORDER BY f.created_at, f.id",
+            new { externalId = "sc-epic-" + alias["sc-".Length..] }, cancellationToken: ct));
     }
 
     public async Task<WorkTarget?> ResolveAsync(string idOrKey,CancellationToken ct=default)

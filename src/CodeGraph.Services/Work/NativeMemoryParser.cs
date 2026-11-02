@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using CodeGraph.Models.Work;
 
-namespace CodeGraph.Services.Work.Imports;
+namespace CodeGraph.Services.Work;
 
 /// <summary>One native-memory file's text, as the importing agent read it (source files are never modified).</summary>
 public sealed record MemoryFile(string Path, string Content);

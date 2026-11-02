@@ -51,7 +51,6 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IMcpPersonalAccessTokenStore, MySqlMcpPersonalAccessTokenStore>();
         services.AddTransient<IMcpHubStore, MySqlMcpHubStore>();
         services.AddTransient<IMcpSensitiveColumnStore, MySqlMcpSensitiveColumnStore>();
-        services.AddTransient<IMcpProviderCredentialStore, MySqlMcpProviderCredentialStore>();
         services.AddTransient<IMetricsEventStore, MySqlMetricsEventStore>();
         services.AddTransient<IAdminReportsStore, MySqlAdminReportsStore>();
         services.AddTransient<IApplicationLogStore, MySqlApplicationLogStore>();
@@ -62,7 +61,7 @@ public static class MariaDbServiceCollectionExtensions
         // The knowledge store (S5) is the work store: save points share the work write's transaction.
         services.AddTransient<IKnowledgeStore, MySqlWorkStore>();
         // Imports (sc-27876) write through the work store, with its locks and change feed.
-        services.AddTransient<IWorkImportStore, MySqlWorkStore>();
+        services.AddTransient<IWorkAttachmentStore, MySqlWorkStore>();
 
         return services;
     }

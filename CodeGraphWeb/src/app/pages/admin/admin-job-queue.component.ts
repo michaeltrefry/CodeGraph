@@ -16,7 +16,7 @@ const operationLabels: Record<string, string> = {
   DetectCommunities: 'Detect communities', RegenerateMcpDocs: 'Regenerate MCP docs',
   AssistantRetentionCleanup: 'Assistant retention cleanup', IngestConventionEmbeddings: 'Ingest convention embeddings',
   PruneWorkSessions: 'Prune work sessions', PruneWorkMessages: 'Prune work messages',
-  WorkImport: 'Import work', IndexerRunRetention: 'Indexer run retention'
+  IndexerRunRetention: 'Indexer run retention'
 };
 
 export function parseUtcDate(value: string | null): Date | null {

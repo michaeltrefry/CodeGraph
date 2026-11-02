@@ -14,8 +14,7 @@ namespace CodeGraph.Api.Controllers;
 public sealed class AdminMcpHubController(
     IMcpHubStore store,
     IMcpSensitiveColumnStore sensitiveColumnStore,
-    McpHubCatalogSeeder seeder,
-    McpShimDiscoveryService shimDiscovery) : ControllerBase
+    McpHubCatalogSeeder seeder) : ControllerBase
 {
     [HttpGet("catalog")]
     public async Task<ActionResult<McpHubCatalogResponse>> Catalog(CancellationToken ct)
@@ -68,27 +67,6 @@ public sealed class AdminMcpHubController(
             ct)
             ? NoContent()
             : NotFound();
-    }
-
-    /// <summary>
-    /// Runs downstream-MCP shim discovery for a provider: connects to its configured
-    /// downstream MCP server, lists its tools, and syncs them into the catalog as shim tools.
-    /// Newly discovered tools are inactive and not default-selected until an admin enables them.
-    /// </summary>
-    [HttpPost("providers/{providerKey}/discover")]
-    public async Task<ActionResult<McpShimDiscoveryResponse>> DiscoverShimProvider(
-        string providerKey,
-        CancellationToken ct)
-    {
-        try
-        {
-            var result = await shimDiscovery.DiscoverAsync(providerKey, UpdatedBy(), ct);
-            return Ok(result);
-        }
-        catch (McpShimDiscoveryException ex)
-        {
-            return Problem(detail: ex.Message, statusCode: StatusCodes.Status502BadGateway);
-        }
     }
 
     [HttpGet("credentials")]

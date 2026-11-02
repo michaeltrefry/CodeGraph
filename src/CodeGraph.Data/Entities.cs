@@ -627,8 +627,7 @@ public class McpHubToolEntity
     public string ToolName { get; set; } = "";
     public string ProviderKey { get; set; } = "";
 
-    // System-owned: native | provider | shim. Native CodeGraph tools and first-party
-    // provider tools are catalog-seeded; shim tools are discovered from a downstream MCP server.
+    // System-owned: native | provider. Both are catalog-seeded.
     public string ProviderType { get; set; } = "native";
 
     public string DisplayName { get; set; } = "";
@@ -648,10 +647,6 @@ public class McpHubToolEntity
     // UI grouping label: read | write | admin.
     public string AccessClass { get; set; } = "read";
     public bool RequiresCredential { get; set; }
-
-    // JSON input schema captured from a downstream MCP server during discovery. Null for
-    // native/provider tools, whose schema is served by the MCP SDK.
-    public string? InputSchema { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
     public DateTime UpdatedAtUtc { get; set; }
@@ -682,7 +677,8 @@ public class McpHubAuditEntity
     public long? TokenId { get; set; }
     public string ProviderKey { get; set; } = "";
 
-    // native | provider | shim — which kind of provider served the invocation.
+    // native | provider — which kind of provider served the invocation (rows written before
+    // migration 112 may read shim).
     public string ProviderType { get; set; } = "provider";
 
     public string ToolName { get; set; } = "";
@@ -697,31 +693,6 @@ public class McpHubAuditEntity
     public bool Success { get; set; }
     public string? Message { get; set; }
     public DateTime CreatedAtUtc { get; set; }
-}
-
-public class McpProviderCredentialEntity
-{
-    public long Id { get; set; }
-    public string ProviderKey { get; set; } = "";
-    public string Username { get; set; } = "";
-    public string CredentialKey { get; set; } = "";
-    public string? EncryptedValue { get; set; }
-
-    // Non-reversible fingerprint of the secret, safe to show in the UI.
-    public string? TokenFingerprint { get; set; }
-
-    // Provider-side identity captured at validation (e.g. Shortcut member name/mention).
-    // Note: this is NOT required to match the CodeGraph username.
-    public string? ProviderIdentity { get; set; }
-
-    // unverified | valid | invalid
-    public string ValidationState { get; set; } = "unverified";
-    public string? ValidationMessage { get; set; }
-    public DateTime? LastValidatedAtUtc { get; set; }
-    public DateTime? LastAttemptAtUtc { get; set; }
-    public DateTime? ExpiresAtUtc { get; set; }
-    public DateTime CreatedAtUtc { get; set; }
-    public DateTime UpdatedAtUtc { get; set; }
 }
 
 public class McpSensitiveColumnEntity

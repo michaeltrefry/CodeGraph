@@ -24,13 +24,13 @@ public class McpToolEntitlementMiddlewareTests
             [
                 new() { ProviderKey = "codegraph", Enabled = true },
                 new() { ProviderKey = "mysql", Enabled = true },
-                new() { ProviderKey = "shortcut", Enabled = false }
+                new() { ProviderKey = "rabbitmq", Enabled = false }
             ],
             Tools =
             [
                 new() { ToolName = "search_graph", ProviderKey = "codegraph", Enabled = true },
                 new() { ToolName = "mysql_readonly_query", ProviderKey = "mysql", Enabled = true },
-                new() { ToolName = "shortcut_search_epics", ProviderKey = "shortcut", Enabled = true },
+                new() { ToolName = "rabbitmq_list_queues", ProviderKey = "rabbitmq", Enabled = true },
                 new() { ToolName = "disabled_tool", ProviderKey = "codegraph", Enabled = false }
             ]
         };
@@ -42,7 +42,7 @@ public class McpToolEntitlementMiddlewareTests
 
         var middleware = CreateMiddleware(
             context => context.Response.WriteAsync("""
-                {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"mysql_readonly_query"},{"name":"shortcut_search_epics"},{"name":"disabled_tool"},{"name":"not_cataloged"}]}}
+                {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"mysql_readonly_query"},{"name":"rabbitmq_list_queues"},{"name":"disabled_tool"},{"name":"not_cataloged"}]}}
                 """),
             serviceProvider.GetRequiredService<IServiceScopeFactory>());
 
@@ -57,26 +57,25 @@ public class McpToolEntitlementMiddlewareTests
         var body = await new StreamReader(context.Response.Body).ReadToEndAsync();
         body.ShouldContain("\"search_graph\"");
         body.ShouldNotContain("mysql_readonly_query");
-        body.ShouldNotContain("shortcut_search_epics");
+        body.ShouldNotContain("rabbitmq_list_queues");
         body.ShouldNotContain("disabled_tool");
         body.ShouldNotContain("not_cataloged");
     }
 
     [Fact]
-    public async Task InvokeAsync_ToolsList_ExcludesUploadToolsForLegacyAll_AndIncludesExplicitSelection()
+    public async Task InvokeAsync_ToolsList_ExcludesExplicitOnlyToolsForLegacyAll_AndIncludesExplicitSelection()
     {
         var store = new InMemoryMcpHubStore();
         await store.UpsertProviderAsync(new McpHubProviderEntity { ProviderKey = "codegraph", Enabled = true });
-        await store.UpsertProviderAsync(new McpHubProviderEntity { ProviderKey = "shortcut", Enabled = true });
         await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "search_graph", ProviderKey = "codegraph", Enabled = true, IsAvailable = true });
-        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "stories-stage-file", ProviderKey = "shortcut", Enabled = true, IsAvailable = true });
-        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "stories-upload-file", ProviderKey = "shortcut", Enabled = true, IsAvailable = true });
+        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "store_memory_v2", ProviderKey = "codegraph", Enabled = true, IsAvailable = true });
+        await store.UpsertToolAsync(new McpHubToolEntity { ToolName = "dream_settings", ProviderKey = "codegraph", Enabled = true, IsAvailable = true });
 
         using var serviceProvider = new ServiceCollection()
             .AddSingleton<IMcpHubStore>(store)
             .BuildServiceProvider(validateScopes: true);
         var response = """
-            {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"stories-stage-file"},{"name":"stories-upload-file"}]}}
+            {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"search_graph"},{"name":"store_memory_v2"},{"name":"dream_settings"}]}}
             """;
         var middleware = CreateMiddleware(
             context => context.Response.WriteAsync(response),
@@ -88,18 +87,18 @@ public class McpToolEntitlementMiddlewareTests
         legacyContext.Response.Body.Position = 0;
         var legacyBody = await new StreamReader(legacyContext.Response.Body).ReadToEndAsync();
         legacyBody.ShouldContain("search_graph");
-        legacyBody.ShouldNotContain("stories-stage-file");
-        legacyBody.ShouldNotContain("stories-upload-file");
+        legacyBody.ShouldNotContain("store_memory_v2");
+        legacyBody.ShouldNotContain("dream_settings");
 
-        await store.ReplaceTokenEntitlementsAsync(42, ["stories-stage-file", "stories-upload-file"]);
+        await store.ReplaceTokenEntitlementsAsync(42, ["store_memory_v2", "dream_settings"]);
         var selectedContext = CreateMcpContext("""{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}""");
         selectedContext.User = PrincipalWithToken(42);
         await middleware.InvokeAsync(selectedContext);
         selectedContext.Response.Body.Position = 0;
         var selectedBody = await new StreamReader(selectedContext.Response.Body).ReadToEndAsync();
         selectedBody.ShouldNotContain("search_graph");
-        selectedBody.ShouldContain("stories-stage-file");
-        selectedBody.ShouldContain("stories-upload-file");
+        selectedBody.ShouldContain("store_memory_v2");
+        selectedBody.ShouldContain("dream_settings");
     }
 
     [Theory]
@@ -183,8 +182,8 @@ public class McpToolEntitlementMiddlewareTests
     {
         var store = new RecordingMcpHubStore
         {
-            Providers = [new() { ProviderKey = "shortcut", Enabled = false }],
-            Tools = [new() { ToolName = "shortcut_search_epics", ProviderKey = "shortcut", Enabled = true }]
+            Providers = [new() { ProviderKey = "rabbitmq", Enabled = false }],
+            Tools = [new() { ToolName = "rabbitmq_list_queues", ProviderKey = "rabbitmq", Enabled = true }]
         };
 
         using var serviceProvider = new ServiceCollection()
@@ -200,7 +199,7 @@ public class McpToolEntitlementMiddlewareTests
             serviceProvider.GetRequiredService<IServiceScopeFactory>());
 
         var context = CreateMcpContext("""
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"shortcut_search_epics","arguments":{}}}
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rabbitmq_list_queues","arguments":{}}}
             """);
         context.User = PrincipalWithToken(42);
 

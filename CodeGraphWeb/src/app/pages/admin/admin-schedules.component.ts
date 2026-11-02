@@ -239,8 +239,7 @@ export class AdminSchedulesComponent implements OnInit {
     { value: 'DetectCommunities', label: 'Detect Communities', description: 'Re-run community detection using the current graph edges.' },
     { value: 'RegenerateMcpDocs', label: 'Regenerate MCP Docs', description: 'Rebuild MCP documentation wiki pages from current tool metadata.' },
     { value: 'PruneWorkSessions', label: 'Prune Work Sessions', description: 'Delete agent work sessions that ended or went idle beyond the retention window (default 30 days), keeping any still referenced by history.' },
-    { value: 'IndexerRunRetention', label: 'Indexer Run Retention', description: 'Delete resolved terminal indexer runs older than the retention window (default 30 days). Active runs and unresolved failures are kept.' },
-    { value: 'WorkImport', label: 'Work Import (Shortcut delta sync)', description: 'Bring Shortcut changes since the last completed import into the work tracker (read-only on Shortcut). Needs an approved team-to-project table.' }
+    { value: 'IndexerRunRetention', label: 'Indexer Run Retention', description: 'Delete resolved terminal indexer runs older than the retention window (default 30 days). Active runs and unresolved failures are kept.' }
   ];
 
   schedules = signal<JobSchedule[]>([]);

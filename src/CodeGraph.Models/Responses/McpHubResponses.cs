@@ -51,31 +51,6 @@ public sealed record McpHubSensitiveColumnResponse(
     bool IsManual,
     DateTime UpdatedAtUtc);
 
-public sealed record McpProviderCredentialResponse(
-    string ProviderKey,
-    string CredentialKey,
-    bool HasValue,
-    string? TokenFingerprint,
-    string? ProviderIdentity,
-    string ValidationState,
-    string? ValidationMessage,
-    DateTime? LastValidatedAtUtc,
-    DateTime? LastAttemptAtUtc,
-    DateTime? ExpiresAtUtc,
-    DateTime UpdatedAtUtc);
-
-public sealed record McpProviderCredentialWriteResult(
-    bool Stored,
-    string ValidationState,
-    string? ProviderIdentity,
-    string? Message);
-
-public sealed record McpShimDiscoveryResponse(
-    string ProviderKey,
-    int DiscoveredCount,
-    int RetiredCount,
-    IReadOnlyList<string> ToolNames);
-
 public sealed record McpHubAuditResponse(
     long Id,
     string? Username,
