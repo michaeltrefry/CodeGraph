@@ -7,9 +7,9 @@ import { MessageView, WorkChange, actorLabel } from './work.models';
 const agent = { name: 'michael', kind: 'session' as const, session_id: 's1', harness: 'claude-code', model: 'opus', host: 'mac-studio' };
 
 describe('actorLabel', () => {
-  it('names a person plainly and an agent session with harness, model and host (E3)', () => {
+  it('names a person plainly and a legacy session with harness, model and host (E3)', () => {
     expect(actorLabel({ name: 'michael', kind: 'user' })).toBe('michael');
-    expect(actorLabel(agent)).toBe('michael (claude-code / opus @ mac-studio)');
+    expect(actorLabel(agent)).toBe('claude-code / opus @ mac-studio');
   });
 });
 

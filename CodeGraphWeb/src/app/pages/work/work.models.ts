@@ -14,7 +14,7 @@ export const MESSAGE_KINDS: readonly MessageKind[] = ['info', 'question', 'reque
 
 export interface WorkActor {
   name: string;
-  kind: 'user' | 'session' | 'system';
+  kind: 'user' | 'session' | 'agent' | 'system';
   session_id?: string;
   harness?: string;
   model?: string;
@@ -329,13 +329,8 @@ export class WorkApiError extends Error {
   }
 }
 
-/** The actor of a write as a short label: a person, or "harness / model @ host" for a session. */
-export function actorLabel(actor: Pick<WorkActor, 'name' | 'kind' | 'harness' | 'model' | 'host'>): string {
-  if (actor.kind !== 'session') return actor.name;
-  const detail = [actor.harness, actor.model].filter(Boolean).join(' / ');
-  const where = actor.host ? ` @ ${actor.host}` : '';
-  return `${actor.name} (${detail}${where})`;
-}
+// The label of an actor is shared with the knowledge pages.
+export { actorLabel } from '../../core/actor-label';
 
 /** GitHub evidence of an item (S6): pushes, pull requests, reviews and comments, authored by a GitHub login. */
 export interface GitHubEvidence {

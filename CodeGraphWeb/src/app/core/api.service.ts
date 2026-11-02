@@ -40,6 +40,7 @@ import {
   ImpactReport,
   DatabaseHealthResponse,
   AdminUserResponse,
+  AgentSummary,
   AgentPromptGroupResponse,
   AgentPromptResponse,
   DatabaseSourceResponse,
@@ -312,6 +313,43 @@ export class ApiService {
 
   removeAdmin(username: string): Observable<void> {
     return this.http.delete<void>(`${API}/admin/admins/${encodeURIComponent(username)}`);
+  }
+
+  // Agents (non-human identities) and their MCP tokens
+  listAgents(): Observable<AgentSummary[]> {
+    return this.http.get<AgentSummary[]>(`${API}/admin/agents`);
+  }
+
+  createAgent(name: string): Observable<AgentSummary> {
+    return this.http.post<AgentSummary>(`${API}/admin/agents`, { name });
+  }
+
+  updateAgent(id: number, patch: { name?: string; disabled?: boolean }): Observable<AgentSummary> {
+    return this.http.patch<AgentSummary>(`${API}/admin/agents/${id}`, patch);
+  }
+
+  deleteAgent(id: number): Observable<void> {
+    return this.http.delete<void>(`${API}/admin/agents/${id}`);
+  }
+
+  listAgentTokens(agentId: number): Observable<McpPersonalAccessTokenMetadata[]> {
+    return this.http.get<McpPersonalAccessTokenMetadata[]>(`${API}/admin/agents/${agentId}/tokens`);
+  }
+
+  createAgentToken(agentId: number, name: string, expiresInDays: number, toolNames?: string[]): Observable<McpPersonalAccessTokenCreateResponse> {
+    return this.http.post<McpPersonalAccessTokenCreateResponse>(
+      `${API}/admin/agents/${agentId}/tokens`,
+      { name, expiresInDays, toolNames });
+  }
+
+  updateAgentTokenTools(agentId: number, tokenId: number, toolNames: string[]): Observable<McpPersonalAccessTokenMetadata> {
+    return this.http.put<McpPersonalAccessTokenMetadata>(
+      `${API}/admin/agents/${agentId}/tokens/${tokenId}/tools`,
+      { toolNames });
+  }
+
+  revokeAgentToken(agentId: number, tokenId: number): Observable<void> {
+    return this.http.delete<void>(`${API}/admin/agents/${agentId}/tokens/${tokenId}`);
   }
 
   // Admin prompt overrides
