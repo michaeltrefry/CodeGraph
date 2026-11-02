@@ -219,6 +219,7 @@ public static class Startup
         services.AddTransient<IAttachmentService, AttachmentService>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<McpPersonalAccessTokenService>();
+        services.AddTransient<AgentService>();
         services.AddTransient<IMetricsEventPublisher, MetricsEventPublisher>();
         services.AddTransient<IGraphOverviewService, GraphOverviewService>();
         services.AddTransient<ICommitScopeResolver, CommitScopeResolver>();

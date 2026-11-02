@@ -21,8 +21,10 @@ public sealed record McpPersonalAccessTokenCreateResult(
     string? ErrorCode,
     string? ErrorMessage);
 
+/// <summary>A valid token: its owner's name, and for an agent's token the agent (whose current name it is).</summary>
 public sealed record McpPersonalAccessTokenValidationResult(
     long TokenId,
     string Username,
     string TokenName,
-    DateTime ExpiresAtUtc);
+    DateTime ExpiresAtUtc,
+    long? AgentId = null);

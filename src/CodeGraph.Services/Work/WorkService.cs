@@ -66,7 +66,10 @@ public sealed partial class WorkService(
         ?? store as IKnowledgeStore
         ?? throw new WorkStoreUnavailableException();
 
-    /// <summary>The identity a write is attributed to (E3): the authenticated user, or <c>anonymous</c>.</summary>
+    /// <summary>
+    /// The identity a write is attributed to (E3): the authenticated user, or <c>anonymous</c>; an
+    /// agent's token (CG-F16) is the agent, of kind agent.
+    /// </summary>
     public static WorkActor ActorFor(ClaimsPrincipal? user)
     {
         var name = user?.FindFirst("preferred_username")?.Value
@@ -74,7 +77,7 @@ public sealed partial class WorkService(
             ?? user?.FindFirst(ClaimTypes.Name)?.Value
             ?? user?.Identity?.Name;
         name = string.IsNullOrWhiteSpace(name) ? "anonymous" : name.Trim();
-        return new WorkActor(name.Length <= 255 ? name : name[..255]);
+        return new WorkActor(name.Length <= 255 ? name : name[..255], McpPatClaims.IsAgent(user) ? WorkActor.AgentKind : WorkActor.UserKind);
     }
 
     public async Task<object> ExecuteAsync(string tool, JsonElement arguments, WorkActor actor, CancellationToken ct = default)
@@ -84,7 +87,13 @@ public sealed partial class WorkService(
         if (DreamExecutionScope.Current is not null)
             throw new WorkException(WorkErrorCodes.Forbidden, "The dreamer may not replace its actor identity.");
         if (tool is WorkTools.DreamRun or WorkTools.DreamRuns or WorkTools.DreamSettings or WorkTools.DreamInstructions or WorkTools.DreamRevert)
+        {
+            // Reading the dreaming settings is open to agents; changing them is the owner's (CG-F16 E4).
+            if (actor.IsAgent && tool == WorkTools.DreamSettings && arguments.ValueKind == JsonValueKind.Object &&
+                arguments.TryGetProperty("settings", out var settings) && settings.ValueKind != JsonValueKind.Null)
+                throw AgentRefusal.DreamSettings();
             return await ExecuteDreamSurfaceAsync(tool, arguments, actor, ct);
+        }
         // Every argument is read before anything is written, the heartbeat included.
         object request = tool switch
         {
@@ -115,6 +124,9 @@ public sealed partial class WorkService(
             WorkTools.DreamReview => WorkJson.Parse<DreamReviewRequest>(arguments, tool),
             _ => throw WorkException.Invalid($"There is no work tool '{tool}'. The work tools are: {string.Join(", ", WorkTools.All.Select(definition => definition.Name))}.")
         };
+        // An agent is never human input (CG-F16 E4): refused before anything is written.
+        if (actor.IsAgent)
+            AgentRefusal.ThrowIfHumanOnly(request);
 
         switch (request)
         {

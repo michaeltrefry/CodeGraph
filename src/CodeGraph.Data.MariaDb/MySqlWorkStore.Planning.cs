@@ -174,10 +174,13 @@ public sealed partial class MySqlWorkStore
         public string? Harness { get; init; }
         public string? Model { get; init; }
         public string? Host { get; init; }
+        public string? IdentityKind { get; init; }
+
+        public string? HolderKind => IdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null;
     }
 
     private const string AttemptColumns =
-        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host";
+        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host, s.identity_kind";
 
     private static Task<AttemptRow?> ActiveAttemptAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(
@@ -267,7 +270,7 @@ public sealed partial class MySqlWorkStore
             var prs = links.Where(link => link.AttemptId == row.Id && link.Kind == "pr").Select(link => link.Url).ToList();
             return new AttemptView(
                 row.Id, row.Number, ParseName<AttemptOutcome>(row.Outcome),
-                new HolderView(row.Holder, row.SessionId, row.Harness, row.Model, row.Host),
+                new HolderView(row.Holder, row.SessionId, row.Harness, row.Model, row.Host, row.HolderKind),
                 Utc(row.StartedAt), row.EndedAt is { } ended ? Utc(ended) : null, row.Reason, row.Branch,
                 branches.Count == 0 ? null : branches, prs.Count == 0 ? null : prs, row.HandoffId);
         }).ToList();
@@ -700,7 +703,7 @@ public sealed partial class MySqlWorkStore
     private static PlanPivot Pivot(PlanDiff diff, ItemRow row, string action, DateTime now)
     {
         if (diff.ActiveAttempts.TryGetValue(row.Id, out var attempt))
-            return new PlanPivot(row.Key, action, new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host), attempt.Id);
+            return new PlanPivot(row.Key, action, new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host, attempt.HolderKind), attempt.Id);
         return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId) : null);
     }
 

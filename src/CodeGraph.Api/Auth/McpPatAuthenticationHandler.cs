@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
+using CodeGraph.Models.Work;
 using CodeGraph.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Options;
@@ -47,6 +49,11 @@ public sealed class McpPatAuthenticationHandler(
             new("mcp_pat_token_id", validation.TokenId.ToString()),
             new("mcp_pat_token_name", validation.TokenName)
         };
+        if (validation.AgentId is { } agentId)
+        {
+            claims.Add(new Claim(McpPatClaims.ActorKind, WorkActor.AgentKind));
+            claims.Add(new Claim(McpPatClaims.AgentId, agentId.ToString(CultureInfo.InvariantCulture)));
+        }
 
         var identity = new ClaimsIdentity(claims, Scheme.Name);
         var principal = new ClaimsPrincipal(identity);

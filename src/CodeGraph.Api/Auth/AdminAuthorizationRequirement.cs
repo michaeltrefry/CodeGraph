@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using CodeGraph.Data;
+using CodeGraph.Services;
 using CodeGraph.Services.Configuration;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Options;
@@ -18,6 +19,10 @@ public sealed class AdminAuthorizationHandler(
         AuthorizationHandlerContext context,
         AdminAuthorizationRequirement requirement)
     {
+        // An agent is never an administrator, whatever its name (CG-F16 E1).
+        if (McpPatClaims.IsAgent(context.User))
+            return;
+
         if (IsAdminClaimPresent(context.User))
         {
             context.Succeed(requirement);

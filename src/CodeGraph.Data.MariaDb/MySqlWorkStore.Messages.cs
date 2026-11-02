@@ -306,6 +306,11 @@ public sealed partial class MySqlWorkStore
                 parent = await ReadMessageRowAsync(connection, transaction, parentId, ct);
                 if (parent is null || parent.ProjectId != spec.ProjectId)
                     throw WorkException.NotFound($"There is no message {parentId} in this project. Nothing was changed.");
+                // Only a person resolves what was put to the humans (CG-F16 E4).
+                if (actor.IsAgent && parent.ToHuman && spec.Resolves is not null)
+                    throw new WorkException(WorkErrorCodes.Forbidden,
+                        "An agent cannot answer or decline a question or request put to the project's humans; only a person resolves it. " +
+                        "Reply without resolves to add information. Nothing was changed.");
                 if (!HasExplicitTarget(spec))
                 {
                     itemId = parent.ItemId;

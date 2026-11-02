@@ -63,7 +63,11 @@ public enum CorrectionSourceKind
     Review,
     BotReview,
     Subagent,
-    Agent
+    Agent,
+    /// <summary>The owner's prompt, relayed by an agent (CG-F16): a proposed lesson until the owner approves it.</summary>
+    RelayedPrompt,
+    /// <summary>The owner's code review, relayed by an agent: a proposed lesson until the owner approves it.</summary>
+    RelayedReview
 }
 
 /// <summary>The importing agent's verification of a native-memory candidate (§10.3).</summary>
@@ -124,7 +128,9 @@ public sealed class AppliesWhenInput
 
 public sealed class CorrectionSourceInput
 {
-    [Description("prompt (the human's prompt; highest priority), review (a human code review), bot_review (an automated review), subagent, agent.")]
+    [Description("prompt (the human's prompt; highest priority), review (a human code review), bot_review (an automated review), subagent, agent, " +
+        "relayed_prompt / relayed_review (the owner's prompt or review relayed by an agent: a proposed lesson in the review queue until the owner approves it). " +
+        "An agent's token is refused forbidden for prompt and review: an agent relays them instead.")]
     public required CorrectionSourceKind Kind { get; init; }
 
     [Description("The source event, such as a review comment id or URL, a message id or a prompt/session id. Repeats of one event are the same correction.")]

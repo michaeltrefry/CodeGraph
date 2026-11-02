@@ -80,6 +80,13 @@ public sealed class WorkDatabase : IAsyncLifetime
         return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
     }
 
+    /// <summary>Runs a tool as <paramref name="actor"/> (an agent, say) and answers its result as wire JSON.</summary>
+    public async Task<JsonElement> CallAsAsync(string tool, object arguments, WorkActor actor)
+    {
+        var result = await Service.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), actor);
+        return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+    }
+
     public async Task<WorkException> RefusedAsync(string tool, object arguments, string user = "alice") =>
         await Should.ThrowAsync<WorkException>(() => CallAsync(tool, arguments, user));
 

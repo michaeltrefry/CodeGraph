@@ -50,6 +50,7 @@ public sealed partial class MySqlWorkStore
         public DateTime? RenewedAt { get; init; }
         public DateTime? EndedAt { get; init; }
         public string? SessionHarness { get; init; }
+        public string? SessionIdentityKind { get; init; }
         public string? SessionModel { get; init; }
         public string? SessionHost { get; init; }
         public DateTime? SessionLastSeenAt { get; init; }
@@ -59,7 +60,7 @@ public sealed partial class MySqlWorkStore
     private const string HoldSelect =
         "SELECT h.id, h.seq, h.resource_id, r.name AS resource_name, p.project_key, h.identity, h.session_id, i.number AS item_number, " +
         "h.purpose, h.priority, h.state, h.ttl_seconds, h.requested_at, h.wait_expires_at, h.granted_at, h.expires_at, h.renewed_at, h.ended_at, " +
-        "COALESCE(s.harness, h.harness) AS session_harness, COALESCE(s.model, h.model) AS session_model, COALESCE(s.host, h.host) AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
+        "s.identity_kind AS session_identity_kind, COALESCE(s.harness, h.harness) AS session_harness, COALESCE(s.model, h.model) AS session_model, COALESCE(s.host, h.host) AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
         "FROM work_holds h JOIN work_resources r ON r.id = h.resource_id JOIN work_projects p ON p.id = h.project_id " +
         "LEFT JOIN work_items i ON i.id = h.item_id LEFT JOIN work_sessions s ON s.id = h.session_id ";
 
@@ -96,7 +97,8 @@ public sealed partial class MySqlWorkStore
         DateTime? lastSeen = row.SessionLastSeenAt is { } seen ? Utc(seen) : null;
         var holder = row.SessionId is null
             ? new HolderView(row.Identity)
-            : new HolderView(row.Identity, row.SessionId, row.SessionHarness, row.SessionModel, row.SessionHost);
+            : new HolderView(row.Identity, row.SessionId, row.SessionHarness, row.SessionModel, row.SessionHost,
+                row.SessionIdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null);
         return new HoldView(
             row.Id, row.ResourceName, row.ProjectKey, holder, row.Purpose, state, ParseName<WorkPriority>(row.Priority), row.TtlSeconds, Utc(row.RequestedAt),
             row.ItemNumber is { } number ? WorkKeys.Item(row.ProjectKey, number) : null,

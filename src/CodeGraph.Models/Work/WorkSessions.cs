@@ -192,7 +192,8 @@ public sealed record SessionView(
     DateTime LastSeenAt,
     DateTime? EndedAt = null,
     IReadOnlyList<LessonActivity>? Activity = null,
-    IReadOnlyList<string>? Skills = null)
+    IReadOnlyList<string>? Skills = null,
+    string? IdentityKind = null)
 {
     public string Kind => "session";
 }
@@ -209,10 +210,14 @@ public sealed record HandoffView(
     IReadOnlyList<string>? Corrections = null,
     string? NextAction = null,
     string? Branch = null,
-    string? Commit = null);
+    string? Commit = null,
+    string? AuthorKind = null);
 
-/// <summary>Who a write or a claim belongs to, in one line of a briefing or a refusal.</summary>
-public sealed record HolderView(string Identity, string? SessionId = null, string? Harness = null, string? Model = null, string? Host = null);
+/// <summary>
+/// Who a write or a claim belongs to, in one line of a briefing or a refusal. <see cref="Kind"/>
+/// is <c>agent</c> when the holder's session is an agent's (CG-F16).
+/// </summary>
+public sealed record HolderView(string Identity, string? SessionId = null, string? Harness = null, string? Model = null, string? Host = null, string? Kind = null);
 
 public sealed record StartSessionResult(bool Created, SessionView Session, BriefingView Briefing);
 

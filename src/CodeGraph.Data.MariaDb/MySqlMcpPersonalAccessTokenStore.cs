@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using CodeGraph.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -7,11 +8,12 @@ public sealed class MySqlMcpPersonalAccessTokenStore(CodeGraphDbContext db) : IM
 {
     public async Task<IReadOnlyList<McpPersonalAccessTokenEntity>> ListMcpPersonalAccessTokensAsync(
         string username,
+        long? agentId = null,
         CancellationToken ct = default)
     {
         return await db.McpPersonalAccessTokens
             .AsNoTracking()
-            .Where(token => token.Username == username)
+            .Where(OwnedBy(username, agentId))
             .OrderByDescending(token => token.CreatedAt)
             .ToListAsync(ct);
     }
@@ -38,10 +40,12 @@ public sealed class MySqlMcpPersonalAccessTokenStore(CodeGraphDbContext db) : IM
         string username,
         long id,
         DateTime revokedAt,
+        long? agentId = null,
         CancellationToken ct = default)
     {
         var token = await db.McpPersonalAccessTokens
-            .FirstOrDefaultAsync(item => item.Id == id && item.Username == username, ct);
+            .Where(OwnedBy(username, agentId))
+            .FirstOrDefaultAsync(item => item.Id == id, ct);
 
         if (token is null)
         {
@@ -57,10 +61,12 @@ public sealed class MySqlMcpPersonalAccessTokenStore(CodeGraphDbContext db) : IM
         string username,
         long id,
         string entitlementMode,
+        long? agentId = null,
         CancellationToken ct = default)
     {
         var token = await db.McpPersonalAccessTokens
-            .FirstOrDefaultAsync(item => item.Id == id && item.Username == username, ct);
+            .Where(OwnedBy(username, agentId))
+            .FirstOrDefaultAsync(item => item.Id == id, ct);
 
         if (token is null)
         {
@@ -91,4 +97,10 @@ public sealed class MySqlMcpPersonalAccessTokenStore(CodeGraphDbContext db) : IM
         await db.SaveChangesAsync(ct);
         return true;
     }
+
+    // A person's tokens are theirs by username and never include an agent's; an agent's are its own by id.
+    private static Expression<Func<McpPersonalAccessTokenEntity, bool>> OwnedBy(string username, long? agentId) =>
+        agentId is { } agent
+            ? token => token.AgentId == agent
+            : token => token.AgentId == null && token.Username == username;
 }

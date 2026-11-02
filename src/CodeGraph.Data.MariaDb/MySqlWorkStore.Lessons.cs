@@ -224,13 +224,15 @@ public sealed partial class MySqlWorkStore
     private async Task InitLessonAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, KnowledgeSpec spec, Guid? item, WorkActor actor, DateTime now, CancellationToken ct)
     {
         var prompt = spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt;
+        // What an agent relays from a person waits for the owner in the review queue (CG-F16 E4).
+        var relayed = LessonSimilarity.IsRelayed(spec.Details?.Source?.Kind);
         // A rule needs an applies-when activity: without one it would be served everywhere (§5.7).
-        var rule = HasActivity(spec.Details) && (prompt || ruleThreshold <= 1);
+        var rule = HasActivity(spec.Details) && !relayed && (prompt || ruleThreshold <= 1);
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = @state, rule_reason = @reason, rule_since = @since, recurrence = 1, priority = @priority WHERE id = @id",
             new
             {
-                state = rule ? "rule" : "candidate", reason = rule ? JsonName(prompt ? RuleReason.HumanPrompt : RuleReason.Recurrence) : null,
+                state = rule ? "rule" : relayed && HasActivity(spec.Details) ? "proposed" : "candidate", reason = rule ? JsonName(prompt ? RuleReason.HumanPrompt : RuleReason.Recurrence) : null,
                 since = rule ? now : (DateTime?)null, priority = LessonSimilarity.Priority(spec.Details?.Source?.Kind), id = spec.Id
             },
             transaction, cancellationToken: ct));
@@ -286,7 +288,14 @@ public sealed partial class MySqlWorkStore
             transaction, cancellationToken: ct));
         // Only a new event of the human's prompt promotes through the prompt path (which overrides a
         // rejection); a redelivery that only widens applies-when is evaluated like any other change.
-        await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
+        if (!await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct) &&
+            LessonSimilarity.IsRelayed(spec.Details?.Source?.Kind))
+        {
+            // A relayed correction of a task-scoped lesson asks the owner to make it a rule (CG-F16).
+            await connection.ExecuteAsync(new CommandDefinition(
+                "UPDATE knowledge_entries SET rule_state = 'proposed' WHERE id = @target AND rule_state = 'candidate' AND activities IS NOT NULL AND activities <> ''",
+                new { target }, transaction, cancellationToken: ct));
+        }
         await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, counted ? "recurred" : "widened", actor, now, ct);
     }
 
@@ -363,8 +372,10 @@ public sealed partial class MySqlWorkStore
         if (row.RuleState == "rule" || string.IsNullOrEmpty(row.Activities))
             return false;
 
+        // A lesson relayed by an agent becomes a rule only by the owner's approval, never by recurrence (CG-F16).
+        var relayed = row.SourceKind is "relayed_prompt" or "relayed_review";
         RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && row.RuleState != "rejected") ? RuleReason.HumanPrompt
-            : row.RuleState != "rejected" && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
+            : row.RuleState != "rejected" && !relayed && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
             : null;
         if (reason is null)
             return false;

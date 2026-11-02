@@ -465,6 +465,7 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 | `POST /api/ask` | Streaming Ask experience |
 | `POST/GET /api/ask/runs...` | Persisted Ask runs, SSE replay, cancellation, and debug exchange inspection |
 | `GET/POST/DELETE /api/user/mcp-tokens...` | User MCP personal access token list/create/revoke |
+| `GET/POST/PATCH/DELETE /api/admin/agents...` | Admin-only agent accounts and their MCP tokens (see [Agent accounts](#agent-accounts)) |
 | `GET/POST/DELETE /api/admin/admins...` | Standalone admin-user management backed by MariaDB |
 | `GET /api/admin/jobs/queue` | Running, queued, and unresolved failed indexer, analysis, and scheduled work |
 | `POST /api/admin/jobs/queue/{kind}/{id}/dismiss` | Dismiss a failed queue entry |
@@ -492,7 +493,7 @@ CodeGraph has largely moved operational endpoints under `api/settings` rather th
 - `/access-tokens` for user-managed MCP personal access tokens
 - `/memory` for the memory browser and entity-focused graph exploration
 - `/wiki/...` for the conventions/wiki system
-- `/settings/...` for operations, schedules, DB health, sections, exclusions, admin users, prompt overrides, database sources, reports, and assistant debug inspection
+- `/settings/...` for operations, schedules, DB health, sections, exclusions, admin users, agent accounts (`/settings/agents`), prompt overrides, database sources, reports, and assistant debug inspection
 
 ## MCP Server
 
@@ -510,6 +511,30 @@ Example client config:
   }
 }
 ```
+
+### Agent accounts
+
+An AI harness (Claude Code, Codex, ...) signs in to MCP with the token of an **agent**: a named non-human identity an administrator manages at **Settings → Agents** (`/settings/agents`). Every write made with an agent's token is attributed to the agent (actor kind `agent`, the agent's name), with or without a session; with `session_id` the session adds harness, model and host. A person's own token still writes as that person. Existing rows keep the author they were recorded with.
+
+- **Names** are 1 to 64 characters, `[a-z0-9][a-z0-9._-]*`, unique among agents, and never a reserved name (`anonymous`, `dreamer`, `human`) or a person CodeGraph has recorded (an admin, a person's token owner, a person's session or change-feed write).
+- **Tokens** follow the personal-token model: shown once, 30, 60 or 90 days, at most 5 active per agent, all tools or a selection. Disabling an agent stops its tokens on their next call; re-enabling restores them. Deleting an agent revokes its tokens; its name may be used again.
+- **Rename and delete** are refused while the agent has a live session, because a session is bound to its identity by name. Disabling is always allowed.
+- An agent's token works on MCP and the token-accepting `api/work` endpoints only: never for the web UI, admin, user-token or agent endpoints, and never as an administrator.
+- **Agents are never human input.** With an agent's token these are refused `forbidden` and change nothing:
+  - a correction or lesson with `source.kind` `prompt` or `review`;
+  - `promote` approve or reject, and `dream_review`;
+  - `inbox` or `ack` without `session_id` (the humans' inbox), and resolving a question put to the humans;
+  - changing `dream_settings` (reading is allowed).
+
+  To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`. Such a lesson waits in the review queue as a proposed rule (highest or high priority). Recurrence never promotes it; only the owner's `promote approve` makes it a rule.
+
+**Switching a harness to an agent token (owner steps).** Agents never enter or see token values.
+
+1. Create the agents (for example `claude` and `codex`) at Settings → Agents, and issue a token for each.
+2. Claude Code: replace the token in `~/.claude.json` (`mcpServers.codegraph.headers.Authorization`, a literal `Bearer ...` value) or point it at the variable with `"Authorization": "Bearer ${CLAUDE_CODEGRAPH_MCP_TOKEN}"`. Then set `CLAUDE_CODEGRAPH_MCP_TOKEN` in `~/.zshrc` and in launchd (`launchctl setenv CLAUDE_CODEGRAPH_MCP_TOKEN "$CLAUDE_CODEGRAPH_MCP_TOKEN"`). GUI apps and the hooks they start (`cg-hook`) read launchd, not the shell profile.
+3. Codex: `~/.codex/config.toml` reads `bearer_token_env_var = "CODEX_CODEGRAPH_MCP_TOKEN"`; set that variable in `~/.zshrc` and launchd the same way.
+4. Quit and reopen the apps and start new harness sessions. A session started under the owner's name is not usable with the agent's token.
+5. Check: a `record` from the harness shows `claude (agent)` on the Knowledge page.
 
 ### Graph tools
 

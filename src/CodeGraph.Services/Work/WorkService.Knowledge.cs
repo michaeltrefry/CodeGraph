@@ -483,7 +483,7 @@ public sealed partial class WorkService
 
     private static CorrectionSourceView ReadSource(CorrectionSourceInput source, string argument) =>
         new(source.Kind,
-            source.Kind switch { CorrectionSourceKind.Prompt => "highest", CorrectionSourceKind.Review => "high", _ => "normal" },
+            LessonSimilarity.Priority(source.Kind),
             Optional(source.Ref, $"{argument}.ref", KnowledgeLimits.MaxSourceRefLength));
 
     private static AppliesWhenView? ReadAppliesWhen(AppliesWhenInput? input, string argument)
