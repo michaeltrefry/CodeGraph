@@ -56,6 +56,13 @@ internal static class AgentRefusal
                 "Merge your lesson into it (relate with your lesson's id and same_as this one), or challenge it." + Unchanged);
     }
 
+    /// <summary>A new entry superseding a person's lesson would take over its rule status in the agent's words.</summary>
+    public static void ThrowIfReplacingPersonsLesson(KnowledgeView replaced)
+    {
+        if (replaced.Details?.Source?.Kind is CorrectionSourceKind.Prompt or CorrectionSourceKind.Review)
+            throw Forbidden($"Lesson {replaced.Id} is a person's own correction; an agent cannot supersede it with its own wording. Challenge it with your evidence instead." + Unchanged);
+    }
+
     public static WorkException DreamSettings() =>
         Forbidden("An agent cannot change the dreaming settings; reading them is allowed." + Unchanged);
 

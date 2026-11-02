@@ -180,7 +180,7 @@ public sealed partial class MySqlWorkStore
     }
 
     private const string AttemptColumns =
-        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host, s.identity_kind";
+        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host, COALESCE(a.holder_kind, s.identity_kind) AS identity_kind";
 
     private static Task<AttemptRow?> ActiveAttemptAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(
@@ -223,9 +223,9 @@ public sealed partial class MySqlWorkStore
 
         var id = Guid.NewGuid();
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO work_attempts (id, item_id, number, holder, marker, session_id, branch, outcome, started_at) " +
-            "VALUES (@id, @itemId, @number, @holder, @marker, @session, @branch, 'active', @now)",
-            new { id, itemId = item.Id, number, holder = actor.Name, marker, session = actor.SessionId, branch, now }, transaction, cancellationToken: ct));
+            "INSERT INTO work_attempts (id, item_id, number, holder, holder_kind, marker, session_id, branch, outcome, started_at) " +
+            "VALUES (@id, @itemId, @number, @holder, @holderKind, @marker, @session, @branch, 'active', @now)",
+            new { id, itemId = item.Id, number, holder = actor.Name, holderKind = HolderKindOf(actor), marker, session = actor.SessionId, branch, now }, transaction, cancellationToken: ct));
         var started = (await ActiveAttemptAsync(connection, transaction, item.Id, ct))!;
         changes.Add(Change("attempt", null, AttemptNode(started, AttemptOutcome.Active)));
         return started;
@@ -1034,7 +1034,8 @@ public sealed partial class MySqlWorkStore
             await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Superseded, summary, now, extra, ct);
             if (row.HasLiveClaim(now))
             {
-                var holder = new WorkActor(row.ClaimHolder!, row.ClaimSessionId is null ? WorkActor.UserKind : WorkActor.SessionKind, row.ClaimSessionId);
+                var holder = new WorkActor(row.ClaimHolder!,
+                    row.ClaimHolderKind == WorkActor.AgentKind ? WorkActor.AgentKind : row.ClaimSessionId is null ? WorkActor.UserKind : WorkActor.SessionKind, row.ClaimSessionId);
                 await BeginAttemptAsync(connection, transaction, row, holder, row.ClaimMarker!, now, extra, ct);
             }
         }

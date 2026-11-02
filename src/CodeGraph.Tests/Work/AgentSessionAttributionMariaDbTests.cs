@@ -68,6 +68,8 @@ public sealed class AgentSessionAttributionMariaDbTests(WorkDatabase db) : IClas
         var key = (await db.NewItemAsync(project, "Sessionless")).GetProperty("key").GetString()!;
         var claimed = await UpdateAsync(key, Codex, new { claim = new { marker = "run-1" } });
         claimed.GetProperty("claim").GetProperty("holder_kind").GetString().ShouldBe("agent");
+        // The attempt keeps the kind without a session to read it from.
+        (await db.CallAsync(WorkTools.GetWork, new { id = key })).GetProperty("attempts")[0].GetProperty("holder").GetProperty("kind").GetString().ShouldBe("agent");
         var hold = await db.CallAsAsync(WorkTools.Acquire, new { project, resource = "gpu:sl", purpose = "train" }, Codex);
         hold.GetProperty("hold").GetProperty("holder").GetProperty("kind").GetString().ShouldBe("agent");
 

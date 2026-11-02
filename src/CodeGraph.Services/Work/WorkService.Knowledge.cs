@@ -171,6 +171,8 @@ public sealed partial class WorkService
         {
             var project = await KnowledgeProjectAsync(request.Project, session, ct);
             var spec = await ReadEntryAsync(entry, project, "entry", allowLinks: true, ct);
+            if (actor.IsAgent && spec.Supersedes is { } replaced)
+                AgentRefusal.ThrowIfReplacingPersonsLesson(await RequireEntryAsync(replaced.EntryId.ToString(), "entry.supersedes.id", project.Id.ToString(), session, ct));
             var recorded = await Knowledge.RecordKnowledgeAsync(project.Id, spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
             return recorded.Entry.Kind == KnowledgeKind.Lesson
                 ? recorded with { Similar = await SimilarAsync(project.Id, [ToRow(recorded.Entry)], ct), Hints = LessonHints([spec], [ToRow(recorded.Entry) with { Rule = recorded.Entry.Lesson?.State == LessonRuleState.Rule ? true : null }]) }

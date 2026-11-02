@@ -1,6 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { of, throwError } from 'rxjs';
+import { Subject, of, throwError } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
 import { AgentSummary, McpPersonalAccessTokenMetadata } from '../../core/models';
@@ -146,6 +146,23 @@ describe('AdminAgentsComponent', () => {
     button('Tokens').click();
     await settle();
     expect(text()).not.toContain('cgpat_secret_value');
+  });
+
+  it('keeps a pending token issuance bound to its agent panel', async () => {
+    button('Tokens').click();
+    await settle();
+    const pending = new Subject<{ token: McpPersonalAccessTokenMetadata; rawToken: string }>();
+    api['createAgentToken'].mockReturnValue(pending);
+    component.tokenName = 'laptop';
+
+    const issuing = component.issueToken(codex);
+    await component.toggleTokens({ ...codex, id: 8, name: 'claude' });
+    expect(component.expandedId()).toBe(7);
+
+    pending.next({ token, rawToken: 'cgpat_for_codex' });
+    pending.complete();
+    await issuing;
+    expect(component.rawTokenAgentId()).toBe(7);
   });
 
   it('issues a token for the selected tools only', async () => {

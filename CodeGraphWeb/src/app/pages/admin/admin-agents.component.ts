@@ -70,7 +70,7 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
                   <span class="cg-muted cg-small">Created {{ agent.createdAtUtc | date:'mediumDate' }} by {{ agent.createdBy }}</span>
                 </div>
                 <div class="agent-actions">
-                  <button class="adm-btn sm" type="button" (click)="toggleTokens(agent)">
+                  <button class="adm-btn sm" type="button" [disabled]="saving()" (click)="toggleTokens(agent)">
                     {{ expandedId() === agent.id ? 'Hide tokens' : 'Tokens' }}
                   </button>
                   <button class="adm-btn sm" type="button" (click)="startRename(agent)" [disabled]="saving()">Rename</button>
@@ -109,7 +109,7 @@ import { extractAdminError, loadAdminCollection, runAdminMutation } from './admi
                     <button class="adm-btn primary" type="button" (click)="issueToken(agent)" [disabled]="saving()">Issue token</button>
                   </div>
 
-                  @if (rawToken()) {
+                  @if (rawToken() && rawTokenAgentId() === agent.id) {
                     <div class="token-reveal">
                       <div class="reveal-header">
                         <div>
@@ -286,6 +286,8 @@ export class AdminAgentsComponent implements OnInit {
   tools = signal<McpHubToolResponse[]>([]);
   tokenError = signal('');
   rawToken = signal('');
+  /** The agent the one-time raw token belongs to: it is shown only in that agent's panel. */
+  rawTokenAgentId = signal<number | null>(null);
   tokenName = '';
   expiresInDays = 90;
   allTools = signal(true);
@@ -408,6 +410,8 @@ export class AdminAgentsComponent implements OnInit {
   }
 
   async toggleTokens(agent: AgentSummary): Promise<void> {
+    // A request in flight writes into the open panel: no switching until it is answered.
+    if (this.saving()) return;
     if (this.expandedId() === agent.id) {
       this.collapseTokens();
       return;
@@ -431,6 +435,7 @@ export class AdminAgentsComponent implements OnInit {
     this.expandedId.set(null);
     this.tokens.set([]);
     this.rawToken.set('');
+    this.rawTokenAgentId.set(null);
     this.tokenError.set('');
     this.editingTokenId.set(null);
     this.tokenName = '';
@@ -465,6 +470,7 @@ export class AdminAgentsComponent implements OnInit {
       const created = await firstValueFrom(
         this.api.createAgentToken(agent.id, name, this.expiresInDays, this.allTools() ? undefined : selected));
       this.rawToken.set(created.rawToken);
+      this.rawTokenAgentId.set(agent.id);
       this.success.set(`Issued ${created.token.tokenName} for ${agent.name}.`);
       this.tokenName = '';
       await Promise.all([this.loadTokens(agent.id), this.load()]);

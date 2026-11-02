@@ -30,3 +30,5 @@ ALTER TABLE work_sessions ADD COLUMN IF NOT EXISTS identity_kind VARCHAR(16) NOT
 -- without a session (NULL / user: a person, as every existing row).
 ALTER TABLE work_items ADD COLUMN IF NOT EXISTS claim_holder_kind VARCHAR(16) NULL AFTER claim_holder;
 ALTER TABLE work_holds ADD COLUMN IF NOT EXISTS identity_kind VARCHAR(16) NOT NULL DEFAULT 'user' AFTER identity;
+-- An attempt keeps its holder's kind after the session is pruned (or when it had none).
+ALTER TABLE work_attempts ADD COLUMN IF NOT EXISTS holder_kind VARCHAR(16) NULL AFTER holder;

@@ -149,6 +149,12 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
             .GetProperty("entry").GetProperty("id").GetString()!;
         await RefusedAsync(WorkTools.Record, new { project, revise = new { id = ruleId, expected_version = await VersionAsync(ruleId), summary = "Softer wording" } });
         await RefusedAsync(WorkTools.Record, new { project, relate = new { id = ruleId, expected_version = await VersionAsync(ruleId), same_as = own } });
+        await RefusedAsync(WorkTools.Record, new
+        {
+            project,
+            entry = new { kind = "lesson", summary = "Replacement", what = "z", applies_when = new { activity = new[] { "reviewing" } }, source = new { kind = "agent" },
+                supersedes = new { id = ruleId, expected_version = await VersionAsync(ruleId) } }
+        });
         (await RuleStateAsync(ruleId)).ShouldBe("rule");
         // Merging the agent's lesson into the owner's rule is allowed: it is one more recurrence of it.
         await db.CallAsAsync(WorkTools.Record, new { project, relate = new { id = own, expected_version = await VersionAsync(own), same_as = ruleId } }, Agent);
