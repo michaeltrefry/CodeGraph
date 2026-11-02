@@ -23,6 +23,8 @@ export interface WorkActor {
 
 export interface Holder {
   identity: string;
+  /** `agent` when the holder's session is an agent's. */
+  kind?: 'agent';
   session_id?: string;
   harness?: string;
   model?: string;
@@ -72,7 +74,7 @@ export interface FeatureView {
 export interface DependencyRef { id: string; key: string; title: string; status: WorkStatus }
 export interface Claim { holder: string; marker: string; claimed_at: string; expires_at: string; session_id?: string }
 export interface WorkLink { id: string; kind: 'pr' | 'branch' | 'other'; url: string; created_at: string }
-export interface WorkComment { id: string; author: string; body: string; created_at: string; session_id?: string; harness?: string }
+export interface WorkComment { id: string; author: string; body: string; created_at: string; session_id?: string; harness?: string; author_kind?: 'agent' | 'system' }
 export interface Criterion { id: string; text: string; state: 'unmet' | 'met'; evidence?: string }
 
 export interface Handoff {
@@ -88,6 +90,7 @@ export interface Handoff {
   next_action?: string;
   branch?: string;
   commit?: string;
+  author_kind?: 'agent';
 }
 
 export interface Attempt {
@@ -219,6 +222,8 @@ export interface SessionView {
   id: string;
   project_key: string;
   identity: string;
+  /** `agent` for an agent's session. */
+  identity_kind?: 'agent';
   harness: string;
   model?: string;
   host?: string;

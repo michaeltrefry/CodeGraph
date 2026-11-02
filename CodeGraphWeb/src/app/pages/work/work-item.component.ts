@@ -140,7 +140,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
               <h2 id="wrk-h-ho">Handoffs <span class="wrk-count">{{ it.handoff_count ?? (it.handoffs ?? []).length }}</span></h2>
               @for (h of it.handoffs ?? []; track h.id) {
                 <article class="wrk-msg" style="margin-bottom:6px">
-                  <div class="wrk-row"><wrk-actor [actor]="{ name: h.author, kind: h.session_id ? 'session' : 'user', session_id: h.session_id, harness: h.harness }" /><span class="wrk-sub">{{ h.created_at | ago }}</span></div>
+                  <div class="wrk-row"><wrk-actor [actor]="{ name: h.author, kind: h.author_kind === 'agent' ? 'agent' : h.session_id ? 'session' : 'user', session_id: h.session_id, harness: h.harness }" /><span class="wrk-sub">{{ h.created_at | ago }}</span></div>
                   @if (h.done) { <div class="wrk-pre"><strong>Done.</strong> {{ h.done }}</div> }
                   @if (h.next_action) { <div class="wrk-pre"><strong>Next.</strong> {{ h.next_action }}</div> }
                   @if ((h.open_issues ?? []).length > 0) { <div><strong>Open.</strong> {{ h.open_issues!.join('; ') }}</div> }

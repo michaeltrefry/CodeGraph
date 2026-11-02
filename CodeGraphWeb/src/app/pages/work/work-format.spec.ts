@@ -44,6 +44,18 @@ describe('buildTimeline', () => {
   });
 });
 
+describe('buildTimeline with an agent', () => {
+  it('marks an agent\'s comments, handoffs and attempts as the agent\'s (CG-F16)', () => {
+    const item = fixtureItem(9, { status: 'in_progress' }, new Map());
+    item.comments = [{ id: 'c', author: 'codex', author_kind: 'agent', session_id: 's2', harness: 'codex', body: 'On it', created_at: '2026-01-02T10:00:00Z' }];
+    item.handoffs = [{ id: 'h', author: 'codex', author_kind: 'agent', session_id: 's2', harness: 'codex', created_at: '2026-01-02T09:00:00Z', done: 'Half' }];
+    item.attempts = [{ id: 'a', number: 1, outcome: 'active', holder: { identity: 'codex', kind: 'agent', session_id: 's2', harness: 'codex' }, started_at: '2026-01-02T08:00:00Z' }];
+    const timeline = buildTimeline(item, [], []);
+    for (const kind of ['comment', 'handoff', 'attempt'] as const)
+      expect(timeline.find(entry => entry.kind === kind)?.actor).toMatchObject({ name: 'codex', kind: 'agent' });
+  });
+});
+
 describe('formatting', () => {
   it('shows field changes as old and new values', () => {
     const lines = changeLines({ changes: [{ field: 'status', old: 'ready', new: 'in_progress' }, { field: 'goal', new: 'x'.repeat(100) }] } as WorkChange);

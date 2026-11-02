@@ -51,7 +51,7 @@ import { ItemView, MessageView, ResourceView, SessionView, WorkChange } from './
               @for (session of sessions(); track session.id) {
                 <li>
                   <div class="wrk-row">
-                    <wrk-actor [actor]="{ name: session.identity, kind: 'session', session_id: session.id, harness: session.harness, model: session.model, host: session.host }" />
+                    <wrk-actor [actor]="{ name: session.identity, kind: session.identity_kind === 'agent' ? 'agent' : 'session', session_id: session.id, harness: session.harness, model: session.model, host: session.host }" />
                     <span class="wrk-sub wrk-grow" style="text-align:right">seen {{ session.last_seen_at | ago }}</span>
                   </div>
                   @if (session.intent) { <div>{{ session.intent }}</div> }
