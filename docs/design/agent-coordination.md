@@ -458,6 +458,8 @@ The global CLAUDE.md workflow and the `shortcut-plan` / `shortcut-story` / `shor
 
 ## 10. Migration
 
+> **Retired.** The Shortcut and KanbanBoard importers described here were removed from CodeGraph after the 2026-11-02 cutover; the imported work, its `imported` provenance and its `sc-NNNN` aliases stay. The native-memory import (§10.3) remains.
+
 ### 10.1 Shortcut (the main migration)
 
 Most of the work lives in Shortcut. Sized on 2026-10-29 (non-archived only):

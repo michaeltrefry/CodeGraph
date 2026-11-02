@@ -35,7 +35,7 @@ public sealed class McpToolEntitlementEndToEndTests
     ];
 
     private static readonly string[] ProbeToolNames =
-        [.. NewTools, "search_graph", "stories-upload-file", "not_cataloged"];
+        [.. NewTools, "search_graph", "store_memory_v2", "not_cataloged"];
 
     [Fact]
     public async Task ToolsList_ForAllModeToken_ListsExactlyTheCallableTools_IncludingTheNewOnes()
@@ -154,11 +154,9 @@ public sealed class McpToolEntitlementEndToEndTests
     private static async Task<IMcpHubStore> CreateSeededStoreAsync()
     {
         var store = new InMemoryMcpHubStore();
+        // Explicit-only tools (store_memory_v2, a hidden memory tool) are never granted to an all-mode
+        // token: the tool and its provider are enabled, so the entitlement rule is what hides it.
         await new McpHubCatalogSeeder(store, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
-        // Explicit-only tools are never granted to an all-mode token; enable its provider so the
-        // entitlement rule (not a disabled provider) is what hides it.
-        await store.SetProviderEnabledAsync("shortcut", enabled: true, sourceVisible: null);
-        await store.UpdateToolCatalogStateAsync("stories-upload-file", enabled: true, defaultSelected: null, accessClass: null);
         return store;
     }
 
@@ -268,8 +266,8 @@ public sealed class McpToolEntitlementEndToEndTests
         [McpServerTool(Name = "file_hotspot"), Description("probe")]
         public static string FileHotspot() => "called file_hotspot";
 
-        [McpServerTool(Name = "stories-upload-file"), Description("probe")]
-        public static string StoriesUploadFile() => "called stories-upload-file";
+        [McpServerTool(Name = "store_memory_v2"), Description("probe")]
+        public static string StoreMemoryV2() => "called store_memory_v2";
 
         [McpServerTool(Name = "not_cataloged"), Description("probe")]
         public static string NotCataloged() => "called not_cataloged";

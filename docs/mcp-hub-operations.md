@@ -4,15 +4,13 @@
 
 1. Apply migration `052_mcp_hub.sql`.
 2. Start the API and confirm the MCP Hub catalog seed completes without warnings.
-3. Open `/settings/mcp-hub` and confirm the `codegraph`, `shortcut`, `rabbitmq`, and `mysql` providers are listed. External providers should start disabled.
+3. Open `/settings/mcp-hub` and confirm the `codegraph`, `rabbitmq`, and `mysql` providers are listed. External providers should start disabled.
 4. Create a user MCP token from `/access-tokens` with a small selected tool set.
 5. Call an allowed MCP tool and confirm success.
 6. Call a tool not selected for the token and confirm it is absent from `tools/list` and that the call returns HTTP 200 with a JSON-RPC error echoing the request id: `error.code` `-32003`, `error.data.error` `tool_not_entitled`, `error.data.tool` the tool name. Other refusals (`tool_disabled`, `tool_unavailable`, `provider_disabled`, `tool_not_cataloged`, `token_required`) use the same shape.
-7. Review `/settings/mcp-hub` audit rows for delegated provider calls.
+7. Review `/settings/mcp-hub` audit rows for provider calls.
 
 ## Provider Configuration
-
-Shortcut uses credential `shortcut/apiToken`.
 
 RabbitMQ uses config `rabbitmq/managementBaseUrl`, config `rabbitmq/allowedQueues`, and credentials `rabbitmq/username` plus `rabbitmq/password`.
 

@@ -18,5 +18,5 @@ public sealed record McpHubToolDefinition(
     bool EnabledByDefault = false,
     bool DefaultSelected = false,
     string AccessClass = "read",
-    // native | provider — shim tools are not catalog-seeded, they are discovered at runtime.
+    // native | provider
     string ProviderType = "provider");

@@ -117,7 +117,7 @@ describe('AdminJobQueueComponent', () => {
   it('tracks failed and running rows of the same schedule separately and labels all operations', () => {
     create();
     expect(component.identity({ ...item, kind: 'scheduled-job' })).not.toBe(component.identity({ ...item, kind: 'scheduled-job', status: 'running' }));
-    for (const operation of ['process_repository', 'process_repositories', 'reindex_all', 'discover', 'link', 'detect_communities', 'link_and_detect', 'process_batch_analysis', 'sync_schema', 'sync_all_schemas', 'branch_overlay', 'reanalyze', 'analysis-batch', 'Discover', 'ReIndexAll', 'ProcessBatchAnalysis', 'LinkAndDetect', 'DetectCommunities', 'RegenerateMcpDocs', 'AssistantRetentionCleanup', 'IngestConventionEmbeddings', 'PruneWorkSessions', 'PruneWorkMessages', 'WorkImport', 'IndexerRunRetention']) {
+    for (const operation of ['process_repository', 'process_repositories', 'reindex_all', 'discover', 'link', 'detect_communities', 'link_and_detect', 'process_batch_analysis', 'sync_schema', 'sync_all_schemas', 'branch_overlay', 'reanalyze', 'analysis-batch', 'Discover', 'ReIndexAll', 'ProcessBatchAnalysis', 'LinkAndDetect', 'DetectCommunities', 'RegenerateMcpDocs', 'AssistantRetentionCleanup', 'IngestConventionEmbeddings', 'PruneWorkSessions', 'PruneWorkMessages', 'IndexerRunRetention']) {
       expect(component.operationLabel(operation)).not.toBe(operation);
     }
   });

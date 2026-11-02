@@ -152,27 +152,13 @@ GitHub does not retry failed deliveries on its own. A transient store failure (d
 
 A redelivered push also resubmits the index run for the same head SHA, which the indexer already treats as a duplicate.
 
-## Work imports (Shortcut, KanbanBoard)
+## Imported work (Shortcut, KanbanBoard)
 
-The `WorkImport` job and the admin routes under `/api/work/imports` (sc-27876) bring the Shortcut workspace
-and the KanbanBoard "SceneWorks Code Review 2026-10-27" epic into the work tracker. Both sources are only read.
+The Shortcut and KanbanBoard work importers (sc-27876) were retired after the 2026-11-02 cutover, when CodeGraph
+became the tracker. The imported projects, features, items, comments and `sc-NNNN` aliases stay in CodeGraph.
 
-- **Tokens:** MCP Hub credentials `shortcut/apiToken` (read access is enough) and `kanban/apiToken` (a read-scoped
-  KanbanBoard PAT). Nothing runs without them. The KanbanBoard import reads through KanbanBoard's MCP server
-  (`WorkImport__KanbanMcpUrl`, default `https://kanban-mcp.trefry.net/mcp`), the only KanbanBoard endpoint a PAT
-  authenticates; its REST API takes only a browser sign-in.
-- **Approval:** the admin routes take a web sign-in only, never a personal access token. `GET
-  /api/work/imports/shortcut/settings` returns the proposed team → project table. A dry run
-  (`POST .../shortcut/runs {"mode":"dry_run"}`) reports the mapping. `PUT .../shortcut/settings` with
-  `"approve": true` approves the table. Imports are refused until then.
-- **No seeded schedule:** no WorkImport schedule is seeded, because it needs the token and approved settings first.
-  After the full import (`{"mode":"import"}`), create a `WorkImport` schedule under Admin > Schedules. With no args it
-  runs the Shortcut delta sync (`updated_since` = start of the last completed import, plus that run's failures).
-  It runs until cutover. **Remove the delta schedule at cutover**: from then on, CodeGraph is the tracker.
-- **Attachments:** downloaded files live under `WorkImport:AttachmentStoragePath` (default `uploads/work-items`,
-  relative to `/app`; docker-compose sets `WorkImport__AttachmentStoragePath=/app/uploads/work-items` in both hosts). `docker-compose.yml` mounts the `codegraph-uploads` volume at `/app/uploads` in both
-  `codegraph-api` (serves the files) and `jobs` (downloads them). The production override inherits that mount,
-  which also persists wiki attachments (`uploads/wiki`) across redeploys. A record whose file is missing is
-  downloaded again on the next run.
-- **Until cutover:** a re-run is a three-way merge. Only fields that changed in Shortcut since the last run are
-  written; CodeGraph-side changes to the other fields survive. Shortcut wins a field both sides changed.
+- **Attachments:** files stored with imported items live under `WorkAttachments:StoragePath` (default
+  `uploads/work-items`, relative to `/app`; docker-compose sets `WorkAttachments__StoragePath=/app/uploads/work-items`
+  from `CODEGRAPH_WORK_ATTACHMENT_PATH`). `docker-compose.yml` mounts the `codegraph-uploads` volume at `/app/uploads`
+  in `codegraph-api`, which serves them at `GET /api/work/attachments/{id}`. The production override inherits that
+  mount, which also persists wiki attachments (`uploads/wiki`) across redeploys.
