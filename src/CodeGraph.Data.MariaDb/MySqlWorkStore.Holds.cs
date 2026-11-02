@@ -51,6 +51,7 @@ public sealed partial class MySqlWorkStore
         public DateTime? EndedAt { get; init; }
         public string? SessionHarness { get; init; }
         public string? SessionIdentityKind { get; init; }
+        public string IdentityKind { get; init; } = WorkActor.UserKind;
         public string? SessionModel { get; init; }
         public string? SessionHost { get; init; }
         public DateTime? SessionLastSeenAt { get; init; }
@@ -58,7 +59,7 @@ public sealed partial class MySqlWorkStore
     }
 
     private const string HoldSelect =
-        "SELECT h.id, h.seq, h.resource_id, r.name AS resource_name, p.project_key, h.identity, h.session_id, i.number AS item_number, " +
+        "SELECT h.id, h.seq, h.resource_id, r.name AS resource_name, p.project_key, h.identity, h.identity_kind, h.session_id, i.number AS item_number, " +
         "h.purpose, h.priority, h.state, h.ttl_seconds, h.requested_at, h.wait_expires_at, h.granted_at, h.expires_at, h.renewed_at, h.ended_at, " +
         "s.identity_kind AS session_identity_kind, COALESCE(s.harness, h.harness) AS session_harness, COALESCE(s.model, h.model) AS session_model, COALESCE(s.host, h.host) AS session_host, s.last_seen_at AS session_last_seen_at, s.ended_at AS session_ended_at " +
         "FROM work_holds h JOIN work_resources r ON r.id = h.resource_id JOIN work_projects p ON p.id = h.project_id " +
@@ -95,10 +96,10 @@ public sealed partial class MySqlWorkStore
         // threshold. A label on the hold, never a reason to free it.
         var unreachable = state == WorkHoldStates.Held && row.SessionId is not null && SessionGone(row, now);
         DateTime? lastSeen = row.SessionLastSeenAt is { } seen ? Utc(seen) : null;
+        var kind = row.IdentityKind == WorkActor.AgentKind || row.SessionIdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null;
         var holder = row.SessionId is null
-            ? new HolderView(row.Identity)
-            : new HolderView(row.Identity, row.SessionId, row.SessionHarness, row.SessionModel, row.SessionHost,
-                row.SessionIdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null);
+            ? new HolderView(row.Identity, Kind: kind)
+            : new HolderView(row.Identity, row.SessionId, row.SessionHarness, row.SessionModel, row.SessionHost, kind);
         return new HoldView(
             row.Id, row.ResourceName, row.ProjectKey, holder, row.Purpose, state, ParseName<WorkPriority>(row.Priority), row.TtlSeconds, Utc(row.RequestedAt),
             row.ItemNumber is { } number ? WorkKeys.Item(row.ProjectKey, number) : null,
@@ -292,12 +293,12 @@ public sealed partial class MySqlWorkStore
                     try
                     {
                     await connection.ExecuteAsync(new CommandDefinition(
-                        "INSERT INTO work_holds (id, resource_id, project_id, identity, session_id, item_id, purpose, priority, state, ttl_seconds, requested_at, " +
-                        "wait_expires_at, granted_at, expires_at, key_hash) VALUES (@id, @resourceId, @projectId, @identity, @sessionId, @itemId, @purpose, @priority, " +
+                        "INSERT INTO work_holds (id, resource_id, project_id, identity, identity_kind, session_id, item_id, purpose, priority, state, ttl_seconds, requested_at, " +
+                        "wait_expires_at, granted_at, expires_at, key_hash) VALUES (@id, @resourceId, @projectId, @identity, @identityKind, @sessionId, @itemId, @purpose, @priority, " +
                         "@state, @ttl, @now, @waitExpires, @grantedAt, @expires, @keyHash)",
                         new
                         {
-                            id = holdId, resourceId, projectId = spec.ProjectId, identity = actor.Name, sessionId = actor.SessionId, itemId = spec.ItemId,
+                            id = holdId, resourceId, projectId = spec.ProjectId, identity = actor.Name, identityKind = actor.IsAgent ? WorkActor.AgentKind : WorkActor.UserKind, sessionId = actor.SessionId, itemId = spec.ItemId,
                             purpose = spec.Purpose, priority = JsonName(spec.Priority), state = grant ? WorkHoldStates.Held : WorkHoldStates.Waiting,
                             ttl = spec.TtlSeconds, now, waitExpires = grant ? (DateTime?)null : now.AddSeconds(WorkHoldLimits.WaiterLingerSeconds),
                             grantedAt = grant ? now : (DateTime?)null, expires = grant ? now.AddSeconds(spec.TtlSeconds) : (DateTime?)null, keyHash = spec.KeyHash

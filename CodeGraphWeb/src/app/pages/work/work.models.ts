@@ -72,7 +72,7 @@ export interface FeatureView {
 }
 
 export interface DependencyRef { id: string; key: string; title: string; status: WorkStatus }
-export interface Claim { holder: string; marker: string; claimed_at: string; expires_at: string; session_id?: string }
+export interface Claim { holder: string; marker: string; claimed_at: string; expires_at: string; session_id?: string; holder_kind?: 'agent' }
 export interface WorkLink { id: string; kind: 'pr' | 'branch' | 'other'; url: string; created_at: string }
 export interface WorkComment { id: string; author: string; body: string; created_at: string; session_id?: string; harness?: string; author_kind?: 'agent' | 'system' }
 export interface Criterion { id: string; text: string; state: 'unmet' | 'met'; evidence?: string }

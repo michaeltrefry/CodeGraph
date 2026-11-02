@@ -25,6 +25,13 @@ public interface IAgentStore
     /// </summary>
     Task<bool> IsHumanIdentityAsync(string name, CancellationToken ct = default);
 
+    /// <summary>
+    /// Ends every session of the agent named <paramref name="name"/> that has not ended (they are
+    /// idle: a live one refuses the rename or delete), so another agent given the name later
+    /// cannot resume them; sessions are bound to their identity by name.
+    /// </summary>
+    Task EndSessionsAsync(string name, DateTime endedAt, CancellationToken ct = default);
+
     /// <summary>Whether a session of <paramref name="name"/> is open and was seen after <paramref name="seenAfter"/>.</summary>
     Task<bool> HasLiveSessionAsync(string name, DateTime seenAfter, CancellationToken ct = default);
 }

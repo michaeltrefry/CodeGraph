@@ -30,6 +30,9 @@ internal static class AgentRefusal
                     "Use promote propose to put the lesson in the review queue." + Unchanged);
             case DreamReviewRequest review:
                 throw Forbidden($"An agent cannot {(review.Action == DreamReviewAction.Accept ? "accept" : "reject")} a dreamer proposal: the owner reviews proposals." + Unchanged);
+            case ImportKnowledgeRequest import:
+                ThrowIfPersonSource(import.Candidates.Select(candidate => candidate.Entry.Source?.Kind), "candidates[].entry.source");
+                break;
             case InboxRequest { SessionId: null }:
                 throw Forbidden("Without session_id inbox reads the project's humans' inbox, which an agent cannot read. Pass your session_id to read your own messages." + Unchanged);
             case AckRequest { SessionId: null }:
@@ -37,10 +40,21 @@ internal static class AgentRefusal
         }
     }
 
-    /// <summary>An agent answering or declining a question or request put to the project's humans.</summary>
-    public static WorkException HumanQuestion() =>
-        Forbidden("An agent cannot answer or decline a question or request put to the project's humans; only a person resolves it. " +
-            "Reply without resolves to add information." + Unchanged);
+    /// <summary>
+    /// A lesson recorded from a person's prompt or review keeps its authority only as the person
+    /// wrote it: an agent may not revise it, nor merge it (relate same_as) into another lesson,
+    /// which would pass its rule status on to the agent's words. A challenge is the agent's way.
+    /// </summary>
+    public static void ThrowIfReshapingPersonsLesson(RecordRequest request, KnowledgeView current)
+    {
+        if (current.Details?.Source?.Kind is not (CorrectionSourceKind.Prompt or CorrectionSourceKind.Review))
+            return;
+        if (request.Revise is not null)
+            throw Forbidden($"Lesson {current.Id} is a person's own correction; an agent cannot revise it. Challenge it with your evidence instead." + Unchanged);
+        if (request.Relate?.SameAs is not null)
+            throw Forbidden($"Lesson {current.Id} is a person's own correction; an agent cannot merge it into another lesson. " +
+                "Merge your lesson into it (relate with your lesson's id and same_as this one), or challenge it." + Unchanged);
+    }
 
     public static WorkException DreamSettings() =>
         Forbidden("An agent cannot change the dreaming settings; reading them is allowed." + Unchanged);

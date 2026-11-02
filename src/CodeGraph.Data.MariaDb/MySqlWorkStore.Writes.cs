@@ -565,7 +565,7 @@ public sealed partial class MySqlWorkStore
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_items SET title = @title, description = @description, item_type = @type, status = @status, priority = @priority, " +
                 "sort_order = @order, labels = @labels, repository_name = @repository, feature_id = @featureId, " +
-                "claim_holder = @ClaimHolder, claim_marker = @ClaimMarker, claim_session_id = @ClaimSessionId, claimed_at = @ClaimedAt, claim_expires_at = @ClaimExpiresAt, " +
+                "claim_holder = @ClaimHolder, claim_holder_kind = @ClaimHolderKind, claim_marker = @ClaimMarker, claim_session_id = @ClaimSessionId, claimed_at = @ClaimedAt, claim_expires_at = @ClaimExpiresAt, " +
                 "plan_ref = @planRef, goal = @goal, acceptance_json = @acceptance, inherits_json = @inherits, touches_json = @touches, " +
                 "acceptance_report_json = @reportJson, merged_awaiting_acceptance = @merged " +
                 "WHERE id = @itemId",
@@ -580,7 +580,7 @@ public sealed partial class MySqlWorkStore
                     labels = effective.ClearLabels ? null : effective.Labels is { } labels ? JoinLabels(labels) : beforeRow.Labels,
                     repository = effective.ClearRepository ? null : patchedRepository ?? before.Repository,
                     featureId = effective.ClearFeature ? null : effective.FeatureId ?? beforeRow.FeatureId,
-                    claimFields.ClaimHolder, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
+                    claimFields.ClaimHolder, claimFields.ClaimHolderKind, claimFields.ClaimMarker, claimFields.ClaimSessionId, claimFields.ClaimedAt, claimFields.ClaimExpiresAt,
                     planRef = featureChanged ? null : beforeRow.PlanRef,
                     goal = effective.ClearGoal ? null : effective.Goal ?? beforeRow.Goal,
                     acceptance = WriteList(criteria),
@@ -650,7 +650,12 @@ public sealed partial class MySqlWorkStore
         }, ct);
     }
 
-    private sealed record ClaimFields(string? ClaimHolder, string? ClaimMarker, string? ClaimSessionId, DateTime? ClaimedAt, DateTime? ClaimExpiresAt);
+    // The kind a claim or hold records for its holder: agent, or NULL for a person (CG-F16).
+    private static string? HolderKindOf(WorkActor actor) => actor.IsAgent ? WorkActor.AgentKind : null;
+
+    private static string? AgentKindOf(string? kind) => kind == WorkActor.AgentKind ? WorkActor.AgentKind : null;
+
+    private sealed record ClaimFields(string? ClaimHolder, string? ClaimMarker, string? ClaimSessionId, DateTime? ClaimedAt, DateTime? ClaimExpiresAt, string? ClaimHolderKind = null);
 
     // Finishing an item (by anyone: an agent, a person, GitHub evidence, an import) ends every
     // session's claim on it: a session that held it and writes later is not told claim_lost for a
@@ -673,7 +678,7 @@ public sealed partial class MySqlWorkStore
     // A session's claim lasts while the session is live: its expiry is the heartbeat deadline.
     private ClaimFields ApplyClaim(ItemRow row, ClaimSpec? claim, WorkStatus status, WorkActor actor, DateTime now)
     {
-        var current = new ClaimFields(row.ClaimHolder, row.ClaimMarker, row.ClaimSessionId, row.ClaimedAt, row.ClaimExpiresAt);
+        var current = new ClaimFields(row.ClaimHolder, row.ClaimMarker, row.ClaimSessionId, row.ClaimedAt, row.ClaimExpiresAt, row.ClaimHolderKind);
         var live = row.HasLiveClaim(now);
         var mine = row.ClaimHolder == actor.Name && claim is not null && string.Equals(row.ClaimMarker, claim.Marker, StringComparison.Ordinal);
         string Holder() => $"{row.ClaimHolder} (marker '{row.ClaimMarker}') until {Utc(row.ClaimExpiresAt!.Value):O}";
@@ -687,7 +692,7 @@ public sealed partial class MySqlWorkStore
                         throw new WorkException(WorkErrorCodes.AlreadyClaimed, $"{row.Key} is claimed by {Holder()}. Nothing was changed.");
                     if (WorkStatuses.IsFinished(status))
                         throw WorkException.Invalid($"{row.Key} is {WorkStatuses.Name(status)}: a finished item cannot be claimed. Nothing was changed.");
-                    current = new ClaimFields(actor.Name, claim.Marker, actor.SessionId, now, now.AddSeconds(ClaimTtl(claim.TtlSeconds, actor)));
+                    current = new ClaimFields(actor.Name, claim.Marker, actor.SessionId, now, now.AddSeconds(ClaimTtl(claim.TtlSeconds, actor)), HolderKindOf(actor));
                     break;
                 case ClaimAction.Renew:
                     if (live && !mine)
@@ -1052,10 +1057,10 @@ public sealed partial class MySqlWorkStore
                 var status = recover ? "in_progress" : "ready";
                 var expiresAt = now.AddSeconds(ClaimTtl(spec.TtlSeconds, actor));
                 var claimed = await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE work_items SET claim_holder = @holder, claim_marker = @Marker, claim_session_id = @session, claimed_at = @now, " +
+                    "UPDATE work_items SET claim_holder = @holder, claim_holder_kind = @holderKind, claim_marker = @Marker, claim_session_id = @session, claimed_at = @now, " +
                     "claim_expires_at = @expiresAt, version = version + 1 " +
                     "WHERE id = @itemId AND status = @status AND (claim_holder IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= @now)",
-                    new { holder = actor.Name, spec.Marker, session = actor.SessionId, now, expiresAt, itemId, status }, transaction, cancellationToken: ct));
+                    new { holder = actor.Name, holderKind = HolderKindOf(actor), spec.Marker, session = actor.SessionId, now, expiresAt, itemId, status }, transaction, cancellationToken: ct));
                 if (claimed == 0)
                     return null;
 

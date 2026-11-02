@@ -79,7 +79,8 @@ public sealed record EntityRef(Guid Id, string Key, string Title);
 
 public sealed record DependencyView(Guid Id, string Key, string Title, WorkStatus Status);
 
-public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt, DateTime ExpiresAt, string? SessionId = null);
+/// <summary>A live claim; <see cref="HolderKind"/> is <c>agent</c> when an agent holds it (CG-F16).</summary>
+public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt, DateTime ExpiresAt, string? SessionId = null, string? HolderKind = null);
 
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 

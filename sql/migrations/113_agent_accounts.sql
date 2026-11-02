@@ -25,3 +25,8 @@ CREATE INDEX IF NOT EXISTS ix_mcp_personal_access_tokens_agent ON mcp_personal_a
 -- Whether a session's identity is a person (user) or an agent: a session is used only by the
 -- identity, of the same kind, that started it, and an agent's session writes keep kind agent.
 ALTER TABLE work_sessions ADD COLUMN IF NOT EXISTS identity_kind VARCHAR(16) NOT NULL DEFAULT 'user' AFTER identity;
+
+-- Claims and holds record their holder by name; these say when that holder is an agent, with or
+-- without a session (NULL / user: a person, as every existing row).
+ALTER TABLE work_items ADD COLUMN IF NOT EXISTS claim_holder_kind VARCHAR(16) NULL AFTER claim_holder;
+ALTER TABLE work_holds ADD COLUMN IF NOT EXISTS identity_kind VARCHAR(16) NOT NULL DEFAULT 'user' AFTER identity;

@@ -62,6 +62,21 @@ public sealed class AgentSessionAttributionMariaDbTests(WorkDatabase db) : IClas
     }
 
     [Fact]
+    public async Task An_agents_claim_and_hold_without_a_session_are_the_agents()
+    {
+        var project = await db.NewProjectAsync("AV");
+        var key = (await db.NewItemAsync(project, "Sessionless")).GetProperty("key").GetString()!;
+        var claimed = await UpdateAsync(key, Codex, new { claim = new { marker = "run-1" } });
+        claimed.GetProperty("claim").GetProperty("holder_kind").GetString().ShouldBe("agent");
+        var hold = await db.CallAsAsync(WorkTools.Acquire, new { project, resource = "gpu:sl", purpose = "train" }, Codex);
+        hold.GetProperty("hold").GetProperty("holder").GetProperty("kind").GetString().ShouldBe("agent");
+
+        // A person's claim carries no kind, as before.
+        var other = (await db.NewItemAsync(project, "Owner")).GetProperty("key").GetString()!;
+        (await UpdateAsync(other, new WorkActor("michael"), new { claim = new { marker = "m" } })).GetProperty("claim").TryGetProperty("holder_kind", out _).ShouldBeFalse();
+    }
+
+    [Fact]
     public async Task An_agent_and_a_person_never_share_a_session()
     {
         var project = await db.NewProjectAsync("AT");

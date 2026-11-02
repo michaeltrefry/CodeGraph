@@ -526,7 +526,7 @@ An AI harness (Claude Code, Codex, ...) signs in to MCP with the token of an **a
   - `inbox` or `ack` without `session_id` (the humans' inbox), and resolving a question put to the humans;
   - changing `dream_settings` (reading is allowed).
 
-  To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`. Such a lesson waits in the review queue as a proposed rule (highest or high priority). Recurrence never promotes it; only the owner's `promote approve` makes it a rule.
+  To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`, which need an `applies_when.activity`. Such a lesson waits in the review queue as a proposed rule (highest or high priority). The same holds for any lesson a relayed correction is merged into: recurrence never promotes it, and only the owner's `promote approve` makes it a rule. An agent also cannot revise a lesson from a person's prompt or review, or merge it into another lesson; it challenges it instead.
 
 **Switching a harness to an agent token (owner steps).** Agents never enter or see token values.
 

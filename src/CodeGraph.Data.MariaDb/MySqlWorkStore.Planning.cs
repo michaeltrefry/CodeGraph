@@ -704,7 +704,7 @@ public sealed partial class MySqlWorkStore
     {
         if (diff.ActiveAttempts.TryGetValue(row.Id, out var attempt))
             return new PlanPivot(row.Key, action, new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host, attempt.HolderKind), attempt.Id);
-        return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId) : null);
+        return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId, Kind: AgentKindOf(row.ClaimHolderKind)) : null);
     }
 
     // A plan entry that sets an open item's status to closed closes it (claim ended), like leaving it out.
@@ -1054,7 +1054,7 @@ public sealed partial class MySqlWorkStore
         var pivoted = diff.IsPivot(row, now);
         var pivot = Pivot(diff, row, "close", now);
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_items SET claim_holder = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
+            "UPDATE work_items SET claim_holder = NULL, claim_holder_kind = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
             new { id = row.Id }, transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_session_claims SET released_at = @now WHERE item_id = @id AND released_at IS NULL", new { now, id = row.Id }, transaction, cancellationToken: ct));

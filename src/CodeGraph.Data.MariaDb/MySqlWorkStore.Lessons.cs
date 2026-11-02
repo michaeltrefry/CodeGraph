@@ -288,14 +288,7 @@ public sealed partial class MySqlWorkStore
             transaction, cancellationToken: ct));
         // Only a new event of the human's prompt promotes through the prompt path (which overrides a
         // rejection); a redelivery that only widens applies-when is evaluated like any other change.
-        if (!await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct) &&
-            LessonSimilarity.IsRelayed(spec.Details?.Source?.Kind))
-        {
-            // A relayed correction of a task-scoped lesson asks the owner to make it a rule (CG-F16).
-            await connection.ExecuteAsync(new CommandDefinition(
-                "UPDATE knowledge_entries SET rule_state = 'proposed' WHERE id = @target AND rule_state = 'candidate' AND activities IS NOT NULL AND activities <> ''",
-                new { target }, transaction, cancellationToken: ct));
-        }
+        await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
         await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, counted ? "recurred" : "widened", actor, now, ct);
     }
 
@@ -367,18 +360,27 @@ public sealed partial class MySqlWorkStore
     /// </summary>
     private async Task<bool> PromoteIfDueAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, DateTime now, bool promptEvent, CancellationToken ct)
     {
-        var row = await connection.QuerySingleAsync<(string? RuleState, int? Recurrence, string? Activities, string? SourceKind)>(new CommandDefinition(
-            "SELECT rule_state, recurrence, activities, source_kind FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
+        var row = await connection.QuerySingleAsync<(string? RuleState, int? Recurrence, string? Activities, string? SourceKind, bool Relayed)>(new CommandDefinition(
+            "SELECT rule_state, recurrence, activities, source_kind, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND source_kind IN ('relayed_prompt', 'relayed_review')) AS relayed " +
+            "FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
         if (row.RuleState == "rule" || string.IsNullOrEmpty(row.Activities))
             return false;
 
-        // A lesson relayed by an agent becomes a rule only by the owner's approval, never by recurrence (CG-F16).
-        var relayed = row.SourceKind is "relayed_prompt" or "relayed_review";
+        // A lesson carrying the owner's words relayed by an agent (its own source or a merged
+        // correction) becomes a rule only by the owner's approval, never by recurrence: it waits as
+        // proposed in the review queue (CG-F16).
+        var relayed = row.Relayed || row.SourceKind is "relayed_prompt" or "relayed_review";
         RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && row.RuleState != "rejected") ? RuleReason.HumanPrompt
             : row.RuleState != "rejected" && !relayed && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
             : null;
         if (reason is null)
+        {
+            if (relayed && row.RuleState == "candidate")
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE knowledge_entries SET rule_state = 'proposed' WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
             return false;
+        }
 
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @now, rejected_reason = NULL WHERE id = @entryId",

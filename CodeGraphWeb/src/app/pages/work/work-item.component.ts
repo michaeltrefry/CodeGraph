@@ -203,7 +203,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
                   <select class="wrk-input" (change)="setStatus($any($event.target).value, $any($event.target))" aria-label="Status">@for (s of statuses; track s) { <option [value]="s" [selected]="s === it.status">{{ s.replace('_', ' ') }}</option> }</select>
                 </label>
                 @if (it.claim; as claim) {
-                  <div>Claimed by <wrk-actor [actor]="{ name: claim.holder, session_id: claim.session_id, kind: claim.session_id ? 'session' : 'user' }" />, marker {{ claim.marker }}, expires {{ claim.expires_at | ago }}.</div>
+                  <div>Claimed by <wrk-actor [actor]="{ name: claim.holder, session_id: claim.session_id, kind: claim.holder_kind === 'agent' ? 'agent' : claim.session_id ? 'session' : 'user' }" />, marker {{ claim.marker }}, expires {{ claim.expires_at | ago }}.</div>
                   <div class="wrk-row">
                     <button type="button" class="wrk-btn" [disabled]="busy()" (click)="write({ renew_claim: {} }, 'Claim renewed.')">Renew claim</button>
                     <button type="button" class="wrk-btn" [disabled]="busy()" (click)="write({ release_claim: {} }, 'Claim released.')">Release claim</button>

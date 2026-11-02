@@ -72,6 +72,9 @@ public sealed class MySqlAgentStore(CodeGraphDbContext db) : IAgentStore
                 OR EXISTS (SELECT 1 FROM work_changes WHERE actor_name = {name} AND actor_kind IN ('user', 'session')) AS `Value`
             """).SingleAsync(ct);
 
+    public Task EndSessionsAsync(string name, DateTime endedAt, CancellationToken ct = default) =>
+        db.Database.ExecuteSqlAsync($"UPDATE work_sessions SET ended_at = {endedAt} WHERE identity = {name} AND identity_kind = 'agent' AND ended_at IS NULL", ct);
+
     public async Task<bool> HasLiveSessionAsync(string name, DateTime seenAfter, CancellationToken ct = default) =>
         await db.Database.SqlQuery<bool>($"""
             SELECT EXISTS (SELECT 1 FROM work_sessions WHERE identity = {name} AND ended_at IS NULL AND last_seen_at > {seenAfter}) AS `Value`

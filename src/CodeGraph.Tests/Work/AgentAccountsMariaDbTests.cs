@@ -31,7 +31,7 @@ public sealed class AgentAccountsMariaDbTests(WorkDatabase db) : IClassFixture<W
         McpPersonalAccessTokenService? tokens = null;
         host = await WorkRestHost.StartAsync(db.Service,
             configureServices: services => services.AddSingleton(provider => new AgentService(agentStore, provider.GetRequiredService<McpPersonalAccessTokenService>(),
-                Options.Create(new CodeGraph.Models.Work.WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }))),
+                Options.Create(new CodeGraph.Models.Work.WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }), db.Clock)),
             tokens: hub => tokens = new McpPersonalAccessTokenService(new MySqlMcpPersonalAccessTokenStore(context), hub,
                 Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = WorkRestHost.SigningKey }), agentStore));
     }
@@ -144,6 +144,28 @@ public sealed class AgentAccountsMariaDbTests(WorkDatabase db) : IClassFixture<W
         (await host.SendAsync(HttpMethod.Delete, $"/api/admin/agents/{id}", person: "admin")).Status.ShouldBe(409);
         // Disabling is allowed: it is how an admin stops an agent at once.
         (await host.SendAsync(HttpMethod.Patch, $"/api/admin/agents/{id}", """{"disabled":true}""", person: "admin")).Status.ShouldBe(200);
+
+        // Once idle, the rename goes ahead and ends the session, so no later agent of the old name resumes it.
+        db.Clock.Advance(TimeSpan.FromSeconds(WorkDatabase.IdleSeconds + 60));
+        (await host.SendAsync(HttpMethod.Patch, $"/api/admin/agents/{id}", """{"name":"other-name-""" + key.ToLowerInvariant() + "\"}", person: "admin")).Status.ShouldBe(200);
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.QuerySingleAsync<DateTime?>("SELECT ended_at FROM work_sessions WHERE id = @id",
+            new { id = session.GetProperty("session").GetProperty("id").GetString() })).ShouldNotBeNull();
+    }
+
+    [Fact]
+    public async Task A_persons_token_endpoints_never_touch_an_agents_tokens()
+    {
+        var key = await ProjectAsync();
+        var agent = await CreateAgentAsync("own-" + key.ToLowerInvariant());
+        var id = agent.GetProperty("id").GetInt64();
+        var (_, issued) = await host.SendAsync(HttpMethod.Post, $"/api/admin/agents/{id}/tokens", """{"name":"t","expiresInDays":30}""", person: "admin");
+        var tokenId = issued.GetProperty("token").GetProperty("id").GetInt64();
+        var name = agent.GetProperty("name").GetString()!;
+
+        (await host.SendAsync(HttpMethod.Delete, $"/api/user/mcp-tokens/{tokenId}", person: name)).Status.ShouldBe(404);
+        (await host.SendAsync(HttpMethod.Put, $"/api/user/mcp-tokens/{tokenId}/tools", """{"toolNames":["record"]}""", person: name)).Status.ShouldBe(404);
+        (await host.SendAsync(HttpMethod.Get, $"/api/admin/agents/{id}/tokens", person: "admin")).Body[0].GetProperty("status").GetString().ShouldBe("active");
     }
 
     private async Task<JsonElement> CreateAgentAsync(string name)

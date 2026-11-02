@@ -253,7 +253,7 @@ public sealed partial class MySqlWorkStore
                 if (releases)
                 {
                     await connection.ExecuteAsync(new CommandDefinition(
-                        "UPDATE work_items SET claim_holder = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
+                        "UPDATE work_items SET claim_holder = NULL, claim_holder_kind = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
                         new { id }, transaction, cancellationToken: ct));
                 }
 
@@ -452,6 +452,8 @@ public sealed partial class MySqlWorkStore
         if (before.ClaimHolder is { } holder)
         {
             previous = await HolderAsync(connection, transaction, holder, before.ClaimSessionId, ct);
+            if (previous.Kind is null && before.ClaimHolderKind == WorkActor.AgentKind)
+                previous = previous with { Kind = WorkActor.AgentKind };
         }
         else
         {

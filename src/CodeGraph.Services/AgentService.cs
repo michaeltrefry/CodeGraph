@@ -61,6 +61,7 @@ public sealed partial class AgentService(
                 return error;
             if (await HasLiveSessionAsync(agent, now, ct))
                 return LiveSession<AgentSummary>(agent, "renamed");
+            await store.EndSessionsAsync(agent.Name, now, ct);
             agent.Name = normalized!;
         }
 
@@ -80,6 +81,7 @@ public sealed partial class AgentService(
         var now = clock.GetUtcNow().UtcDateTime;
         if (await HasLiveSessionAsync(agent, now, ct))
             return LiveSession<bool>(agent, "deleted");
+        await store.EndSessionsAsync(agent.Name, now, ct);
         return await store.DeleteAgentAsync(id, now, ct) ? AgentResult<bool>.Ok(true) : NotFound<bool>(id);
     }
 
