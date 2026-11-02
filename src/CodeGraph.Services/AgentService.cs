@@ -54,23 +54,26 @@ public sealed partial class AgentService(
             return NotFound<AgentSummary>(id);
 
         var now = clock.GetUtcNow().UtcDateTime;
+        string? previousName = null;
         if (name is not null && !string.Equals(Normalize(name), agent.Name, StringComparison.Ordinal))
         {
             var (normalized, error) = await CheckNameAsync(name, ct);
             if (error is not null)
                 return error;
-            if (await HasLiveSessionAsync(agent, now, ct))
-                return LiveSession<AgentSummary>(agent, "renamed");
-            await store.EndSessionsAsync(agent.Name, now, ct);
+            previousName = agent.Name;
             agent.Name = normalized!;
         }
 
         if (disabled is { } off)
             agent.DisabledAt = off ? agent.DisabledAt ?? now : null;
         agent.UpdatedAt = now;
-        return await store.UpdateAgentAsync(agent, ct)
-            ? AgentResult<AgentSummary>.Ok(await SummaryAsync(agent, ct))
-            : AgentResult<AgentSummary>.Fail(AgentErrors.InvalidArgument, $"An agent named '{agent.Name}' already exists.");
+        return await store.UpdateAgentAsync(agent, previousName, LiveAfter(now), ct) switch
+        {
+            AgentWriteOutcome.Done => AgentResult<AgentSummary>.Ok(await SummaryAsync(agent, ct)),
+            AgentWriteOutcome.LiveSession => LiveSession<AgentSummary>(previousName!, "renamed"),
+            AgentWriteOutcome.NameTaken => AgentResult<AgentSummary>.Fail(AgentErrors.InvalidArgument, $"An agent named '{agent.Name}' already exists."),
+            _ => NotFound<AgentSummary>(id)
+        };
     }
 
     /// <summary>Deletes the agent and revokes its tokens. Its recorded writes keep its name.</summary>
@@ -79,10 +82,12 @@ public sealed partial class AgentService(
         if (await store.GetAgentAsync(id, ct) is not { } agent)
             return NotFound<bool>(id);
         var now = clock.GetUtcNow().UtcDateTime;
-        if (await HasLiveSessionAsync(agent, now, ct))
-            return LiveSession<bool>(agent, "deleted");
-        await store.EndSessionsAsync(agent.Name, now, ct);
-        return await store.DeleteAgentAsync(id, now, ct) ? AgentResult<bool>.Ok(true) : NotFound<bool>(id);
+        return await store.DeleteAgentAsync(id, now, LiveAfter(now), ct) switch
+        {
+            AgentWriteOutcome.Done => AgentResult<bool>.Ok(true),
+            AgentWriteOutcome.LiveSession => LiveSession<bool>(agent.Name, "deleted"),
+            _ => NotFound<bool>(id)
+        };
     }
 
     public async Task<AgentResult<IReadOnlyList<McpPersonalAccessTokenMetadata>>> ListTokensAsync(long id, CancellationToken ct = default) =>
@@ -122,8 +127,8 @@ public sealed partial class AgentService(
         return (normalized, null);
     }
 
-    private Task<bool> HasLiveSessionAsync(AgentEntity agent, DateTime now, CancellationToken ct) =>
-        store.HasLiveSessionAsync(agent.Name, now.AddSeconds(-idleSeconds), ct);
+    // A session seen after this is live (the work store's idle threshold).
+    private DateTime LiveAfter(DateTime now) => now.AddSeconds(-idleSeconds);
 
     private async Task<AgentSummary> SummaryAsync(AgentEntity agent, CancellationToken ct)
     {
@@ -136,9 +141,9 @@ public sealed partial class AgentService(
 
     private static AgentResult<T> NotFound<T>(long id) => AgentResult<T>.Fail(AgentErrors.NotFound, $"There is no agent {id}.");
 
-    private static AgentResult<T> LiveSession<T>(AgentEntity agent, string action) =>
+    private static AgentResult<T> LiveSession<T>(string agent, string action) =>
         AgentResult<T>.Fail(AgentErrors.Conflict,
-            $"Agent '{agent.Name}' has a live session, so it cannot be {action} now: its sessions are bound to its name. Try again once the session ends or goes idle.");
+            $"Agent '{agent}' has a live session, so it cannot be {action} now: its sessions are bound to its name. Try again once the session ends or goes idle.");
 
     [GeneratedRegex("^[a-z0-9][a-z0-9._-]{0,63}$")]
     private static partial Regex NamePattern();

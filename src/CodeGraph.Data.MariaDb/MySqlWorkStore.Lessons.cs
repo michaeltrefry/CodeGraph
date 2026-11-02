@@ -371,7 +371,9 @@ public sealed partial class MySqlWorkStore
         // correction) becomes a rule only by the owner's approval, never by recurrence: it waits as
         // proposed in the review queue (CG-F16).
         var relayed = row.Relayed || row.SourceKind is "relayed_prompt" or "relayed_review";
-        RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && row.RuleState != "rejected") ? RuleReason.HumanPrompt
+        // A new prompt event is the person's own word; a prompt lesson that only gained its activity
+        // from a relayed correction is not (the agent chose it), so it waits for the owner.
+        RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && !relayed && row.RuleState != "rejected") ? RuleReason.HumanPrompt
             : row.RuleState != "rejected" && !relayed && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
             : null;
         if (reason is null)

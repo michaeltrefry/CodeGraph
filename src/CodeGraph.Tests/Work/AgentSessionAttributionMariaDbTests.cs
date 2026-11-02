@@ -95,6 +95,20 @@ public sealed class AgentSessionAttributionMariaDbTests(WorkDatabase db) : IClas
     }
 
     [Fact]
+    public async Task Only_an_enabled_agent_of_that_name_starts_a_session()
+    {
+        var project = await db.NewProjectAsync("AW");
+        var ghost = await Should.ThrowAsync<WorkException>(() =>
+            db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex" }, new WorkActor("ghost-s3", WorkActor.AgentKind)));
+        ghost.Code.ShouldBe(WorkErrorCodes.Forbidden);
+
+        var off = await db.AgentAsync("off-s3");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("UPDATE agents SET disabled_at = UTC_TIMESTAMP(3) WHERE name = 'off-s3'");
+        (await Should.ThrowAsync<WorkException>(() => db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex" }, off))).Code.ShouldBe(WorkErrorCodes.Forbidden);
+    }
+
+    [Fact]
     public async Task A_persons_writes_are_recorded_as_before()
     {
         var project = await db.NewProjectAsync("AU");
@@ -111,9 +125,13 @@ public sealed class AgentSessionAttributionMariaDbTests(WorkDatabase db) : IClas
         (await connection.QuerySingleAsync<string>("SELECT identity_kind FROM work_sessions WHERE id = @session", new { session })).ShouldBe("user");
     }
 
-    private async Task<string> StartAsync(string project, WorkActor actor) =>
-        (await db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex", model = "gpt-5.6", host = "mac" }, actor))
+    private async Task<string> StartAsync(string project, WorkActor actor)
+    {
+        if (actor.IsAgent)
+            await db.AgentAsync(actor.Name);
+        return (await db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex", model = "gpt-5.6", host = "mac" }, actor))
             .GetProperty("session").GetProperty("id").GetString()!;
+    }
 
     private async Task<JsonElement> UpdateAsync(string id, WorkActor actor, object fields)
     {

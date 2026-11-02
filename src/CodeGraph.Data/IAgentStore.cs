@@ -13,11 +13,19 @@ public interface IAgentStore
     /// <summary>Stores a new agent, or answers null when an agent that is not deleted has its name.</summary>
     Task<AgentEntity?> CreateAgentAsync(AgentEntity agent, CancellationToken ct = default);
 
-    /// <summary>Saves the name and disabled state, or answers false when another agent has the name.</summary>
-    Task<bool> UpdateAgentAsync(AgentEntity agent, CancellationToken ct = default);
+    /// <summary>
+    /// Saves the name and disabled state. A rename (<paramref name="previousName"/> set) runs under
+    /// the agent row's lock: refused while a session of the previous name was seen after
+    /// <paramref name="liveAfter"/>, and otherwise ends that name's idle sessions, so another
+    /// agent given the name later cannot resume them (sessions are bound by name).
+    /// </summary>
+    Task<AgentWriteOutcome> UpdateAgentAsync(AgentEntity agent, string? previousName, DateTime liveAfter, CancellationToken ct = default);
 
-    /// <summary>Marks the agent deleted and revokes every token of it in one transaction.</summary>
-    Task<bool> DeleteAgentAsync(long id, DateTime deletedAt, CancellationToken ct = default);
+    /// <summary>
+    /// Marks the agent deleted, revokes its tokens and ends its idle sessions in one transaction
+    /// under the agent row's lock; refused while one of its sessions was seen after <paramref name="liveAfter"/>.
+    /// </summary>
+    Task<AgentWriteOutcome> DeleteAgentAsync(long id, DateTime deletedAt, DateTime liveAfter, CancellationToken ct = default);
 
     /// <summary>
     /// Whether <paramref name="name"/> is a person CodeGraph has recorded: an admin, the owner of a
@@ -25,13 +33,12 @@ public interface IAgentStore
     /// </summary>
     Task<bool> IsHumanIdentityAsync(string name, CancellationToken ct = default);
 
-    /// <summary>
-    /// Ends every session of the agent named <paramref name="name"/> that has not ended (they are
-    /// idle: a live one refuses the rename or delete), so another agent given the name later
-    /// cannot resume them; sessions are bound to their identity by name.
-    /// </summary>
-    Task EndSessionsAsync(string name, DateTime endedAt, CancellationToken ct = default);
+}
 
-    /// <summary>Whether a session of <paramref name="name"/> is open and was seen after <paramref name="seenAfter"/>.</summary>
-    Task<bool> HasLiveSessionAsync(string name, DateTime seenAfter, CancellationToken ct = default);
+public enum AgentWriteOutcome
+{
+    Done,
+    NotFound,
+    NameTaken,
+    LiveSession
 }

@@ -86,6 +86,14 @@ public sealed partial class MySqlWorkStore
                     new { projectId = spec.ProjectId, name }, transaction, cancellationToken: ct)) ?? name
                 : null;
 
+            // An agent's session starts only while the agent exists, enabled, under this name: the share
+            // lock orders it against a rename or delete of the agent, which holds the row for update.
+            if (actor.IsAgent && await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                    "SELECT id FROM agents WHERE active_name = @name AND disabled_at IS NULL LOCK IN SHARE MODE",
+                    new { name = actor.Name }, transaction, cancellationToken: ct)) is null)
+                throw new WorkException(WorkErrorCodes.Forbidden,
+                    $"'{actor.Name}' is not an enabled agent now (it was renamed, disabled or deleted); start the session again with the agent's current token. Nothing was changed.");
+
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
                 "INSERT INTO work_sessions (id, project_id, identity, identity_kind, harness, model, host, repository_name, branch, worktree, intent, activities, skills, started_at, last_seen_at) " +

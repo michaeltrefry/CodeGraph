@@ -200,6 +200,17 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
         await db.CallAsAsync(WorkTools.Record, new { project, relate = new { id = relayed, expected_version = await VersionAsync(relayed), same_as = target } }, Agent);
         (await RuleStateAsync(target)).ShouldBe("proposed");
 
+        // The owner's prompt lesson without an activity: a relayed correction that brings one does not make it a rule.
+        var owners = (await db.CallAsAsync(WorkTools.Record, new { project, entry = new { kind = "lesson", summary = "Owner without activity", what = "o", source = new { kind = "prompt" } } }, Owner))
+            .GetProperty("entry").GetProperty("id").GetString()!;
+        (await RuleStateAsync(owners)).ShouldBe("candidate");
+        await db.CallAsAsync(WorkTools.Record, new
+        {
+            project,
+            entry = new { kind = "lesson", summary = "Owner without activity", what = "o", applies_when = new { activity = new[] { "testing" } }, source = new { kind = "relayed_prompt" }, same_as = owners }
+        }, Agent);
+        (await RuleStateAsync(owners)).ShouldBe("proposed");
+
         // A relayed correction needs an activity: it is proposed to the owner as a rule.
         var refused = await Should.ThrowAsync<WorkException>(() => db.CallAsAsync(WorkTools.Record,
             new { project, entry = new { kind = "lesson", summary = "No activity", what = "n", source = new { kind = "relayed_prompt" } } }, Agent));
@@ -213,9 +224,13 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
         refused.Message.ShouldContain("Nothing was changed");
     }
 
-    private async Task<string> StartAsync(string project, WorkActor actor) =>
-        (await db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex", model = "gpt-5.6" }, actor))
+    private async Task<string> StartAsync(string project, WorkActor actor)
+    {
+        if (actor.IsAgent)
+            await db.AgentAsync(actor.Name);
+        return (await db.CallAsAsync(WorkTools.StartSession, new { project, harness = "codex", model = "gpt-5.6" }, actor))
             .GetProperty("session").GetProperty("id").GetString()!;
+    }
 
     private async Task<string> RuleStateAsync(string id)
     {
