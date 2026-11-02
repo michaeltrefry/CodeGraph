@@ -40,6 +40,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   sections: 'Sections',
   exclusions: 'Exclusions',
   admins: 'Admins',
+  agents: 'Agents',
   prompts: 'Prompts',
   llm: 'LLM config',
   'mcp-hub': 'MCP Hub',

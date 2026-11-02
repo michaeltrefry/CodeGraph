@@ -149,6 +149,17 @@ export interface AdminUserResponse {
   createdAt: string;
 }
 
+export interface AgentSummary {
+  id: number;
+  name: string;
+  status: 'active' | 'disabled';
+  createdBy: string;
+  createdAtUtc: string;
+  updatedAtUtc: string;
+  disabledAtUtc: string | null;
+  activeTokens: number;
+}
+
 export interface AgentPromptResponse {
   key: string;
   category: string;

@@ -60,6 +60,7 @@ public sealed partial class WorkService
         {
             var where = $"corrections[{index}]";
             var appliesWhen = ReadAppliesWhen(correction.AppliesWhen, $"{where}.applies_when");
+            RequireRelayedActivity(correction.Source.Kind, appliesWhen, where);
             var (sameAs, contradicts) = ReadLessonDecision(correction.SameAs, correction.Contradicts, where);
             specs.Add(new KnowledgeSpec(
                 KnowledgeKind.Lesson, Summary(correction.CorrectBehavior, $"{where}.correct_behavior"), null, correction.Confidence ?? KnowledgeConfidence.High, null,
@@ -170,6 +171,8 @@ public sealed partial class WorkService
         {
             var project = await KnowledgeProjectAsync(request.Project, session, ct);
             var spec = await ReadEntryAsync(entry, project, "entry", allowLinks: true, ct);
+            if (actor.IsAgent && spec.Supersedes is { } replaced)
+                AgentRefusal.ThrowIfReplacingPersonsLesson(await RequireEntryAsync(replaced.EntryId.ToString(), "entry.supersedes.id", project.Id.ToString(), session, ct));
             var recorded = await Knowledge.RecordKnowledgeAsync(project.Id, spec, actor, request.IdempotencyKey is { } key ? HashKey(actor, key) : null, ct);
             return recorded.Entry.Kind == KnowledgeKind.Lesson
                 ? recorded with { Similar = await SimilarAsync(project.Id, [ToRow(recorded.Entry)], ct), Hints = LessonHints([spec], [ToRow(recorded.Entry) with { Rule = recorded.Entry.Lesson?.State == LessonRuleState.Rule ? true : null }]) }
@@ -184,6 +187,8 @@ public sealed partial class WorkService
             : (request.Verify!.Id, request.Verify.ExpectedVersion);
         var where = chosen[0];
         var current = await RequireEntryAsync(id, $"{where}.id", request.Project, session, ct);
+        if (actor.IsAgent)
+            AgentRefusal.ThrowIfReshapingPersonsLesson(request, current);
 
         if (request.Relate is { } relation)
         {
@@ -262,6 +267,7 @@ public sealed partial class WorkService
 
         var (repositories, paths, nodes, commit) = ReadScope(input.Repositories, input.Paths, input.Nodes, input.Commit, where);
         var appliesWhen = ReadAppliesWhen(input.AppliesWhen, $"{where}.applies_when");
+        RequireRelayedActivity(input.Source?.Kind, appliesWhen, where);
         if (appliesWhen is not null)
         {
             // A lesson's location is its scope.
@@ -481,9 +487,16 @@ public sealed partial class WorkService
         return values.Select((value, index) => Text(value, $"{argument}[{index}]", KnowledgeLimits.MaxFieldLength)).ToList();
     }
 
+    // A relayed correction waits in the review queue as a proposed rule, and a rule needs an activity (CG-F16).
+    private static void RequireRelayedActivity(CorrectionSourceKind? kind, AppliesWhenView? appliesWhen, string where)
+    {
+        if (LessonSimilarity.IsRelayed(kind) && appliesWhen?.Activity is not { Count: > 0 })
+            throw WorkException.Invalid($"{where}: a relayed correction is proposed to the owner as a rule, so it needs applies_when.activity. Nothing was changed.");
+    }
+
     private static CorrectionSourceView ReadSource(CorrectionSourceInput source, string argument) =>
         new(source.Kind,
-            source.Kind switch { CorrectionSourceKind.Prompt => "highest", CorrectionSourceKind.Review => "high", _ => "normal" },
+            LessonSimilarity.Priority(source.Kind),
             Optional(source.Ref, $"{argument}.ref", KnowledgeLimits.MaxSourceRefLength));
 
     private static AppliesWhenView? ReadAppliesWhen(AppliesWhenInput? input, string argument)

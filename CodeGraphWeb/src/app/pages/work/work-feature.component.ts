@@ -64,7 +64,7 @@ type Tab = 'board' | 'graph' | 'progress' | 'docs' | 'plan';
                           <span class="wrk-chip">{{ item.priority }}</span>
                           @if (item.blocked) { <wrk-status [status]="item.status" [blocked]="true" [reason]="item.blocked_reason" /> }</div>
                         <div>{{ item.title }}</div>
-                        @if (item.claim) { <div class="wrk-sub">claimed by <wrk-actor [actor]="{ name: item.claim.holder, session_id: item.claim.session_id }" /></div> }
+                        @if (item.claim) { <div class="wrk-sub">claimed by <wrk-actor [actor]="{ name: item.claim.holder, session_id: item.claim.session_id, kind: item.claim.holder_kind === 'agent' ? 'agent' : item.claim.session_id ? 'session' : 'user' }" /></div> }
                         <label class="wrk-sr" [attr.for]="'move-' + item.key">Move {{ item.key }} to</label>
                         <select class="wrk-input" [id]="'move-' + item.key" [value]="item.status" (change)="move(item, $any($event.target).value, $any($event.target))" style="font-size:11px;padding:2px 4px">
                           @for (s of statuses; track s) { <option [value]="s" [selected]="s === item.status">{{ s.replace('_', ' ') }}</option> }

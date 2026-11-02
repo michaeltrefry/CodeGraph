@@ -81,3 +81,44 @@ describe('ApiService job queue requests', () => {
     injector.destroy();
   });
 });
+
+describe('ApiService agent endpoints', () => {
+  const http = {
+    get: vi.fn().mockReturnValue('get'),
+    post: vi.fn().mockReturnValue('post'),
+    put: vi.fn().mockReturnValue('put'),
+    patch: vi.fn().mockReturnValue('patch'),
+    delete: vi.fn().mockReturnValue('delete')
+  };
+  const injector = Injector.create({
+    providers: [
+      ApiService,
+      { provide: AuthService, useValue: {} },
+      { provide: HttpClient, useValue: http }
+    ]
+  });
+  const api = runInInjectionContext(injector, () => injector.get(ApiService));
+  const base = 'http://localhost:5037/api/admin/agents';
+
+  it('calls the admin agent routes', () => {
+    api.listAgents();
+    expect(http.get).toHaveBeenLastCalledWith(base);
+    api.createAgent('codex');
+    expect(http.post).toHaveBeenLastCalledWith(base, { name: 'codex' });
+    api.updateAgent(7, { disabled: true });
+    expect(http.patch).toHaveBeenLastCalledWith(`${base}/7`, { disabled: true });
+    api.deleteAgent(7);
+    expect(http.delete).toHaveBeenLastCalledWith(`${base}/7`);
+  });
+
+  it('calls the admin agent token routes', () => {
+    api.listAgentTokens(7);
+    expect(http.get).toHaveBeenLastCalledWith(`${base}/7/tokens`);
+    api.createAgentToken(7, 'host', 30);
+    expect(http.post).toHaveBeenLastCalledWith(`${base}/7/tokens`, { name: 'host', expiresInDays: 30, toolNames: undefined });
+    api.updateAgentTokenTools(7, 12, ['a']);
+    expect(http.put).toHaveBeenLastCalledWith(`${base}/7/tokens/12/tools`, { toolNames: ['a'] });
+    api.revokeAgentToken(7, 12);
+    expect(http.delete).toHaveBeenLastCalledWith(`${base}/7/tokens/12`);
+  });
+});

@@ -174,10 +174,13 @@ public sealed partial class MySqlWorkStore
         public string? Harness { get; init; }
         public string? Model { get; init; }
         public string? Host { get; init; }
+        public string? IdentityKind { get; init; }
+
+        public string? HolderKind => IdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null;
     }
 
     private const string AttemptColumns =
-        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host";
+        "a.id, a.item_id, a.number, a.holder, a.marker, a.session_id, a.branch, a.outcome, a.reason, a.handoff_id, a.started_at, a.ended_at, COALESCE(s.harness, a.harness) AS harness, COALESCE(s.model, a.model) AS model, COALESCE(s.host, a.host) AS host, COALESCE(a.holder_kind, s.identity_kind) AS identity_kind";
 
     private static Task<AttemptRow?> ActiveAttemptAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>
         connection.QueryFirstOrDefaultAsync<AttemptRow>(new CommandDefinition(
@@ -220,9 +223,9 @@ public sealed partial class MySqlWorkStore
 
         var id = Guid.NewGuid();
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO work_attempts (id, item_id, number, holder, marker, session_id, branch, outcome, started_at) " +
-            "VALUES (@id, @itemId, @number, @holder, @marker, @session, @branch, 'active', @now)",
-            new { id, itemId = item.Id, number, holder = actor.Name, marker, session = actor.SessionId, branch, now }, transaction, cancellationToken: ct));
+            "INSERT INTO work_attempts (id, item_id, number, holder, holder_kind, marker, session_id, branch, outcome, started_at) " +
+            "VALUES (@id, @itemId, @number, @holder, @holderKind, @marker, @session, @branch, 'active', @now)",
+            new { id, itemId = item.Id, number, holder = actor.Name, holderKind = HolderKindOf(actor), marker, session = actor.SessionId, branch, now }, transaction, cancellationToken: ct));
         var started = (await ActiveAttemptAsync(connection, transaction, item.Id, ct))!;
         changes.Add(Change("attempt", null, AttemptNode(started, AttemptOutcome.Active)));
         return started;
@@ -267,7 +270,7 @@ public sealed partial class MySqlWorkStore
             var prs = links.Where(link => link.AttemptId == row.Id && link.Kind == "pr").Select(link => link.Url).ToList();
             return new AttemptView(
                 row.Id, row.Number, ParseName<AttemptOutcome>(row.Outcome),
-                new HolderView(row.Holder, row.SessionId, row.Harness, row.Model, row.Host),
+                new HolderView(row.Holder, row.SessionId, row.Harness, row.Model, row.Host, row.HolderKind),
                 Utc(row.StartedAt), row.EndedAt is { } ended ? Utc(ended) : null, row.Reason, row.Branch,
                 branches.Count == 0 ? null : branches, prs.Count == 0 ? null : prs, row.HandoffId);
         }).ToList();
@@ -700,8 +703,8 @@ public sealed partial class MySqlWorkStore
     private static PlanPivot Pivot(PlanDiff diff, ItemRow row, string action, DateTime now)
     {
         if (diff.ActiveAttempts.TryGetValue(row.Id, out var attempt))
-            return new PlanPivot(row.Key, action, new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host), attempt.Id);
-        return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId) : null);
+            return new PlanPivot(row.Key, action, new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host, attempt.HolderKind), attempt.Id);
+        return new PlanPivot(row.Key, action, row.HasLiveClaim(now) ? new HolderView(row.ClaimHolder!, row.ClaimSessionId, Kind: AgentKindOf(row.ClaimHolderKind)) : null);
     }
 
     // A plan entry that sets an open item's status to closed closes it (claim ended), like leaving it out.
@@ -1031,7 +1034,8 @@ public sealed partial class MySqlWorkStore
             await EndAttemptAsync(connection, transaction, attempt, AttemptOutcome.Superseded, summary, now, extra, ct);
             if (row.HasLiveClaim(now))
             {
-                var holder = new WorkActor(row.ClaimHolder!, row.ClaimSessionId is null ? WorkActor.UserKind : WorkActor.SessionKind, row.ClaimSessionId);
+                var holder = new WorkActor(row.ClaimHolder!,
+                    row.ClaimHolderKind == WorkActor.AgentKind ? WorkActor.AgentKind : row.ClaimSessionId is null ? WorkActor.UserKind : WorkActor.SessionKind, row.ClaimSessionId);
                 await BeginAttemptAsync(connection, transaction, row, holder, row.ClaimMarker!, now, extra, ct);
             }
         }
@@ -1051,7 +1055,7 @@ public sealed partial class MySqlWorkStore
         var pivoted = diff.IsPivot(row, now);
         var pivot = Pivot(diff, row, "close", now);
         await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_items SET claim_holder = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
+            "UPDATE work_items SET claim_holder = NULL, claim_holder_kind = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
             new { id = row.Id }, transaction, cancellationToken: ct));
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_session_claims SET released_at = @now WHERE item_id = @id AND released_at IS NULL", new { now, id = row.Id }, transaction, cancellationToken: ct));

@@ -51,7 +51,6 @@ public sealed class MariaDbRepositoryRenameMigrationTests
             await using var context = new CodeGraphDbContext(new DbContextOptionsBuilder<CodeGraphDbContext>()
                 .UseMySql(builder.ConnectionString, ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
                 .Options);
-            var tokenStore = new MySqlMcpPersonalAccessTokenStore(context);
             var hubStore = new MySqlMcpHubStore(context, new PassthroughEncryptor());
 
             // The catalog as the previous release left it: an admin disabled search_projects and
@@ -72,7 +71,7 @@ public sealed class MariaDbRepositoryRenameMigrationTests
                 await conn.ExecuteAsync(WorkProjectRowsSql);
             }
 
-            var selected = await CreateTokenAsync(tokenStore, "selected");
+            var selected = await CreateTokenAsync(context, "selected");
             await hubStore.ReplaceTokenEntitlementsAsync(selected, ["search_graph", "search_projects", "get_project_health"]);
 
             File.Copy(Path.Combine(sourceMigrations, RenameMigration), Path.Combine(migrationsPath, RenameMigration));
@@ -197,20 +196,16 @@ public sealed class MariaDbRepositoryRenameMigrationTests
         }
     }
 
-    private static async Task<long> CreateTokenAsync(MySqlMcpPersonalAccessTokenStore store, string name)
+    private static async Task<long> CreateTokenAsync(CodeGraphDbContext context, string name)
     {
-        var token = await store.CreateMcpPersonalAccessTokenAsync(new McpPersonalAccessTokenEntity
-        {
-            Username = "michael",
-            TokenName = name,
-            TokenPrefixValue = "cgmcp_" + name,
-            TokenHash = "hash-" + name,
-            LastFour = "abcd",
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(30),
-            EntitlementMode = "selected"
-        });
-        return token.Id;
+        const string mode = "selected";
+        DateTime? revokedAt = null;
+        // Seeded with SQL: this schema predates later columns of the current token entity (agent_id, migration 113).
+        await using var connection = new MySqlConnection(context.Database.GetConnectionString());
+        return await connection.ExecuteScalarAsync<long>(
+            "INSERT INTO mcp_personal_access_tokens (username, token_name, token_prefix, token_hash, last_four, created_at, expires_at, revoked_at, entitlement_mode) " +
+            "VALUES ('michael', @name, @prefix, @hash, 'abcd', @now, @expires, @revokedAt, @mode); SELECT LAST_INSERT_ID();",
+            new { name, prefix = "cgmcp_" + name, hash = "hash-" + name, now = DateTime.UtcNow, expires = DateTime.UtcNow.AddDays(30), revokedAt, mode });
     }
 
     private static MariaDbMigrationRunner CreateRunner(string connectionString, string migrationsPath) =>

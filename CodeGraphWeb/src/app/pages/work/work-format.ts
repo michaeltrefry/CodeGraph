@@ -52,7 +52,8 @@ const toMillis = (value: string): number => Date.parse(/Z$|[+-]\d\d:?\d\d$/.test
 export function buildTimeline(item: ItemView, changes: readonly WorkChange[], messages: readonly MessageView[], evidence: readonly GitHubEvidence[] = []): TimelineEntry[] {
   const entries: TimelineEntry[] = [];
   const add = (entry: Omit<TimelineEntry, 'sort'>) => entries.push({ ...entry, sort: toMillis(entry.at) });
-  const person = (name: string, sessionId?: string, harness?: string) => ({ name, kind: (sessionId ? 'session' : 'user') as WorkActor['kind'], session_id: sessionId, harness });
+  const person = (name: string, sessionId?: string, harness?: string, kind?: string) =>
+    ({ name, kind: (kind === 'agent' ? 'agent' : sessionId ? 'session' : 'user') as WorkActor['kind'], session_id: sessionId, harness });
 
   for (const change of changes) {
     if (change.entity_key !== item.key) continue;
@@ -68,7 +69,7 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
   }
 
   for (const comment of item.comments) {
-    add({ at: comment.created_at, kind: 'comment', actor: person(comment.author, comment.session_id, comment.harness), title: 'Comment', detail: comment.body });
+    add({ at: comment.created_at, kind: 'comment', actor: person(comment.author, comment.session_id, comment.harness, comment.author_kind), title: 'Comment', detail: comment.body });
   }
 
   for (const handoff of item.handoffs ?? []) {
@@ -79,11 +80,11 @@ export function buildTimeline(item: ItemView, changes: readonly WorkChange[], me
       handoff.branch && `Branch: ${handoff.branch}`,
       handoff.commit && `Commit: ${handoff.commit}`
     ].filter(Boolean);
-    add({ at: handoff.created_at, kind: 'handoff', actor: person(handoff.author, handoff.session_id, handoff.harness), title: 'Handoff', detail: parts.join('\n') });
+    add({ at: handoff.created_at, kind: 'handoff', actor: person(handoff.author, handoff.session_id, handoff.harness, handoff.author_kind), title: 'Handoff', detail: parts.join('\n') });
   }
 
   for (const attempt of item.attempts ?? []) {
-    const holder = { name: attempt.holder.identity, kind: (attempt.holder.session_id ? 'session' : 'user') as WorkActor['kind'], session_id: attempt.holder.session_id, harness: attempt.holder.harness, model: attempt.holder.model, host: attempt.holder.host };
+    const holder = { name: attempt.holder.identity, kind: (attempt.holder.kind === 'agent' ? 'agent' : attempt.holder.session_id ? 'session' : 'user') as WorkActor['kind'], session_id: attempt.holder.session_id, harness: attempt.holder.harness, model: attempt.holder.model, host: attempt.holder.host };
     add({ at: attempt.started_at, kind: 'attempt', actor: holder, title: `Attempt ${attempt.number} started`, detail: attempt.branch ? `Branch ${attempt.branch}` : undefined });
     if (attempt.ended_at) {
       add({ at: attempt.ended_at, kind: 'attempt', actor: holder, title: `Attempt ${attempt.number} ${attempt.outcome}`, detail: [attempt.reason, ...(attempt.prs ?? [])].filter(Boolean).join('\n') || undefined });

@@ -4,7 +4,8 @@ namespace CodeGraph.Models.Work;
 
 /// <summary>
 /// Who made a write (E3): the authenticated identity, and when the call carried a session, that
-/// session with its harness, model and host (<see cref="Kind"/> is then <c>session</c>).
+/// session with its harness, model and host (<see cref="Kind"/> is then <c>session</c>). An agent
+/// (CG-F16) keeps kind <c>agent</c> with or without a session.
 /// </summary>
 public sealed record WorkActor(
     string Name,
@@ -18,8 +19,14 @@ public sealed record WorkActor(
     public const string SessionKind = "session";
     /// <summary>A write made by CodeGraph itself, such as an import (<c>import:shortcut</c>).</summary>
     public const string SystemKind = "system";
-    /// <summary>An imported comment written by an agent account (Claude, Codex) in the source tracker.</summary>
+    /// <summary>
+    /// An agent (CG-F16): a write made with an agent's token, with or without a session, and an
+    /// imported comment written by an agent account (Claude, Codex) in the source tracker.
+    /// </summary>
     public const string AgentKind = "agent";
+
+    /// <summary>Whether the write is an agent's (never human input).</summary>
+    public bool IsAgent => Kind == AgentKind;
 }
 
 public sealed record RepositoryMemberView(string Repository, RepositoryRole Role);
@@ -72,7 +79,8 @@ public sealed record EntityRef(Guid Id, string Key, string Title);
 
 public sealed record DependencyView(Guid Id, string Key, string Title, WorkStatus Status);
 
-public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt, DateTime ExpiresAt, string? SessionId = null);
+/// <summary>A live claim; <see cref="HolderKind"/> is <c>agent</c> when an agent holds it (CG-F16).</summary>
+public sealed record ClaimView(string Holder, string Marker, DateTime ClaimedAt, DateTime ExpiresAt, string? SessionId = null, string? HolderKind = null);
 
 public sealed record LinkView(Guid Id, WorkLinkKind Kind, string Url, DateTime CreatedAt);
 

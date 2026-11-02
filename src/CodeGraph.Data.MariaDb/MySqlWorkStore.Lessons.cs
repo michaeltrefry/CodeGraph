@@ -224,13 +224,15 @@ public sealed partial class MySqlWorkStore
     private async Task InitLessonAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, KnowledgeSpec spec, Guid? item, WorkActor actor, DateTime now, CancellationToken ct)
     {
         var prompt = spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt;
+        // What an agent relays from a person waits for the owner in the review queue (CG-F16 E4).
+        var relayed = LessonSimilarity.IsRelayed(spec.Details?.Source?.Kind);
         // A rule needs an applies-when activity: without one it would be served everywhere (§5.7).
-        var rule = HasActivity(spec.Details) && (prompt || ruleThreshold <= 1);
+        var rule = HasActivity(spec.Details) && !relayed && (prompt || ruleThreshold <= 1);
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = @state, rule_reason = @reason, rule_since = @since, recurrence = 1, priority = @priority WHERE id = @id",
             new
             {
-                state = rule ? "rule" : "candidate", reason = rule ? JsonName(prompt ? RuleReason.HumanPrompt : RuleReason.Recurrence) : null,
+                state = rule ? "rule" : relayed && HasActivity(spec.Details) ? "proposed" : "candidate", reason = rule ? JsonName(prompt ? RuleReason.HumanPrompt : RuleReason.Recurrence) : null,
                 since = rule ? now : (DateTime?)null, priority = LessonSimilarity.Priority(spec.Details?.Source?.Kind), id = spec.Id
             },
             transaction, cancellationToken: ct));
@@ -358,16 +360,29 @@ public sealed partial class MySqlWorkStore
     /// </summary>
     private async Task<bool> PromoteIfDueAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, DateTime now, bool promptEvent, CancellationToken ct)
     {
-        var row = await connection.QuerySingleAsync<(string? RuleState, int? Recurrence, string? Activities, string? SourceKind)>(new CommandDefinition(
-            "SELECT rule_state, recurrence, activities, source_kind FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
+        var row = await connection.QuerySingleAsync<(string? RuleState, int? Recurrence, string? Activities, string? SourceKind, bool Relayed)>(new CommandDefinition(
+            "SELECT rule_state, recurrence, activities, source_kind, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND source_kind IN ('relayed_prompt', 'relayed_review')) AS relayed " +
+            "FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
         if (row.RuleState == "rule" || string.IsNullOrEmpty(row.Activities))
             return false;
 
-        RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && row.RuleState != "rejected") ? RuleReason.HumanPrompt
-            : row.RuleState != "rejected" && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
+        // A lesson carrying the owner's words relayed by an agent (its own source or a merged
+        // correction) becomes a rule only by the owner's approval, never by recurrence: it waits as
+        // proposed in the review queue (CG-F16).
+        var relayed = row.Relayed || row.SourceKind is "relayed_prompt" or "relayed_review";
+        // A new prompt event is the person's own word; a prompt lesson that only gained its activity
+        // from a relayed correction is not (the agent chose it), so it waits for the owner.
+        RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && !relayed && row.RuleState != "rejected") ? RuleReason.HumanPrompt
+            : row.RuleState != "rejected" && !relayed && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
             : null;
         if (reason is null)
+        {
+            if (relayed && row.RuleState == "candidate")
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "UPDATE knowledge_entries SET rule_state = 'proposed' WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
             return false;
+        }
 
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @now, rejected_reason = NULL WHERE id = @entryId",

@@ -523,10 +523,13 @@ public static class LessonSimilarity
 
     public static string Priority(CorrectionSourceKind? kind) => kind switch
     {
-        CorrectionSourceKind.Prompt => "highest",
-        CorrectionSourceKind.Review => "high",
+        CorrectionSourceKind.Prompt or CorrectionSourceKind.RelayedPrompt => "highest",
+        CorrectionSourceKind.Review or CorrectionSourceKind.RelayedReview => "high",
         _ => "normal"
     };
+
+    /// <summary>A person's words relayed by an agent: proposed for the owner, never a rule by recurrence (CG-F16).</summary>
+    public static bool IsRelayed(CorrectionSourceKind? kind) => kind is CorrectionSourceKind.RelayedPrompt or CorrectionSourceKind.RelayedReview;
 
     public static int PriorityRank(string? priority) => priority switch
     {

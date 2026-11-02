@@ -361,6 +361,7 @@ public sealed partial class MySqlWorkStore(
         public string? ClaimHolder { get; init; }
         public string? ClaimMarker { get; init; }
         public string? ClaimSessionId { get; init; }
+        public string? ClaimHolderKind { get; init; }
         public DateTime? ClaimedAt { get; init; }
         public DateTime? ClaimExpiresAt { get; init; }
         public long Version { get; init; }
@@ -383,7 +384,7 @@ public sealed partial class MySqlWorkStore(
 
     private const string ItemColumns =
         "i.id, i.project_id, p.project_key, i.number, i.feature_id, i.item_type, i.title, i.description, i.status, i.priority, " +
-        "i.sort_order, i.labels, i.repository_name, i.claim_holder, i.claim_marker, i.claim_session_id, i.claimed_at, " +
+        "i.sort_order, i.labels, i.repository_name, i.claim_holder, i.claim_holder_kind, i.claim_marker, i.claim_session_id, i.claimed_at, " +
         "i.claim_expires_at, i.version, i.created_by, i.created_at, i.updated_at, " +
         "i.plan_ref, i.goal, i.acceptance_json, i.inherits_json, i.touches_json, i.acceptance_report_json, i.merged_awaiting_acceptance, i.imported_json";
 
@@ -622,7 +623,7 @@ public sealed partial class MySqlWorkStore(
             SplitLabels(row.Labels), row.RepositoryName,
             unfinished.Count > 0 || awaitingHuman, reason, blockedBy, blocks,
             row.HasLiveClaim(now)
-                ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId)
+                ? new ClaimView(row.ClaimHolder!, row.ClaimMarker!, Utc(row.ClaimedAt!.Value), Utc(row.ClaimExpiresAt!.Value), row.ClaimSessionId, AgentKindOf(row.ClaimHolderKind))
                 : null,
             links, comments, row.Version, row.CreatedBy, Utc(row.CreatedAt), Utc(row.UpdatedAt),
             handoffs.Count == 0 ? null : handoffs, handoffCount == 0 ? null : handoffCount,

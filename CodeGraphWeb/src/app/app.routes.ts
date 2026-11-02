@@ -183,6 +183,10 @@ export const routes: Routes = [
             loadComponent: () => import('./pages/admin/admin-users.component').then(m => m.AdminUsersComponent)
           },
           {
+            path: 'agents',
+            loadComponent: () => import('./pages/admin/admin-agents.component').then(m => m.AdminAgentsComponent)
+          },
+          {
             path: 'prompts',
             loadComponent: () => import('./pages/admin/admin-prompts.component').then(m => m.AdminPromptsComponent)
           },

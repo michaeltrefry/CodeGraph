@@ -80,6 +80,22 @@ public sealed class WorkDatabase : IAsyncLifetime
         return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
     }
 
+    /// <summary>Makes sure an enabled agent named <paramref name="name"/> exists (an agent's session needs one).</summary>
+    public async Task<WorkActor> AgentAsync(string name)
+    {
+        await using var connection = new MySqlConnection(ConnectionString);
+        await connection.ExecuteAsync(
+            "INSERT IGNORE INTO agents (name, created_by, created_at, updated_at) VALUES (@name, 'test', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))", new { name });
+        return new WorkActor(name, WorkActor.AgentKind);
+    }
+
+    /// <summary>Runs a tool as <paramref name="actor"/> (an agent, say) and answers its result as wire JSON.</summary>
+    public async Task<JsonElement> CallAsAsync(string tool, object arguments, WorkActor actor)
+    {
+        var result = await Service.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), actor);
+        return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+    }
+
     public async Task<WorkException> RefusedAsync(string tool, object arguments, string user = "alice") =>
         await Should.ThrowAsync<WorkException>(() => CallAsync(tool, arguments, user));
 

@@ -47,15 +47,14 @@ public sealed class MariaDbNewToolGrantMigrationTests
             await using var context = new CodeGraphDbContext(new DbContextOptionsBuilder<CodeGraphDbContext>()
                 .UseMySql(builder.ConnectionString, ServerVersion.Create(new Version(11, 4, 0), ServerType.MariaDb))
                 .Options);
-            var tokenStore = new MySqlMcpPersonalAccessTokenStore(context);
             var hubStore = new MySqlMcpHubStore(context, new PassthroughEncryptor());
 
-            var selected = await CreateTokenAsync(tokenStore, "selected", "selected");
+            var selected = await CreateTokenAsync(context, "selected", "selected");
             await hubStore.ReplaceTokenEntitlementsAsync(selected, ["search_graph"]);
-            var selectedWithOne = await CreateTokenAsync(tokenStore, "selected-with-one", "selected");
+            var selectedWithOne = await CreateTokenAsync(context, "selected-with-one", "selected");
             await hubStore.ReplaceTokenEntitlementsAsync(selectedWithOne, ["search_graph", "file_hotspot"]);
-            var all = await CreateTokenAsync(tokenStore, "all", "all");
-            var revoked = await CreateTokenAsync(tokenStore, "revoked", "selected", revokedAt: DateTime.UtcNow);
+            var all = await CreateTokenAsync(context, "all", "all");
+            var revoked = await CreateTokenAsync(context, "revoked", "selected", revokedAt: DateTime.UtcNow);
             await hubStore.ReplaceTokenEntitlementsAsync(revoked, ["search_graph"]);
 
             foreach (var tool in NewTools)
@@ -86,7 +85,7 @@ public sealed class MariaDbNewToolGrantMigrationTests
             (await hubStore.IsTokenEntitledAsync(selected, "get_overlay_status")).ShouldBeTrue();
 
             // A token created after the grant follows its own selection only.
-            var created = await CreateTokenAsync(tokenStore, "created-later", "selected");
+            var created = await CreateTokenAsync(context, "created-later", "selected");
             await hubStore.ReplaceTokenEntitlementsAsync(created, ["search_graph"]);
             await CreateRunner(builder.ConnectionString, migrationsPath).ApplyConfiguredMigrationsAsync();
             (await hubStore.IsTokenEntitledAsync(created, "request_overlay")).ShouldBeFalse();
@@ -104,24 +103,17 @@ public sealed class MariaDbNewToolGrantMigrationTests
     }
 
     private static async Task<long> CreateTokenAsync(
-        MySqlMcpPersonalAccessTokenStore store,
+        CodeGraphDbContext context,
         string name,
         string mode,
         DateTime? revokedAt = null)
     {
-        var token = await store.CreateMcpPersonalAccessTokenAsync(new McpPersonalAccessTokenEntity
-        {
-            Username = "michael",
-            TokenName = name,
-            TokenPrefixValue = "cgmcp_" + name,
-            TokenHash = "hash-" + name,
-            LastFour = "abcd",
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddDays(30),
-            RevokedAt = revokedAt,
-            EntitlementMode = mode
-        });
-        return token.Id;
+        // Seeded with SQL: this schema predates later columns of the current token entity (agent_id, migration 113).
+        await using var connection = new MySqlConnection(context.Database.GetConnectionString());
+        return await connection.ExecuteScalarAsync<long>(
+            "INSERT INTO mcp_personal_access_tokens (username, token_name, token_prefix, token_hash, last_four, created_at, expires_at, revoked_at, entitlement_mode) " +
+            "VALUES ('michael', @name, @prefix, @hash, 'abcd', @now, @expires, @revokedAt, @mode); SELECT LAST_INSERT_ID();",
+            new { name, prefix = "cgmcp_" + name, hash = "hash-" + name, now = DateTime.UtcNow, expires = DateTime.UtcNow.AddDays(30), revokedAt, mode });
     }
 
     private static MariaDbMigrationRunner CreateRunner(string connectionString, string migrationsPath) =>

@@ -52,13 +52,20 @@ internal sealed class WorkRestHost : IAsyncDisposable
     /// <summary>A handler that sends requests into the test server (for clients such as cg).</summary>
     public HttpMessageHandler CreateHandler() => host.GetTestServer().CreateHandler();
 
-    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null, Action<IServiceCollection>? configureServices = null, bool enableMcp = false)
+    /// <summary>The signing key of the hosts' tokens.</summary>
+    public static readonly string SigningKey = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
+
+    /// <summary>
+    /// Starts the host. <paramref name="tokens"/> makes the token service over the seeded hub (for
+    /// tokens kept in a real database); by default tokens live in memory.
+    /// </summary>
+    public static async Task<WorkRestHost> StartAsync(IWorkService work, IWorkStore? store = null, Action<IServiceCollection>? configureServices = null, bool enableMcp = false,
+        Func<IMcpHubStore, McpPersonalAccessTokenService>? tokens = null)
     {
         var hub = new InMemoryMcpHubStore();
         await new McpHubCatalogSeeder(hub, new InMemoryMcpSensitiveColumnStore()).EnsureCatalogAsync();
-        var key = Convert.ToBase64String(Enumerable.Range(1, 32).Select(i => (byte)i).ToArray());
-        var tokenService = new McpPersonalAccessTokenService(
-            new TokenStore(), hub, Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = key }));
+        var tokenService = tokens?.Invoke(hub) ?? new McpPersonalAccessTokenService(
+            new TokenStore(), hub, Options.Create(new CodeGraphStorageOptions { MariaDbEncryptionKey = SigningKey }));
 
         var started = await new HostBuilder()
             .ConfigureWebHost(webHost => webHost
@@ -196,8 +203,8 @@ internal sealed class WorkRestHost : IAsyncDisposable
     {
         private readonly List<McpPersonalAccessTokenEntity> tokens = [];
 
-        public Task<IReadOnlyList<McpPersonalAccessTokenEntity>> ListMcpPersonalAccessTokensAsync(string username, CancellationToken ct = default) =>
-            Task.FromResult<IReadOnlyList<McpPersonalAccessTokenEntity>>(tokens.Where(token => token.Username == username).ToList());
+        public Task<IReadOnlyList<McpPersonalAccessTokenEntity>> ListMcpPersonalAccessTokensAsync(string username, long? agentId = null, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<McpPersonalAccessTokenEntity>>(tokens.Where(token => agentId is null ? token.AgentId is null && token.Username == username : token.AgentId == agentId).ToList());
 
         public Task<McpPersonalAccessTokenEntity> CreateMcpPersonalAccessTokenAsync(McpPersonalAccessTokenEntity token, CancellationToken ct = default)
         {
@@ -209,10 +216,10 @@ internal sealed class WorkRestHost : IAsyncDisposable
         public Task<McpPersonalAccessTokenEntity?> GetMcpPersonalAccessTokenByHashAsync(string tokenHash, CancellationToken ct = default) =>
             Task.FromResult(tokens.FirstOrDefault(token => token.TokenHash == tokenHash));
 
-        public Task<bool> RevokeMcpPersonalAccessTokenAsync(string username, long id, DateTime revokedAt, CancellationToken ct = default) =>
+        public Task<bool> RevokeMcpPersonalAccessTokenAsync(string username, long id, DateTime revokedAt, long? agentId = null, CancellationToken ct = default) =>
             Task.FromResult(false);
 
-        public Task<bool> SetMcpPersonalAccessTokenEntitlementModeAsync(string username, long id, string entitlementMode, CancellationToken ct = default) =>
+        public Task<bool> SetMcpPersonalAccessTokenEntitlementModeAsync(string username, long id, string entitlementMode, long? agentId = null, CancellationToken ct = default) =>
             Task.FromResult(false);
 
         public Task<bool> UpdateMcpPersonalAccessTokenLastUsedAsync(long id, DateTime lastUsedAt, string? lastUsedFrom, CancellationToken ct = default) =>

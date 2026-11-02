@@ -140,7 +140,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
               <h2 id="wrk-h-ho">Handoffs <span class="wrk-count">{{ it.handoff_count ?? (it.handoffs ?? []).length }}</span></h2>
               @for (h of it.handoffs ?? []; track h.id) {
                 <article class="wrk-msg" style="margin-bottom:6px">
-                  <div class="wrk-row"><wrk-actor [actor]="{ name: h.author, kind: h.session_id ? 'session' : 'user', session_id: h.session_id, harness: h.harness }" /><span class="wrk-sub">{{ h.created_at | ago }}</span></div>
+                  <div class="wrk-row"><wrk-actor [actor]="{ name: h.author, kind: h.author_kind === 'agent' ? 'agent' : h.session_id ? 'session' : 'user', session_id: h.session_id, harness: h.harness }" /><span class="wrk-sub">{{ h.created_at | ago }}</span></div>
                   @if (h.done) { <div class="wrk-pre"><strong>Done.</strong> {{ h.done }}</div> }
                   @if (h.next_action) { <div class="wrk-pre"><strong>Next.</strong> {{ h.next_action }}</div> }
                   @if ((h.open_issues ?? []).length > 0) { <div><strong>Open.</strong> {{ h.open_issues!.join('; ') }}</div> }
@@ -203,7 +203,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
                   <select class="wrk-input" (change)="setStatus($any($event.target).value, $any($event.target))" aria-label="Status">@for (s of statuses; track s) { <option [value]="s" [selected]="s === it.status">{{ s.replace('_', ' ') }}</option> }</select>
                 </label>
                 @if (it.claim; as claim) {
-                  <div>Claimed by <wrk-actor [actor]="{ name: claim.holder, session_id: claim.session_id, kind: claim.session_id ? 'session' : 'user' }" />, marker {{ claim.marker }}, expires {{ claim.expires_at | ago }}.</div>
+                  <div>Claimed by <wrk-actor [actor]="{ name: claim.holder, session_id: claim.session_id, kind: claim.holder_kind === 'agent' ? 'agent' : claim.session_id ? 'session' : 'user' }" />, marker {{ claim.marker }}, expires {{ claim.expires_at | ago }}.</div>
                   <div class="wrk-row">
                     <button type="button" class="wrk-btn" [disabled]="busy()" (click)="write({ renew_claim: {} }, 'Claim renewed.')">Renew claim</button>
                     <button type="button" class="wrk-btn" [disabled]="busy()" (click)="write({ release_claim: {} }, 'Claim released.')">Release claim</button>

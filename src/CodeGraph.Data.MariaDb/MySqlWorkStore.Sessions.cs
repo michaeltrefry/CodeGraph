@@ -24,6 +24,7 @@ public sealed partial class MySqlWorkStore
         public Guid ProjectId { get; init; }
         public string ProjectKey { get; init; } = "";
         public string Identity { get; init; } = "";
+        public string IdentityKind { get; init; } = WorkActor.UserKind;
         public string Harness { get; init; } = "";
         public string? Model { get; init; }
         public string? Host { get; init; }
@@ -39,7 +40,7 @@ public sealed partial class MySqlWorkStore
     }
 
     private const string SessionColumns =
-        "s.id, s.project_id, p.project_key, s.identity, s.harness, s.model, s.host, s.repository_name, s.branch, s.worktree, s.intent, " +
+        "s.id, s.project_id, p.project_key, s.identity, s.identity_kind, s.harness, s.model, s.host, s.repository_name, s.branch, s.worktree, s.intent, " +
         "s.started_at, s.last_seen_at, s.ended_at, s.activities, s.skills";
 
     private DateTime StaleBefore(DateTime now) => now.AddSeconds(-idleSeconds);
@@ -54,10 +55,13 @@ public sealed partial class MySqlWorkStore
     private SessionView ToView(SessionRow row, DateTime now) =>
         new(row.Id.ToString(), row.ProjectId, row.ProjectKey, row.Identity, row.Harness, row.Model, row.Host, row.RepositoryName, row.Branch,
             row.Worktree, row.Intent, IsLive(row, now), Utc(row.StartedAt), Utc(row.LastSeenAt), row.EndedAt is { } ended ? Utc(ended) : null,
-            ParseActivities(row.Activities), ParseSkills(row.Skills));
+            ParseActivities(row.Activities), ParseSkills(row.Skills), AgentKindOf(row));
 
+    // A person's session writes as kind session; an agent's keeps kind agent (CG-F16).
     private static WorkActor ActorOf(SessionRow row) =>
-        new(row.Identity, WorkActor.SessionKind, row.Id.ToString(), row.Harness, row.Model, row.Host);
+        new(row.Identity, row.IdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : WorkActor.SessionKind, row.Id.ToString(), row.Harness, row.Model, row.Host);
+
+    private static string IdentityKindOf(WorkActor actor) => actor.IsAgent ? WorkActor.AgentKind : WorkActor.UserKind;
 
     public Task<WorkCreated<SessionView>> StartSessionAsync(NewSessionSpec spec, WorkActor actor, string? keyHash, CancellationToken ct = default) =>
         RunAsync([], async connection =>
@@ -82,13 +86,21 @@ public sealed partial class MySqlWorkStore
                     new { projectId = spec.ProjectId, name }, transaction, cancellationToken: ct)) ?? name
                 : null;
 
+            // An agent's session starts only while the agent exists, enabled, under this name: the share
+            // lock orders it against a rename or delete of the agent, which holds the row for update.
+            if (actor.IsAgent && await connection.ExecuteScalarAsync<long?>(new CommandDefinition(
+                    "SELECT id FROM agents WHERE active_name = @name AND disabled_at IS NULL LOCK IN SHARE MODE",
+                    new { name = actor.Name }, transaction, cancellationToken: ct)) is null)
+                throw new WorkException(WorkErrorCodes.Forbidden,
+                    $"'{actor.Name}' is not an enabled agent now (it was renamed, disabled or deleted); start the session again with the agent's current token. Nothing was changed.");
+
             var id = Guid.NewGuid();
             await connection.ExecuteAsync(new CommandDefinition(
-                "INSERT INTO work_sessions (id, project_id, identity, harness, model, host, repository_name, branch, worktree, intent, activities, skills, started_at, last_seen_at) " +
-                "VALUES (@id, @projectId, @identity, @harness, @model, @host, @repository, @branch, @worktree, @intent, @activities, @skills, @now, @now)",
+                "INSERT INTO work_sessions (id, project_id, identity, identity_kind, harness, model, host, repository_name, branch, worktree, intent, activities, skills, started_at, last_seen_at) " +
+                "VALUES (@id, @projectId, @identity, @identityKind, @harness, @model, @host, @repository, @branch, @worktree, @intent, @activities, @skills, @now, @now)",
                 new
                 {
-                    id = id.ToString(), projectId = spec.ProjectId, identity = actor.Name, harness = spec.Harness, model = spec.Model, host = spec.Host,
+                    id = id.ToString(), projectId = spec.ProjectId, identity = actor.Name, identityKind = IdentityKindOf(actor), harness = spec.Harness, model = spec.Model, host = spec.Host,
                     repository, branch = spec.Branch, worktree = spec.Worktree, intent = spec.Intent, activities = ActivityList(spec.Activity), skills = SkillList(spec.Skills), now
                 },
                 transaction, cancellationToken: ct));
@@ -96,7 +108,7 @@ public sealed partial class MySqlWorkStore
                 await InsertKeyAsync(connection, transaction, spec.ProjectId, SessionOperation, keyHash, id, null, now, ct);
 
             // The unread direct messages of earlier sessions of this project and repository (§5.9).
-            await InheritDirectMessagesAsync(connection, transaction, messageLock, spec.ProjectId, repository, new WorkActor(actor.Name, WorkActor.SessionKind, id.ToString()), now, ct);
+            await InheritDirectMessagesAsync(connection, transaction, messageLock, spec.ProjectId, repository, new WorkActor(actor.Name, actor.IsAgent ? WorkActor.AgentKind : WorkActor.SessionKind, id.ToString()), now, ct);
             var row = (await ReadSessionRowAsync(connection, transaction, id, ct))!;
             await transaction.CommitAsync(ct);
             return new WorkCreated<SessionView>(true, ToView(row, now));
@@ -129,7 +141,8 @@ public sealed partial class MySqlWorkStore
     {
         var row = await ReadSessionRowAsync(connection, transaction, sessionId, ct)
             ?? throw WorkException.SessionUnusable(WorkErrorCodes.NotFound, $"There is no session {sessionId}. Start one with start_session.");
-        if (!string.Equals(row.Identity, actor.Name, StringComparison.Ordinal))
+        // The same name and the same kind: an agent never uses a person's session, nor a person an agent's.
+        if (!string.Equals(row.Identity, actor.Name, StringComparison.Ordinal) || row.IdentityKind != IdentityKindOf(actor))
             throw WorkException.SessionUnusable(WorkErrorCodes.InvalidArgument, $"Session {sessionId} belongs to another identity; a session is used only by the identity that started it.");
         return row;
     }
@@ -248,7 +261,7 @@ public sealed partial class MySqlWorkStore
                 if (releases)
                 {
                     await connection.ExecuteAsync(new CommandDefinition(
-                        "UPDATE work_items SET claim_holder = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
+                        "UPDATE work_items SET claim_holder = NULL, claim_holder_kind = NULL, claim_marker = NULL, claim_session_id = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = @id",
                         new { id }, transaction, cancellationToken: ct));
                 }
 
@@ -350,8 +363,10 @@ public sealed partial class MySqlWorkStore
         var session = await ReadSessionRowAsync(connection, transaction, id, ct);
         return session is null
             ? new HolderView(identity, sessionId)
-            : new HolderView(identity, sessionId, session.Harness, session.Model, session.Host);
+            : new HolderView(identity, sessionId, session.Harness, session.Model, session.Host, AgentKindOf(session));
     }
+
+    private static string? AgentKindOf(SessionRow session) => session.IdentityKind == WorkActor.AgentKind ? WorkActor.AgentKind : null;
 
     private static string Describe(HolderView holder) =>
         holder.SessionId is null
@@ -385,6 +400,7 @@ public sealed partial class MySqlWorkStore
     {
         public Guid Id { get; init; }
         public string Author { get; init; } = "";
+        public string? AuthorKind { get; init; }
         public string? AuthorSessionId { get; init; }
         public string? Harness { get; init; }
         public string? Done { get; init; }
@@ -418,14 +434,14 @@ public sealed partial class MySqlWorkStore
     private static async Task<IReadOnlyList<HandoffView>> ReadHandoffsAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, int? limit, CancellationToken ct)
     {
         var rows = await connection.QueryAsync<HandoffRow>(new CommandDefinition(
-            "SELECT h.id, h.author, h.author_session_id, COALESCE(s.harness, h.author_harness) AS harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
+            "SELECT h.id, h.author, h.author_kind, h.author_session_id, COALESCE(s.harness, h.author_harness) AS harness, h.done, h.decisions_json, h.open_issues_json, h.corrections_json, h.next_action, " +
             "h.branch, h.commit_sha, h.created_at FROM work_handoffs h LEFT JOIN work_sessions s ON s.id = h.author_session_id " +
             "WHERE h.item_id = @itemId ORDER BY h.created_at DESC, h.id" + (limit is { } count ? $" LIMIT {count}" : string.Empty),
             new { itemId }, transaction, cancellationToken: ct));
         return rows.Select(row => new HandoffView(
             row.Id, row.Author, Utc(row.CreatedAt), row.AuthorSessionId, row.Harness, row.Done,
             NonEmptyList(row.DecisionsJson), NonEmptyList(row.OpenIssuesJson), NonEmptyList(row.CorrectionsJson),
-            row.NextAction, row.Branch, row.CommitSha)).ToList();
+            row.NextAction, row.Branch, row.CommitSha, row.AuthorKind == WorkActor.AgentKind ? WorkActor.AgentKind : null)).ToList();
 
         static IReadOnlyList<string>? NonEmptyList(string json) =>
             JsonSerializer.Deserialize<List<string>>(json) is { Count: > 0 } list ? list : null;
@@ -444,6 +460,8 @@ public sealed partial class MySqlWorkStore
         if (before.ClaimHolder is { } holder)
         {
             previous = await HolderAsync(connection, transaction, holder, before.ClaimSessionId, ct);
+            if (previous.Kind is null && before.ClaimHolderKind == WorkActor.AgentKind)
+                previous = previous with { Kind = WorkActor.AgentKind };
         }
         else
         {
@@ -452,7 +470,7 @@ public sealed partial class MySqlWorkStore
                 new { id = before.Id }, transaction, cancellationToken: ct));
             if (lastSession is not null && Guid.TryParse(lastSession, out var sessionId) &&
                 await ReadSessionRowAsync(connection, transaction, sessionId, ct) is { } session)
-                previous = new HolderView(session.Identity, lastSession, session.Harness, session.Model, session.Host);
+                previous = new HolderView(session.Identity, lastSession, session.Harness, session.Model, session.Host, AgentKindOf(session));
             if (previous is null)
             {
                 // The claim rows (and the session) are gone after pruning; the latest attempt keeps the holder
@@ -461,7 +479,7 @@ public sealed partial class MySqlWorkStore
                     $"SELECT {AttemptColumns} FROM work_attempts a LEFT JOIN work_sessions s ON s.id = a.session_id WHERE a.item_id = @id ORDER BY a.number DESC LIMIT 1",
                     new { id = before.Id }, transaction, cancellationToken: ct));
                 if (attempt is not null)
-                    previous = new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host);
+                    previous = new HolderView(attempt.Holder, attempt.SessionId, attempt.Harness, attempt.Model, attempt.Host, attempt.HolderKind);
             }
         }
 

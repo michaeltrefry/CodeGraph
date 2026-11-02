@@ -7,10 +7,16 @@ using Microsoft.Extensions.Options;
 
 namespace CodeGraph.Services;
 
+/// <summary>
+/// MCP personal access tokens of a person (by username) or of an agent (CG-F16): the same format,
+/// expiries, active-token limit and tool entitlements for both. An agent's token is valid only
+/// while its agent exists and is not disabled, and it signs in as the agent's current name.
+/// </summary>
 public sealed class McpPersonalAccessTokenService(
     IMcpPersonalAccessTokenStore store,
     IMcpHubStore hubStore,
-    IOptions<CodeGraphStorageOptions> storageOptionsAccessor)
+    IOptions<CodeGraphStorageOptions> storageOptionsAccessor,
+    IAgentStore? agentStore = null)
 {
     private const string TokenPrefix = "cgmcp_";
     private const int RandomTokenBytes = 32;
@@ -23,13 +29,22 @@ public sealed class McpPersonalAccessTokenService(
 
     private readonly CodeGraphStorageOptions storageOptions = storageOptionsAccessor.Value;
 
-    public async Task<IReadOnlyList<McpPersonalAccessTokenMetadata>> ListForUserAsync(
+    public Task<IReadOnlyList<McpPersonalAccessTokenMetadata>> ListForUserAsync(
         string username,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        ListAsync(TokenOwner.User(NormalizeUsername(username)), cancellationToken);
+
+    public Task<IReadOnlyList<McpPersonalAccessTokenMetadata>> ListForAgentAsync(
+        AgentEntity agent,
+        CancellationToken cancellationToken = default) =>
+        ListAsync(TokenOwner.Agent(agent), cancellationToken);
+
+    private async Task<IReadOnlyList<McpPersonalAccessTokenMetadata>> ListAsync(
+        TokenOwner owner,
+        CancellationToken cancellationToken)
     {
-        var normalizedUsername = NormalizeUsername(username);
         var now = DateTime.UtcNow;
-        var entities = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
+        var entities = await store.ListMcpPersonalAccessTokensAsync(owner.Username, owner.AgentId, cancellationToken);
 
         var results = new List<McpPersonalAccessTokenMetadata>();
         foreach (var token in entities.OrderByDescending(token => token.CreatedAt))
@@ -41,14 +56,29 @@ public sealed class McpPersonalAccessTokenService(
         return results;
     }
 
-    public async Task<McpPersonalAccessTokenCreateResult> CreateForUserAsync(
+    public Task<McpPersonalAccessTokenCreateResult> CreateForUserAsync(
         string username,
         string tokenName,
         int expiresInDays,
         IReadOnlyCollection<string>? toolNames = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        CreateAsync(TokenOwner.User(NormalizeUsername(username)), tokenName, expiresInDays, toolNames, cancellationToken);
+
+    public Task<McpPersonalAccessTokenCreateResult> CreateForAgentAsync(
+        AgentEntity agent,
+        string tokenName,
+        int expiresInDays,
+        IReadOnlyCollection<string>? toolNames = null,
+        CancellationToken cancellationToken = default) =>
+        CreateAsync(TokenOwner.Agent(agent), tokenName, expiresInDays, toolNames, cancellationToken);
+
+    private async Task<McpPersonalAccessTokenCreateResult> CreateAsync(
+        TokenOwner owner,
+        string tokenName,
+        int expiresInDays,
+        IReadOnlyCollection<string>? toolNames,
+        CancellationToken cancellationToken)
     {
-        var normalizedUsername = NormalizeUsername(username);
         var trimmedName = tokenName?.Trim() ?? string.Empty;
 
         if (string.IsNullOrWhiteSpace(trimmedName))
@@ -73,15 +103,16 @@ public sealed class McpPersonalAccessTokenService(
         }
 
         var now = DateTime.UtcNow;
-        var tokens = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
+        var tokens = await store.ListMcpPersonalAccessTokensAsync(owner.Username, owner.AgentId, cancellationToken);
         var activeTokenCount = tokens.Count(token => token.RevokedAt is null && token.ExpiresAt > now);
         if (activeTokenCount >= ActiveTokenLimit)
-            return Error("active_token_limit_reached", $"Users may only have {ActiveTokenLimit} active MCP personal access tokens.");
+            return Error("active_token_limit_reached", $"{(owner.AgentId is null ? "Users" : "Agents")} may only have {ActiveTokenLimit} active MCP personal access tokens.");
 
         var rawToken = GenerateRawToken();
         var entity = new McpPersonalAccessTokenEntity
         {
-            Username = normalizedUsername,
+            Username = owner.Username,
+            AgentId = owner.AgentId,
             TokenName = trimmedName,
             TokenPrefixValue = rawToken[..Math.Min(16, rawToken.Length)],
             TokenHash = ComputeTokenHash(rawToken, signingKey),
@@ -111,22 +142,41 @@ public sealed class McpPersonalAccessTokenService(
             NormalizeUsername(username),
             id,
             DateTime.UtcNow,
-            cancellationToken);
+            ct: cancellationToken);
+
+    public Task<bool> RevokeForAgentAsync(
+        AgentEntity agent,
+        long id,
+        CancellationToken cancellationToken = default) =>
+        store.RevokeMcpPersonalAccessTokenAsync(agent.Name, id, DateTime.UtcNow, agent.Id, cancellationToken);
 
     /// <summary>
     /// Replaces the enabled tool list of an active, non-revoked token owned by the caller.
     /// Tools are re-validated against the catalog the same way token creation validates them.
     /// </summary>
-    public async Task<McpPersonalAccessTokenCreateResult> UpdateToolsForUserAsync(
+    public Task<McpPersonalAccessTokenCreateResult> UpdateToolsForUserAsync(
         string username,
         long id,
         IReadOnlyCollection<string> toolNames,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        UpdateToolsAsync(TokenOwner.User(NormalizeUsername(username)), id, toolNames, cancellationToken);
+
+    public Task<McpPersonalAccessTokenCreateResult> UpdateToolsForAgentAsync(
+        AgentEntity agent,
+        long id,
+        IReadOnlyCollection<string> toolNames,
+        CancellationToken cancellationToken = default) =>
+        UpdateToolsAsync(TokenOwner.Agent(agent), id, toolNames, cancellationToken);
+
+    private async Task<McpPersonalAccessTokenCreateResult> UpdateToolsAsync(
+        TokenOwner owner,
+        long id,
+        IReadOnlyCollection<string> toolNames,
+        CancellationToken cancellationToken)
     {
-        var normalizedUsername = NormalizeUsername(username);
         var now = DateTime.UtcNow;
 
-        var tokens = await store.ListMcpPersonalAccessTokensAsync(normalizedUsername, cancellationToken);
+        var tokens = await store.ListMcpPersonalAccessTokensAsync(owner.Username, owner.AgentId, cancellationToken);
         var token = tokens.FirstOrDefault(item => item.Id == id);
         if (token is null)
             return Error("token_not_found", "MCP token not found.");
@@ -140,7 +190,7 @@ public sealed class McpPersonalAccessTokenService(
 
         await hubStore.ReplaceTokenEntitlementsAsync(token.Id, selectedTools, cancellationToken);
         await store.SetMcpPersonalAccessTokenEntitlementModeAsync(
-            normalizedUsername, token.Id, "selected", cancellationToken);
+            owner.Username, token.Id, "selected", owner.AgentId, cancellationToken);
         token.EntitlementMode = "selected";
 
         return new McpPersonalAccessTokenCreateResult(
@@ -186,6 +236,16 @@ public sealed class McpPersonalAccessTokenService(
         if (entity is null || entity.RevokedAt is not null || entity.ExpiresAt <= now)
             return null;
 
+        // An agent's token works only while its agent exists and is enabled, under its current name.
+        var username = entity.Username;
+        if (entity.AgentId is { } agentId)
+        {
+            var agent = agentStore is null ? null : await agentStore.GetAgentAsync(agentId, cancellationToken);
+            if (agent is null || agent.DisabledAt is not null)
+                return null;
+            username = agent.Name;
+        }
+
         var trimmedLastUsedFrom = NormalizeLastUsedFrom(lastUsedFrom);
         if (entity.LastUsedAt is null ||
             entity.LastUsedAt < now.AddMinutes(-1) ||
@@ -200,13 +260,22 @@ public sealed class McpPersonalAccessTokenService(
 
         return new McpPersonalAccessTokenValidationResult(
             entity.Id,
-            entity.Username,
+            username,
             entity.TokenName,
-            entity.ExpiresAt);
+            entity.ExpiresAt,
+            entity.AgentId);
     }
 
     public bool IsValidTokenFormat(string rawToken) =>
         !string.IsNullOrWhiteSpace(rawToken) && TokenFormat.IsMatch(rawToken.Trim());
+
+    // Whose tokens a call is about: a person by normalized username, or an agent by id (its name
+    // is kept on the token for reading, the id decides).
+    private sealed record TokenOwner(string Username, long? AgentId)
+    {
+        public static TokenOwner User(string username) => new(username, null);
+        public static TokenOwner Agent(AgentEntity agent) => new(agent.Name, agent.Id);
+    }
 
     private static McpPersonalAccessTokenCreateResult Error(string code, string message) =>
         new(false, null, null, code, message);

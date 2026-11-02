@@ -244,13 +244,17 @@ public class McpPersonalAccessTokenServiceTests
     {
         private long nextId = 1;
 
+        private static bool Owns(McpPersonalAccessTokenEntity token, string username, long? agentId) =>
+            agentId is null ? token.AgentId is null && token.Username == username : token.AgentId == agentId;
+
         public List<McpPersonalAccessTokenEntity> Tokens { get; } = [];
 
         public Task<IReadOnlyList<McpPersonalAccessTokenEntity>> ListMcpPersonalAccessTokensAsync(
             string username,
+            long? agentId = null,
             CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<McpPersonalAccessTokenEntity>>(
-                Tokens.Where(token => token.Username == username).ToList());
+                Tokens.Where(token => Owns(token, username, agentId)).ToList());
 
         public Task<McpPersonalAccessTokenEntity> CreateMcpPersonalAccessTokenAsync(
             McpPersonalAccessTokenEntity token,
@@ -270,9 +274,10 @@ public class McpPersonalAccessTokenServiceTests
             string username,
             long id,
             DateTime revokedAt,
+            long? agentId = null,
             CancellationToken ct = default)
         {
-            var token = Tokens.FirstOrDefault(item => item.Id == id && item.Username == username);
+            var token = Tokens.FirstOrDefault(item => item.Id == id && Owns(item, username, agentId));
             if (token is null)
                 return Task.FromResult(false);
 
@@ -284,9 +289,10 @@ public class McpPersonalAccessTokenServiceTests
             string username,
             long id,
             string entitlementMode,
+            long? agentId = null,
             CancellationToken ct = default)
         {
-            var token = Tokens.FirstOrDefault(item => item.Id == id && item.Username == username);
+            var token = Tokens.FirstOrDefault(item => item.Id == id && Owns(item, username, agentId));
             if (token is null)
                 return Task.FromResult(false);
 

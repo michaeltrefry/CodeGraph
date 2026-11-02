@@ -2,21 +2,10 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { Injectable, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeApiService } from './knowledge-api.service';
-import { ProjectRow, WorkActor, WorkError } from './knowledge.models';
+import { ProjectRow, WorkError } from './knowledge.models';
 
-/** Who wrote a row (E3): a person by name, a session as `harness / model @ host`. */
-export function actorLabel(actor: WorkActor | null | undefined): string {
-  if (!actor) return 'unknown';
-  if (actor.kind !== 'session') return actor.name;
-  const tool = [actor.harness, actor.model].filter(Boolean).join(' / ') || actor.name;
-  return actor.host ? `${tool} @ ${actor.host}` : tool;
-}
-
-/** The title (tooltip) of an actor: the identity and, for a session, its id. */
-export function actorTitle(actor: WorkActor | null | undefined): string {
-  if (!actor) return '';
-  return actor.session_id ? `${actor.name} (session ${actor.session_id})` : actor.name;
-}
+// Who wrote a row (E3) is labelled once, for the knowledge and work pages alike.
+export { actorLabel, actorTitle } from '../../core/actor-label';
 
 /** A snake_case value as words: tracker_updates → tracker updates. */
 export function words(value: string | null | undefined): string {

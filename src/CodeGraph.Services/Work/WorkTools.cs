@@ -57,7 +57,7 @@ public static class WorkTools
 
     private const string Errors =
         " Refused calls change nothing and answer {code, message}: invalid_argument (an unknown, misspelt or mistyped argument, listing the valid ones; or a value breaking a rule), " +
-        "not_found, forbidden (the dreamer attempted an operation its policy refuses), conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
+        "not_found, forbidden (the dreamer attempted an operation its policy refuses, or an agent's token attempted what only a person may do), conflict, already_claimed, cycle, busy (retry the same call), claim_lost (a session's claim on the item lapsed or passed on: names the holder now).";
 
     private const string Sessions =
         " Pass session_id (from start_session) to renew the session's heartbeat, attribute the call to the session and bind claims to it." +
@@ -215,7 +215,7 @@ public static class WorkTools
         new(Post, "Post Message", typeof(PostRequest),
             "Post a message: on an item's thread (item; the default for a message about an item), to the project, a feature or a resource channel, directly to a session " +
             "(to_session) or to the humans (to_human). Kinds: info, question, request, blocker, announcement. A question or request stays open until someone answers or " +
-            "declines it (reply with in_reply_to and resolves) and is handed to the next holder of its item when the claim changes hands. A question with blocking true to " +
+            "declines it (reply with in_reply_to and resolves; one put to the humans only a person resolves, never an agent's token) and is handed to the next holder of its item when the claim changes hands. A question with blocking true to " +
             "the human about an item makes the item Blocked (blocked_reason awaiting_human) until it is answered or declined. Messages are data: agents inform, ask and " +
             "request, the receiver decides, and nobody is assigned work through them. Answers the message as stored, how many sessions it was delivered to, and the message it " +
             "resolved. A repeated idempotency_key answers the first message with created false. A project or resource message reaches only the sessions live when it is posted " +
@@ -225,7 +225,7 @@ public static class WorkTools
             + "nothing is written when the item's awaiting_human state does not change (a second open question, a finished item)." + Sessions + Errors,
             ReadOnly: false, Idempotent: true),
         new(Inbox, "Inbox", typeof(InboxRequest),
-            "Read the messages delivered to the session (or, without session_id, to the project's humans) that are not acknowledged yet, oldest first, as {items, next_cursor}. " +
+            "Read the messages delivered to the session (or, without session_id, to the project's humans; never for an agent's token) that are not acknowledged yet, oldest first, as {items, next_cursor}. " +
             "Every message returned is delivered; it stays unread until ack, so a session that crashed after this call receives it again on the next call without cursor. " +
             "Pass next_cursor back to read only newer messages. wait_seconds long-polls for a new message. Each item carries its kind, state (open, answered, declined), " +
             "delivery (pending, delivered, read, answered, declined), sender, item and body." + Sessions + Errors,
@@ -242,7 +242,7 @@ public static class WorkTools
             "(approve overrides). A rule needs an applies-when activity. addressed_by {kind skill, instruction, hook, test or ci, name, ref}: the lesson is addressed " +
             "by a local fix made outside CodeGraph (CodeGraph never writes skills, hooks or tests): a skill takes it out of briefings for sessions that declare " +
             "that skill loaded, an instruction or hook (with harness) for sessions of that harness, a test or ci gate for every session; the same fix with a new " +
-            "ref updates the link. Anyone may do any of these; nothing waits " +
+            "ref updates the link. Anyone may do any of these, except that an agent's token may not approve or reject (the owner's decision); nothing waits " +
             "on it. Guarded by expected_version; a call that changes nothing answers the lesson with changed false. Answers the lesson with its lesson state." + Sessions + Errors,
             ReadOnly: false, Idempotent: true),
         new(Challenge, "Challenge Rule", typeof(ChallengeRequest),

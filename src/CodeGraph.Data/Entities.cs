@@ -592,6 +592,8 @@ public class McpPersonalAccessTokenEntity
 {
     public long Id { get; set; }
     public string Username { get; set; } = "";
+    /// <summary>The agent the token belongs to; null for a person's own token.</summary>
+    public long? AgentId { get; set; }
     public string TokenName { get; set; } = "";
     public string TokenPrefixValue { get; set; } = "";
     public string TokenHash { get; set; } = "";
@@ -602,6 +604,21 @@ public class McpPersonalAccessTokenEntity
     public DateTime? LastUsedAt { get; set; }
     public string? LastUsedFrom { get; set; }
     public string EntitlementMode { get; set; } = "all";
+}
+
+/// <summary>
+/// A named non-human identity (claude, codex) the owner manages in Admin. Its tokens attribute
+/// writes to it with actor kind agent. Never hard-deleted: <see cref="DeletedAt"/> marks a deleted one.
+/// </summary>
+public class AgentEntity
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = "";
+    public string CreatedBy { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    public DateTime? DisabledAt { get; set; }
+    public DateTime? DeletedAt { get; set; }
 }
 
 public class McpPersonalAccessTokenToolEntitlementEntity

@@ -57,14 +57,19 @@ export function blockedLabel(reason: BlockedReason | undefined): string {
 })
 export class ActorComponent {
   readonly actor = input<Pick<WorkActor, 'name'> & Partial<WorkActor> | Holder | undefined>();
-  readonly name = computed(() => {
+  private readonly identity = computed(() => {
     const value = this.actor();
     if (!value) return 'unknown';
     return 'name' in value ? value.name : value.identity;
   });
+  /** The shown name; an agent says so, as the knowledge pages' actorLabel does. */
+  readonly name = computed(() => {
+    const value = this.actor();
+    return value && 'kind' in value && value.kind === 'agent' ? `${this.identity()} (agent)` : this.identity();
+  });
   readonly isAgent = computed(() => {
     const value = this.actor();
-    return !!value && (('kind' in value && value.kind === 'session') || !!value.session_id || !!value.harness);
+    return !!value && (('kind' in value && (value.kind === 'session' || value.kind === 'agent')) || !!value.session_id || !!value.harness);
   });
   readonly detail = computed(() => {
     const value = this.actor();
@@ -75,7 +80,7 @@ export class ActorComponent {
   readonly title = computed(() => {
     const value = this.actor();
     const session = value?.session_id ? ` · session ${value.session_id}` : '';
-    return `${this.isAgent() ? 'Agent' : 'Person'} ${this.name()}${this.detail() ? ` (${this.detail()})` : ''}${session}`;
+    return `${this.isAgent() ? 'Agent' : 'Person'} ${this.identity()}${this.detail() ? ` (${this.detail()})` : ''}${session}`;
   });
 }
 
