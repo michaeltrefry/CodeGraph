@@ -80,6 +80,41 @@ public class HttpMemoryClientTests
     }
 
     [Fact]
+    public async Task ProjectKey_IsForwardedToTheMemoryHostOnWritesAndReads()
+    {
+        var store = new RecordingHandler(new MemoryStoreAcceptedResult { ReceiptId = "memory_write_1" });
+        await CreateClient(store).QueueClaimsAsync("michael", new MemoryClaimExtractionResult(), projectKey: "CG");
+        store.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/claims/store?source=api&project=CG");
+
+        var search = new RecordingHandler(new MemorySearchResult());
+        await CreateClient(search).SearchAsync("michael", "CodeGraph", 5, 5, projectKey: "CG");
+        search.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/search?query=CodeGraph&entityLimit=5&claimLimit=5&project=CG");
+
+        var graph = new RecordingHandler(new MemoryGraphSnapshot());
+        await CreateClient(graph).GetGraphAsync("michael", 10, 0, projectKey: "CG");
+        graph.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/graph?limit=10&skip=0&project=CG");
+
+        var entityGraph = new RecordingHandler(new MemoryGraphSnapshot());
+        await CreateClient(entityGraph).GetEntityGraphAsync("michael", "codegraph", 10, projectKey: "CG");
+        entityGraph.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/entities/codegraph/graph?neighborLimit=10&project=CG");
+
+        var bundle = new RecordingHandler(new MemoryEntityBundle { Entity = new MemoryEntity { Id = "codegraph", Label = "CodeGraph", Type = "repository", Summary = "", Source = "test" } });
+        await CreateClient(bundle).GetEntityBundleAsync("michael", "codegraph", projectKey: "CG");
+        bundle.Requests.Single().RequestUri!.PathAndQuery
+            .ShouldBe("/api/memory/entities/codegraph/bundle?includeSuperseded=false&includeConflicts=true&neighborLimit=20&project=CG");
+
+        var claimBundle = new RecordingHandler(new MemoryClaimBundle { Claim = new MemoryClaim { Id = "claim_1", ClaimKey = "claim_1", FactGroupKey = "claim_1", SubjectEntityId = "codegraph", Predicate = "uses", NormalizedText = "codegraph uses", Source = "test" } });
+        await CreateClient(claimBundle).GetClaimBundleAsync("michael", "claim_1", projectKey: "CG");
+        claimBundle.Requests.Single().RequestUri!.PathAndQuery
+            .ShouldBe("/api/memory/claims/claim_1/bundle?includeSupersessionChain=true&includeConflicts=true&includeEvidence=true&project=CG");
+
+        var unscopedClaimBundle = new RecordingHandler(new MemoryClaimBundle { Claim = new MemoryClaim { Id = "claim_1", ClaimKey = "claim_1", FactGroupKey = "claim_1", SubjectEntityId = "codegraph", Predicate = "uses", NormalizedText = "codegraph uses", Source = "test" } });
+        await CreateClient(unscopedClaimBundle).GetClaimBundleAsync("michael", "claim_1");
+        unscopedClaimBundle.Requests.Single().RequestUri!.PathAndQuery
+            .ShouldBe("/api/memory/claims/claim_1/bundle?includeSupersessionChain=true&includeConflicts=true&includeEvidence=true");
+    }
+
+    [Fact]
     public async Task GetWriteStatusAsync_ReturnsNullForNotFound()
     {
         var handler = new RecordingHandler(HttpStatusCode.NotFound, null);

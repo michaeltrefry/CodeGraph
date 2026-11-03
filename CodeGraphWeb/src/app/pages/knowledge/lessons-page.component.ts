@@ -1,5 +1,5 @@
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeApiService } from './knowledge-api.service';
@@ -48,7 +48,12 @@ const FULL_PAGE_SIZE = 10;
 })
 export class LessonsPageComponent implements OnInit {
   private readonly api = inject(KnowledgeApiService);
-  readonly project = inject(KnowledgeProjectService);
+  readonly selection = inject(KnowledgeProjectService);
+
+  /** Set by an embedding project page: the lessons are that project's, without the page header or project select. */
+  readonly project = input<string | undefined>();
+  readonly embedded = computed(() => !!this.project());
+  readonly current = computed(() => this.project() || this.selection.selected());
 
   readonly tabs = LESSON_TABS;
   readonly activities = LESSON_ACTIVITIES;
@@ -79,13 +84,26 @@ export class LessonsPageComponent implements OnInit {
   private loadSequence = 0;
   private selectSequence = 0;
 
+  constructor() {
+    // The embedding page reuses this component when its project changes: start over for the new one.
+    effect(() => {
+      if (this.project()) untracked(() => void this.reopen());
+    });
+  }
+
   async ngOnInit(): Promise<void> {
-    if (await this.project.load()) await this.load();
+    if (!this.embedded() && await this.selection.load()) await this.load();
   }
 
   async changeProject(key: string): Promise<void> {
-    this.project.select(key);
+    this.selection.select(key);
+    await this.reopen();
+  }
+
+  private async reopen(): Promise<void> {
     this.selected.set(null);
+    this.pages.clear();
+    this.nextCursor.set(null);
     await this.load();
   }
 
@@ -101,7 +119,7 @@ export class LessonsPageComponent implements OnInit {
 
   lessonsFilters(): LessonsFilters {
     const view = this.tab() as LessonsView;
-    const filters: LessonsFilters = { project: this.project.selected()!, view, limit: PAGE_SIZE };
+    const filters: LessonsFilters = { project: this.current()!, view, limit: PAGE_SIZE };
     if (view !== 'unlearned_reviews') {
       if (this.activity) filters.activity = this.activity;
       if (this.source) filters.source = this.source;
@@ -111,7 +129,7 @@ export class LessonsPageComponent implements OnInit {
   }
 
   recallFilters(): RecallFilters {
-    const filters: RecallFilters = { project: this.project.selected()!, kind: ['lesson'], detail: 'full', limit: FULL_PAGE_SIZE };
+    const filters: RecallFilters = { project: this.current()!, kind: ['lesson'], detail: 'full', limit: FULL_PAGE_SIZE };
     if (this.activity) filters.activity = this.activity;
     if (this.source) filters.source = this.source;
     if (this.tier) filters.rule_state = [this.tier];
@@ -125,7 +143,7 @@ export class LessonsPageComponent implements OnInit {
    * longer the latest request's (another tab, another filter) is dropped.
    */
   async load(more = false): Promise<void> {
-    if (!this.project.selected()) return;
+    if (!this.current()) return;
     const tab = this.tab();
     const kept = this.pages.get(tab);
     if (more && !kept) return;

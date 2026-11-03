@@ -76,13 +76,14 @@ public interface IMemoryGraphStore
     Task CreateObservationAsync(MemoryObservation obs);
     Task ResolveObservationAsync(string observationId, string resolution, string? resolvedByMemoryId);
 
-    Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5);
-    Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5);
+    // projectKey, where taken, limits the answer to the entities and claims scoped to that work project.
+    Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null);
+    Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null);
     Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId);
     Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds);
     Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds);
-    Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0);
-    Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200);
+    Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null);
+    Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null);
     Task<List<string>> FindCandidateEntityIdsAsync(string candidateId, int limit = 20);
     Task<MemoryEntity?> GetEntityAsync(string entityId);
     Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId);
@@ -95,17 +96,26 @@ public interface IMemoryGraphStore
         string entityId,
         bool includeSuperseded = false,
         bool includeConflicts = true,
-        int neighborLimit = 20);
+        int neighborLimit = 20,
+        string? projectKey = null);
     Task<MemoryClaimBundle?> GetClaimBundleAsync(
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true);
+        bool includeEvidence = true,
+        string? projectKey = null);
     Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(
         string query,
         float[]? queryEmbedding,
         int limit = 5,
-        bool includeSuperseded = false);
+        bool includeSuperseded = false,
+        string? projectKey = null);
+    /// <summary>
+    /// Scopes entities and claims (by id) to a work project, and with each claim the entities it is
+    /// about (subject and object). Adds pairs only; an existing pair is kept.
+    /// </summary>
+    Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds);
+    Task<bool> IsEntityInProjectAsync(string entityId, string projectKey);
     Task<MemorySubgraphResult> GetMemorySubgraphAsync(
         MemorySubgraphQuery query,
         int maxHops = 2,

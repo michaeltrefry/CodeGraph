@@ -9,12 +9,27 @@ namespace CodeGraph.Api.Controllers;
 public class MemoryController(IMemoryOperationsService memoryOperations) : Controller
 {
     [HttpPost("claims/store")]
-    public async Task<IActionResult> StoreClaims([FromBody] MemoryClaimExtractionResult extraction, [FromQuery] string? source)
+    public async Task<IActionResult> StoreClaims(
+        [FromBody] MemoryClaimExtractionResult extraction,
+        [FromQuery] string? source,
+        [FromQuery] string? project,
+        [FromQuery] string? sessionId,
+        [FromServices] IMemoryProjectResolver projectResolver)
     {
         if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
             return BadRequest(new { error = "No entities, claims, or evidence provided" });
 
-        var ack = await memoryOperations.QueueClaimsAsync(extraction, source ?? "api", "typed", HttpContext.RequestAborted);
+        string? projectKey;
+        try
+        {
+            projectKey = await projectResolver.ResolveAsync(project, sessionId, HttpContext.RequestAborted);
+        }
+        catch (MemoryProjectResolutionException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+
+        var ack = await memoryOperations.QueueClaimsAsync(extraction, source ?? "api", "typed", projectKey, HttpContext.RequestAborted);
         return Accepted(ack);
     }
 
@@ -87,12 +102,14 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
     public async Task<ActionResult<MemorySearchResult>> Search(
         [FromQuery] string query,
         [FromQuery] int? entityLimit,
-        [FromQuery] int? claimLimit)
+        [FromQuery] int? claimLimit,
+        [FromQuery] string? project)
     {
         var result = await memoryOperations.SearchMemoryAsync(
             query,
             Math.Clamp(entityLimit ?? 5, 1, 25),
             Math.Clamp(claimLimit ?? 5, 1, 25),
+            ProjectKey(project),
             HttpContext.RequestAborted);
         return Ok(result);
     }
@@ -109,13 +126,15 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         string id,
         [FromQuery] bool? includeSuperseded,
         [FromQuery] bool? includeConflicts,
-        [FromQuery] int? neighborLimit)
+        [FromQuery] int? neighborLimit,
+        [FromQuery] string? project)
     {
         var bundle = await memoryOperations.GetEntityBundleAsync(
             id,
             includeSuperseded ?? false,
             includeConflicts ?? true,
             Math.Clamp(neighborLimit ?? 20, 1, 500),
+            ProjectKey(project),
             HttpContext.RequestAborted);
 
         if (bundle == null) return NotFound();
@@ -123,11 +142,15 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
     }
 
     [HttpGet("entities/{id}/graph")]
-    public async Task<ActionResult<MemoryGraphSnapshot>> GetEntityGraph(string id, [FromQuery] int? neighborLimit)
+    public async Task<ActionResult<MemoryGraphSnapshot>> GetEntityGraph(
+        string id,
+        [FromQuery] int? neighborLimit,
+        [FromQuery] string? project)
     {
         var snapshot = await memoryOperations.GetEntityGraphAsync(
             id,
             Math.Clamp(neighborLimit ?? 200, 1, 500),
+            ProjectKey(project),
             HttpContext.RequestAborted);
         if (snapshot.Nodes.Count == 0) return NotFound();
         return Ok(snapshot);
@@ -139,13 +162,15 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         string id,
         [FromQuery] bool? includeSupersessionChain,
         [FromQuery] bool? includeConflicts,
-        [FromQuery] bool? includeEvidence)
+        [FromQuery] bool? includeEvidence,
+        [FromQuery] string? project)
     {
         var bundle = await memoryOperations.GetClaimBundleAsync(
             id,
             includeSupersessionChain ?? true,
             includeConflicts ?? true,
             includeEvidence ?? true,
+            ProjectKey(project),
             HttpContext.RequestAborted);
 
         if (bundle == null) return NotFound();
@@ -186,11 +211,15 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
     }
 
     [HttpGet("graph")]
-    public async Task<ActionResult<MemoryGraphSnapshot>> Graph([FromQuery] int? limit, [FromQuery] int? skip)
+    public async Task<ActionResult<MemoryGraphSnapshot>> Graph(
+        [FromQuery] int? limit,
+        [FromQuery] int? skip,
+        [FromQuery] string? project)
     {
         var snapshot = await memoryOperations.GetFullGraphAsync(
             Math.Clamp(limit ?? 200, 1, 500),
             Math.Max(skip ?? 0, 0),
+            ProjectKey(project),
             HttpContext.RequestAborted);
         return Ok(snapshot);
     }
@@ -201,4 +230,8 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         var entity = await memoryOperations.GetEntityWithRelationshipsAsync(id, HttpContext.RequestAborted);
         return entity == null ? NotFound() : Ok(new { entity.Entity, entity.Relationships });
     }
+
+    // project (CG-156): the key of a work project; only its entities and claims are answered.
+    private static string? ProjectKey(string? project) =>
+        string.IsNullOrWhiteSpace(project) ? null : project.Trim();
 }

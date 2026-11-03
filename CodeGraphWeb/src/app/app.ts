@@ -1,4 +1,4 @@
-import { Component, DestroyRef, HostListener, ViewChild, computed, inject, signal } from '@angular/core';
+import { Component, DestroyRef, HostListener, ViewChild, computed, effect, inject, signal, untracked } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { NavigationEnd, NavigationStart, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { catchError, filter, map, of, startWith } from 'rxjs';
@@ -10,6 +10,8 @@ import { WikiSection, WikiTreeNode } from './core/models';
 import { ChatSidebarComponent } from './components/chat-sidebar/chat-sidebar.component';
 import { NavSearchComponent } from './components/nav-search/nav-search.component';
 import { WikiTreeNodeComponent } from './pages/wiki/wiki-tree-node.component';
+import { projectCrumbs } from './pages/projects/project-crumbs';
+import { WorkContext } from './pages/work/work-base';
 
 interface Crumb {
   label: string;
@@ -52,7 +54,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   knowledge: 'Knowledge',
   lessons: 'Lessons',
   dreaming: 'Dreaming',
-  'review-queue': 'Review queue'
+  approvals: 'Approvals'
 };
 
 @Component({
@@ -67,6 +69,7 @@ export class App {
   private readonly themeService = inject(ThemeService);
   private readonly api = inject(ApiService);
   private readonly auth = inject(AuthService);
+  private readonly work = inject(WorkContext);
 
   currentUrl = toSignal(
     this.router.events.pipe(
@@ -96,6 +99,7 @@ export class App {
   crumbs = computed<Crumb[]>(() => {
     const url = this.currentUrl().split('?')[0].split('#')[0];
     const parts = url.split('/').filter(Boolean);
+    if (parts[0] === 'projects') return projectCrumbs(parts, this.work.projects());
     const out: Crumb[] = [];
     let href = '';
 
@@ -109,6 +113,14 @@ export class App {
 
   constructor() {
     const chatContext = inject(ChatContextService);
+
+    // Project breadcrumbs show the project's name, read from the shared list of projects.
+    let workRequested = false;
+    effect(() => {
+      if (workRequested || !this.currentUrl().startsWith('/projects')) return;
+      workRequested = true;
+      if (!untracked(this.work.loaded)) untracked(() => void this.work.load());
+    });
 
     this.router.events.pipe(
       filter((e): e is NavigationStart => e instanceof NavigationStart),

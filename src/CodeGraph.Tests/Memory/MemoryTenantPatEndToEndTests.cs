@@ -131,13 +131,13 @@ public class MemoryTenantPatEndToEndTests
                 group.MapGet("/search", async (
                     string query,
                     IMemoryOperationsService operations,
-                    CancellationToken ct) => Results.Ok(await operations.SearchMemoryAsync(query, 10, 10, ct)));
+                    CancellationToken ct) => Results.Ok(await operations.SearchMemoryAsync(query, 10, 10, ct: ct)));
                 group.MapGet("/entities/{entityId}", async (
                     string entityId,
                     IMemoryOperationsService operations,
                     CancellationToken ct) =>
                 {
-                    var bundle = await operations.GetEntityBundleAsync(entityId, false, true, 20, ct);
+                    var bundle = await operations.GetEntityBundleAsync(entityId, false, true, 20, ct: ct);
                     return bundle is null ? Results.NotFound() : Results.Ok(bundle);
                 });
                 group.MapGet("/claims/{claimId}", async (
@@ -145,7 +145,7 @@ public class MemoryTenantPatEndToEndTests
                     IMemoryOperationsService operations,
                     CancellationToken ct) =>
                 {
-                    var bundle = await operations.GetClaimBundleAsync(claimId, true, true, true, ct);
+                    var bundle = await operations.GetClaimBundleAsync(claimId, true, true, true, null, ct);
                     return bundle is null ? Results.NotFound() : Results.Ok(bundle);
                 });
                 group.MapPost("/cleanup/{source}", async (
@@ -228,7 +228,7 @@ public class MemoryTenantPatEndToEndTests
         IMemoryTenantContext tenantContext,
         CancellationToken ct)
     {
-        var ack = await operations.QueueClaimsAsync(extraction, "pat-isolation", "typed", ct);
+        var ack = await operations.QueueClaimsAsync(extraction, "pat-isolation", "typed", ct: ct);
         var message = messageBus.Take(ack.ReceiptId);
         using (tenantContext.Enter(message.Username))
         {

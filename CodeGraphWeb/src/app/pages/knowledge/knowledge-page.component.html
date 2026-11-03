@@ -1,24 +1,26 @@
-<section class="cg-page">
-  <header class="cg-page-header">
-    <div>
-      <h1>Knowledge</h1>
-      <p>Decisions, facts, constraints and attempts the project's agents and people recorded. Stale entries are flagged when the files behind them change.</p>
-    </div>
-    <div class="cg-page-header-actions">
-      <label class="cg-field">
-        <span class="cg-field-label">Project</span>
-        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
-          @for (p of project.projects(); track p.key) {
-            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
-          }
-        </select>
-      </label>
-    </div>
-  </header>
+<section class="cg-page" [class.kn-embedded]="embedded()">
+  @if (!embedded()) {
+    <header class="cg-page-header">
+      <div>
+        <h1>Knowledge</h1>
+        <p>Decisions, facts, constraints and attempts the project's agents and people recorded. Stale entries are flagged when the files behind them change.</p>
+      </div>
+      <div class="cg-page-header-actions">
+        <label class="cg-field">
+          <span class="cg-field-label">Project</span>
+          <select class="cg-select" aria-label="Project" [ngModel]="current()" (ngModelChange)="changeProject($event)">
+            @for (p of selection.projects(); track p.key) {
+              <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+            }
+          </select>
+        </label>
+      </div>
+    </header>
+  }
 
-  @if (project.error()) {
-    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
-  } @else if (!project.selected()) {
+  @if (selection.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ selection.error() }}</p>
+  } @else if (!current()) {
     <p class="kn-empty">No projects yet. Agents create one with create_work.</p>
   } @else {
     <form class="kn-toolbar" (ngSubmit)="search()">

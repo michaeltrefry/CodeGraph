@@ -10,6 +10,21 @@
 .cg-btn.secondary:hover:not(:disabled),
 a { color: var(--kn-accent-text); }
 
+// Embedded in a project page tab: the tab supplies the page padding and width, and the page header is gone.
+.cg-page.kn-embedded { padding: 0; max-width: none; margin: 0; }
+.cg-page.kn-approvals { max-width: 960px; }
+// A project tab is as narrow as a phone: its view switcher scrolls rather than running past the tab.
+.kn-embedded .cg-segmented { max-width: 100%; overflow-x: auto; }
+
+.kn-embedded-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+
+  h2 { font-size: var(--fs-lg); font-weight: 600; color: var(--text); margin: 0; }
+}
+
 .kn-toolbar {
   display: flex;
   flex-wrap: wrap;

@@ -30,6 +30,7 @@ describe('app browser shell', () => {
     expect(topbar).not.toBeNull();
     expect(links.map(link => link.textContent?.trim())).toContain('Repositories');
     expect(links.map(link => link.textContent?.trim())).toEqual([
+      'Projects',
       'Repositories',
       'Schemas',
       'Graph',
@@ -37,7 +38,7 @@ describe('app browser shell', () => {
       'Knowledge',
       'Lessons',
       'Dreaming',
-      'Review',
+      'Approvals',
       'Clusters',
       'Impact',
       'Work',

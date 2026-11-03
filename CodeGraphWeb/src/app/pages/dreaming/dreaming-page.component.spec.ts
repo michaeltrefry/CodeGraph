@@ -210,3 +210,50 @@ describe('DreamingPageComponent', () => {
     expect(page.selected()?.id).toBe(run.id); expect(fixture.nativeElement.textContent).toContain('Effect read unavailable');
   });
 });
+
+describe('DreamingPageComponent embedded in a project page', () => {
+  it('moves Refresh and Run now into the toolbar row, uses the input project over the route key, and reloads when it changes', async () => {
+    TestBed.resetTestingModule();
+    const params = new Subject<ReturnType<typeof convertToParamMap>>();
+    const selection = { selected: signal<string | null>(null), projects: signal<any[]>([]), error: signal<string | null>(null), load: vi.fn().mockResolvedValue(null), select: vi.fn() };
+    const api = {
+      runs: vi.fn().mockReturnValue(of([run])), run: vi.fn().mockReturnValue(of(run)), runNow: vi.fn().mockReturnValue(of(run)), effects: vi.fn().mockReturnValue(of(effects)),
+      settings: vi.fn().mockReturnValue(of(settings)), instructions: vi.fn().mockReturnValue(of(instructions))
+    };
+    await TestBed.configureTestingModule({ imports: [DreamingPageComponent], providers: [provideRouter([]),
+      { provide: DreamingApiService, useValue: api }, { provide: KnowledgeProjectService, useValue: selection },
+      { provide: AuthService, useValue: { enabled: signal(true), currentUser: signal({ isAdmin: true }) } },
+      { provide: ActivatedRoute, useValue: { paramMap: params } }
+    ] }).compileComponents();
+    const fixture = TestBed.createComponent(DreamingPageComponent);
+    fixture.componentRef.setInput('project', 'ONE');
+    const settle = async () => { fixture.detectChanges(); for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve)); fixture.detectChanges(); };
+    await settle();
+    params.next(convertToParamMap({ key: 'ROUTE' }));
+    await settle();
+
+    const el = fixture.nativeElement as HTMLElement;
+    const labels = () => [...el.querySelectorAll('button')].map(button => button.textContent?.trim());
+    expect(el.querySelector('.cg-page-header')).toBeNull();
+    expect(el.querySelector('select')).toBeNull();
+    const toolbar = el.querySelector('.dream-toolbar') as HTMLElement;
+    expect(toolbar.textContent).toContain('Runs');
+    expect(toolbar.textContent).toContain('Settings');
+    expect(toolbar.textContent).toContain('Instructions');
+    expect(toolbar.textContent).toContain('Refresh');
+    expect(toolbar.textContent).toContain('Run now');
+    expect(labels().filter(label => label === 'Run now')).toHaveLength(1);
+    expect(selection.load).not.toHaveBeenCalled();
+    expect(selection.select).not.toHaveBeenCalled();
+    expect(api.runs).toHaveBeenCalledTimes(1);
+    expect(api.runs).toHaveBeenLastCalledWith('ONE', 30);
+
+    fixture.componentRef.setInput('project', 'TWO');
+    await settle();
+    expect(api.runs).toHaveBeenCalledTimes(2);
+    expect(api.runs).toHaveBeenLastCalledWith('TWO', 30);
+    (toolbar.querySelector('.cg-btn.primary') as HTMLButtonElement).click();
+    await settle();
+    expect(api.runNow).toHaveBeenCalledWith('TWO');
+  });
+});

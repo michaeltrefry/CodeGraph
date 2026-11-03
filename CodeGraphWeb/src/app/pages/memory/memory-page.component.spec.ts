@@ -1,4 +1,5 @@
 import { Injector, runInInjectionContext } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiService } from '../../core/api.service';
@@ -196,7 +197,7 @@ describe('MemoryPageComponent', () => {
     component.ngOnInit();
 
     expect(api.getMemoryDiagnostics).toHaveBeenCalledWith(15, 8);
-    expect(api.getMemoryGraph).toHaveBeenCalledWith(250, 0);
+    expect(api.getMemoryGraph).toHaveBeenCalledWith(250, 0, undefined);
     expect(component.diagnostics()?.entityCount).toBe(2);
     expect(component.nodes().map(node => node.id)).toEqual(['project_codegraph', 'memory_system']);
   });
@@ -207,8 +208,8 @@ describe('MemoryPageComponent', () => {
     component.runSearch();
     component.focusSearchEntity(component.searchEntityResults()[0]);
 
-    expect(api.searchMemory).toHaveBeenCalledWith('codegraph', 8, 8);
-    expect(api.getMemoryEntityGraph).toHaveBeenCalledWith('project_codegraph', 500);
+    expect(api.searchMemory).toHaveBeenCalledWith('codegraph', 8, 8, undefined);
+    expect(api.getMemoryEntityGraph).toHaveBeenCalledWith('project_codegraph', 500, undefined);
     expect(component.focusMode()).toBe(true);
     expect(component.selectedBundle()?.entity.id).toBe('project_codegraph');
   });
@@ -222,8 +223,56 @@ describe('MemoryPageComponent', () => {
     expect(api.getMemoryClaimBundle).toHaveBeenCalledWith('claim_1', {
       includeSupersessionChain: true,
       includeConflicts: true,
-      includeEvidence: true
+      includeEvidence: true,
+      project: undefined
     });
     expect(component.selectedClaimBundle()?.claim.id).toBe('claim_1');
+  });
+
+  describe('embedded in a project page', () => {
+    async function renderEmbedded() {
+      TestBed.configureTestingModule({ providers: [{ provide: ApiService, useValue: api }] });
+      const fixture = TestBed.createComponent(MemoryPageComponent);
+      fixture.componentRef.setInput('project', 'CG');
+      fixture.componentInstance.setViewMode('list');
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return { fixture, root: fixture.nativeElement as HTMLElement };
+    }
+
+    it('asks only for the project memory and shows no page header or store-wide diagnostics', async () => {
+      const { fixture, root } = await renderEmbedded();
+      const page = fixture.componentInstance;
+
+      expect(api.getMemoryGraph).toHaveBeenCalledWith(250, 0, 'CG');
+      expect(api.getMemoryDiagnostics).not.toHaveBeenCalled();
+      expect(root.querySelector('.cg-page-header')).toBeNull();
+      expect(root.querySelector('.mp-diagnostics')).toBeNull();
+      expect(root.querySelector('.mp-controls [aria-label="View mode"]')).not.toBeNull();
+
+      page.updateSearchText('codegraph');
+      page.runSearch();
+      page.focusSearchEntity(page.searchEntityResults()[0]);
+
+      expect(api.searchMemory).toHaveBeenCalledWith('codegraph', 8, 8, 'CG');
+      expect(api.getMemoryEntityGraph).toHaveBeenCalledWith('project_codegraph', 500, 'CG');
+      expect(api.getMemoryEntityBundle).toHaveBeenCalledWith('project_codegraph', expect.objectContaining({ project: 'CG' }));
+
+      page.inspectClaim('claim_1');
+      expect(api.getMemoryClaimBundle).toHaveBeenCalledWith('claim_1', expect.objectContaining({ project: 'CG' }));
+    });
+  });
+
+  it('keeps the page header and the diagnostics without a project', () => {
+    TestBed.configureTestingModule({ providers: [{ provide: ApiService, useValue: api }] });
+    const fixture = TestBed.createComponent(MemoryPageComponent);
+    fixture.componentInstance.setViewMode('list');
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+
+    expect(root.querySelector('.cg-page-header h1')?.textContent).toContain('Memory browser');
+    expect(root.querySelector('.mp-diagnostics')).not.toBeNull();
+    expect(api.getMemoryGraph).toHaveBeenCalledWith(250, 0, undefined);
   });
 });

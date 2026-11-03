@@ -1,21 +1,36 @@
-<section class="cg-page">
-  <header class="cg-page-header">
-    <div><h1>Dreaming</h1><p>Scheduled knowledge curation, with evidence, reversible changes and proposals for review.</p></div>
-    <div class="cg-page-header-actions">
-      <label class="cg-field"><span class="cg-field-label">Project</span><select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)" [disabled]="busy()">@for (p of project.projects(); track p.key) { <option [value]="p.key">{{ p.key }} · {{ p.title }}</option> }</select></label>
-      <button type="button" class="cg-btn" [disabled]="loading() || busy() || !project.selected()" (click)="reload()">Refresh</button>
-      <button type="button" class="cg-btn primary" [disabled]="busy() || !project.selected()" (click)="runNow()">{{ busy() ? 'Working…' : 'Run now' }}</button>
-    </div>
-  </header>
-  @if (project.error()) { <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p> }
-  @if (error()) { <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p> }
-  @if (notice()) { <p class="adm-banner kn-banner" role="status">{{ notice() }}</p> }
-  @if (project.selected()) {
+<section class="cg-page" [class.kn-embedded]="embedded()">
+  <ng-template #actions>
+    <button type="button" class="cg-btn" [disabled]="loading() || busy() || !current()" (click)="reload()">Refresh</button>
+    <button type="button" class="cg-btn primary" [disabled]="busy() || !current()" (click)="runNow()">{{ busy() ? 'Working…' : 'Run now' }}</button>
+  </ng-template>
+  <ng-template #views>
     <nav class="cg-segmented" aria-label="Dreaming views">
       <button type="button" [class.active]="tab() === 'runs'" (click)="tab.set('runs')">Runs</button>
       <button type="button" [class.active]="tab() === 'settings'" (click)="tab.set('settings')">Settings</button>
       <button type="button" [class.active]="tab() === 'instructions'" (click)="tab.set('instructions')">Instructions</button>
     </nav>
+  </ng-template>
+  @if (!embedded()) {
+    <header class="cg-page-header">
+      <div><h1>Dreaming</h1><p>Scheduled knowledge curation, with evidence, reversible changes and proposals for review.</p></div>
+      <div class="cg-page-header-actions">
+        <label class="cg-field"><span class="cg-field-label">Project</span><select class="cg-select" aria-label="Project" [ngModel]="current()" (ngModelChange)="changeProject($event)" [disabled]="busy()">@for (p of selection.projects(); track p.key) { <option [value]="p.key">{{ p.key }} · {{ p.title }}</option> }</select></label>
+        <ng-container [ngTemplateOutlet]="actions" />
+      </div>
+    </header>
+  }
+  @if (selection.error()) { <p class="adm-banner err kn-banner" role="alert">{{ selection.error() }}</p> }
+  @if (error()) { <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p> }
+  @if (notice()) { <p class="adm-banner kn-banner" role="status">{{ notice() }}</p> }
+  @if (current()) {
+    @if (embedded()) {
+      <div class="dream-toolbar">
+        <ng-container [ngTemplateOutlet]="views" />
+        <div class="dream-toolbar-actions"><ng-container [ngTemplateOutlet]="actions" /></div>
+      </div>
+    } @else {
+      <ng-container [ngTemplateOutlet]="views" />
+    }
     @switch (tab()) {
       @case ('runs') {
         <div class="dream-layout">
@@ -61,7 +76,7 @@
                   <details open><summary>Result / proposal</summary><pre class="dream-data">{{ action.result | json }}</pre></details>
                 </article>
               } @empty { <p class="cg-muted">No writes or proposals recorded.</p> }
-              <a class="cg-btn secondary" routerLink="/review-queue">Review proposals</a>
+              <a class="cg-btn secondary" [routerLink]="embedded() ? ['/projects', project(), 'approvals'] : '/approvals'">Review proposals</a>
               <h3>Recurrence after a rule was served</h3>
               <p class="cg-muted cg-small">Distinct correction events before and after each change. Counts come from lesson events; the after period grows over time and is not a causal score.</p>
               @if (effectsError()) { <p role="alert" class="adm-banner err">{{ effectsError() }}</p> }
@@ -107,7 +122,7 @@
       }
       @case ('instructions') {
         @if (instructions(); as set) {
-          <p class="cg-muted">Wiki instructions are versioned. Every run records the revisions it used. Base instructions apply to every project; the addendum applies to {{ project.selected() }}.</p>
+          <p class="cg-muted">Wiki instructions are versioned. Every run records the revisions it used. Base instructions apply to every project; the addendum applies to {{ current() }}.</p>
           @for (scope of ['base', 'project']; track scope) {
             @let instruction = scope === 'base' ? set.base : set.project;
             <section class="cg-card dream-form"><h2>{{ scope === 'base' ? 'Base instructions' : 'Project addendum' }} <span class="cg-chip">revision {{ instruction.revision }}</span></h2><p class="cg-mono cg-muted cg-small">Wiki: {{ instruction.slug }}</p>
@@ -119,5 +134,5 @@
         } @else { <p class="kn-empty">{{ loading() ? 'Loading instructions…' : 'Instructions unavailable. Refresh to retry.' }}</p> }
       }
     }
-  } @else if (!project.error()) { <p class="kn-empty">No projects yet.</p> }
+  } @else if (!selection.error()) { <p class="kn-empty">No projects yet.</p> }
 </section>

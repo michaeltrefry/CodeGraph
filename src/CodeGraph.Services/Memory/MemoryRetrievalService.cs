@@ -19,7 +19,8 @@ public class MemoryRetrievalService
         _logger = logger;
     }
 
-    public async Task<MemorySearchResult> SearchAsync(string query, int entityLimit = 5, int claimLimit = 5)
+    /// <param name="projectKey">When set, only entities and claims scoped to that work project are returned.</param>
+    public async Task<MemorySearchResult> SearchAsync(string query, int entityLimit = 5, int claimLimit = 5, string? projectKey = null)
     {
         _logger.LogInformation("Searching memory v2 for query: {Query}", query);
 
@@ -44,12 +45,12 @@ public class MemoryRetrievalService
             }
         }
 
-        var entitySeeds = await SearchEntitySeedsAsync(rawQuery, queryEmbedding, entityLimit);
+        var entitySeeds = await SearchEntitySeedsAsync(rawQuery, queryEmbedding, entityLimit, projectKey);
         var claimSeeds = SanitizeClaimSeeds(
-            await _store.SearchClaimsAsync(rawQuery, queryEmbedding, claimLimit),
+            await _store.SearchClaimsAsync(rawQuery, queryEmbedding, claimLimit, projectKey: projectKey),
             rawQuery,
             claimLimit);
-        entitySeeds = await PreferClaimAnchoredEntitySeedsAsync(entitySeeds, claimSeeds, entityLimit);
+        entitySeeds = await PreferClaimAnchoredEntitySeedsAsync(entitySeeds, claimSeeds, entityLimit, projectKey);
 
         return new MemorySearchResult
         {
@@ -130,18 +131,20 @@ public class MemoryRetrievalService
         string entityId,
         bool includeSuperseded = false,
         bool includeConflicts = true,
-        int neighborLimit = 20)
+        int neighborLimit = 20,
+        string? projectKey = null)
     {
-        return await _store.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit);
+        return await _store.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit, projectKey);
     }
 
     public async Task<MemoryClaimBundle?> GetClaimBundleAsync(
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true)
+        bool includeEvidence = true,
+        string? projectKey = null)
     {
-        return await _store.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence);
+        return await _store.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence, projectKey);
     }
 
     public async Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(MemoryFrontierExpansionRequest request)
@@ -490,7 +493,7 @@ public class MemoryRetrievalService
         return magnitude == 0 ? 0.0 : dot / magnitude;
     }
 
-    private async Task<List<MemoryEntitySeed>> SearchEntitySeedsAsync(string query, float[]? queryEmbedding, int limit)
+    private async Task<List<MemoryEntitySeed>> SearchEntitySeedsAsync(string query, float[]? queryEmbedding, int limit, string? projectKey = null)
     {
         var exactCandidates = new Dictionary<string, MemoryEntitySeed>(StringComparer.OrdinalIgnoreCase);
         var normalizedQuery = NormalizeSearchText(query);
@@ -498,7 +501,7 @@ public class MemoryRetrievalService
 
         var normalizedId = MemoryNormalizationService.ToSnakeCase(query);
         var exactEntity = await _store.GetEntityAsync(normalizedId) ?? await _store.GetEntityByExternalIdAsync(normalizedId);
-        if (exactEntity != null)
+        if (exactEntity != null && await InProjectAsync(exactEntity, projectKey))
         {
             MergeEntitySeed(
                 exactCandidates,
@@ -510,7 +513,7 @@ public class MemoryRetrievalService
                 "exact");
         }
 
-        var textResults = await _store.TextSearchAsync(query, limit);
+        var textResults = await _store.TextSearchAsync(query, limit, projectKey);
         for (var index = 0; index < textResults.Count; index++)
         {
             var entity = textResults[index];
@@ -529,7 +532,7 @@ public class MemoryRetrievalService
 
         if (queryEmbedding != null)
         {
-            var vectorResults = await _store.VectorSearchAsync(queryEmbedding, limit);
+            var vectorResults = await _store.VectorSearchAsync(queryEmbedding, limit, projectKey);
             foreach (var (entity, similarity) in vectorResults)
             {
                 MergeEntitySeed(
@@ -554,7 +557,8 @@ public class MemoryRetrievalService
     private async Task<List<MemoryEntitySeed>> PreferClaimAnchoredEntitySeedsAsync(
         List<MemoryEntitySeed> entitySeeds,
         List<(MemoryClaim Claim, double Score, string MatchKind)> claimSeeds,
-        int limit)
+        int limit,
+        string? projectKey)
     {
         var hasStrongClaimSeeds = claimSeeds.Any(seed => !string.Equals(seed.MatchKind, "vector", StringComparison.OrdinalIgnoreCase));
         var hasNonVectorEntitySeeds = entitySeeds.Any(seed => !string.Equals(seed.MatchKind, "vector", StringComparison.OrdinalIgnoreCase));
@@ -564,10 +568,10 @@ public class MemoryRetrievalService
         var preferred = new Dictionary<string, MemoryEntitySeed>(StringComparer.OrdinalIgnoreCase);
         foreach (var claimSeed in claimSeeds)
         {
-            await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.SubjectEntityId, claimSeed);
+            await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.SubjectEntityId, claimSeed, projectKey);
 
             if (!string.IsNullOrWhiteSpace(claimSeed.Claim.ObjectEntityId))
-                await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.ObjectEntityId!, claimSeed);
+                await MergeClaimAnchoredEntitySeedAsync(preferred, claimSeed.Claim.ObjectEntityId!, claimSeed, projectKey);
         }
 
         if (preferred.Count == 0)
@@ -583,13 +587,14 @@ public class MemoryRetrievalService
     private async Task MergeClaimAnchoredEntitySeedAsync(
         IDictionary<string, MemoryEntitySeed> candidates,
         string entityId,
-        (MemoryClaim Claim, double Score, string MatchKind) claimSeed)
+        (MemoryClaim Claim, double Score, string MatchKind) claimSeed,
+        string? projectKey)
     {
         if (string.IsNullOrWhiteSpace(entityId))
             return;
 
         var entity = await _store.GetEntityAsync(entityId) ?? await _store.GetEntityByExternalIdAsync(entityId);
-        if (entity == null)
+        if (entity == null || !await InProjectAsync(entity, projectKey))
             return;
 
         var score = claimSeed.MatchKind switch
@@ -608,6 +613,9 @@ public class MemoryRetrievalService
             ["claim_anchor"],
             "claim");
     }
+
+    private async Task<bool> InProjectAsync(MemoryEntity entity, string? projectKey) =>
+        projectKey is null || await _store.IsEntityInProjectAsync(entity.Id, projectKey);
 
     private static void MergeEntitySeed(
         IDictionary<string, MemoryEntitySeed> candidates,

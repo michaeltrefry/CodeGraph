@@ -7,7 +7,9 @@ using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Memory;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Server;
 using Shouldly;
 
 namespace CodeGraph.Tests.Memory;
@@ -152,6 +154,103 @@ public class MemoryMcpServerTests
     }
 
     [Fact]
+    public async Task StoreMemoryV2_ScopesTheWriteToTheSessionsProject()
+    {
+        var bus = new FakeMessageBus();
+        var resolver = new FakeProjectResolver(sessions: new() { ["session-1"] = "CG" });
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            claims: [new MemoryMcpClaimInput { Subject = "codegraph", Predicate = "uses", Object = "mariadb" }],
+            sessionId: "session-1",
+            projectResolver: resolver);
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("project").GetString().ShouldBe("CG");
+        bus.Published.ShouldHaveSingleItem().ProjectKey.ShouldBe("CG");
+    }
+
+    [Theory]
+    [InlineData(typeof(MemoryMcpServer), nameof(MemoryMcpServer.StoreMemoryV2))]
+    [InlineData(typeof(ConsolidatedMcpServer), nameof(ConsolidatedMcpServer.MemoryStore))]
+    public void StoreTools_AdvertiseProjectAndSessionIdAndTakeTheResolverFromServices(Type type, string method)
+    {
+        var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton<IMemoryOperationsService>(CreateMemoryOperations(new FakeMessageBus()))
+            .AddSingleton<IMemoryProjectResolver>(new FakeProjectResolver())
+            .BuildServiceProvider();
+
+        var tool = McpServerTool.Create(type.GetMethod(method)!, target: null, new McpServerToolCreateOptions { Services = services });
+
+        var properties = tool.ProtocolTool.InputSchema.GetProperty("properties");
+        properties.TryGetProperty("project", out _).ShouldBeTrue();
+        properties.TryGetProperty("sessionId", out _).ShouldBeTrue();
+        properties.TryGetProperty("projectResolver", out _).ShouldBeFalse();
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_WithoutProjectOrSessionStaysUnscoped()
+    {
+        var bus = new FakeMessageBus();
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            claims: [new MemoryMcpClaimInput { Subject = "codegraph", Predicate = "uses", Object = "mariadb" }],
+            projectResolver: new FakeProjectResolver());
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.TryGetProperty("project", out _).ShouldBeFalse();
+        bus.Published.ShouldHaveSingleItem().ProjectKey.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task StoreMemoryV2_RefusesAnUnknownProjectWithoutQueueing()
+    {
+        var bus = new FakeMessageBus();
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            claims: [new MemoryMcpClaimInput { Subject = "codegraph", Predicate = "uses", Object = "mariadb" }],
+            project: "NOPE",
+            projectResolver: new FakeProjectResolver());
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("error").GetProperty("code").GetString().ShouldBe("invalid_project");
+        bus.Published.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task StoreClaims_WithAProjectScopesEveryWrittenEntityAndClaimAndEachEvidencedClaim()
+    {
+        var store = new FakeMemoryGraphStore();
+        var memoryService = CreateMemoryService(store);
+        var extraction = new MemoryClaimExtractionResult
+        {
+            Entities = [new MemoryExtractedEntity { Id = "codegraph", Label = "CodeGraph", Type = "repository" }],
+            Claims = [new MemoryExtractedClaim { Id = "claim_uses", Subject = "codegraph", Predicate = "uses", Object = "mariadb" }],
+            Evidence =
+            [
+                new MemoryExtractedEvidence { ClaimId = "claim_uses", EvidenceType = "note", SourceRef = "CodeGraph#163" },
+                new MemoryExtractedEvidence { ClaimId = "claim_earlier", EvidenceType = "note", SourceRef = "CodeGraph#164" },
+            ],
+        };
+
+        await memoryService.StoreClaimsAsync(extraction, "test", "CG");
+
+        var scope = store.ProjectScopes.ShouldHaveSingleItem();
+        scope.ProjectKey.ShouldBe("CG");
+        scope.EntityIds.ShouldBe(["codegraph", "mariadb"], ignoreOrder: true);
+        scope.ClaimIds.ShouldBe(["claim_uses", "claim_earlier"], ignoreOrder: true);
+
+        await memoryService.StoreClaimsAsync(extraction, "test");
+        store.ProjectScopes.ShouldHaveSingleItem();
+    }
+
+    [Fact]
     public async Task GetMemoryWriteStatus_ReturnsStructuredReceipt()
     {
         var store = new FakeMemoryGraphStore();
@@ -210,6 +309,20 @@ public class MemoryMcpServerTests
         }
     }
 
+    private sealed class FakeProjectResolver(Dictionary<string, string>? sessions = null) : IMemoryProjectResolver
+    {
+        public Task<string?> ResolveAsync(string? project, string? sessionId, CancellationToken ct = default)
+        {
+            if (project is not null)
+                throw new MemoryProjectResolutionException($"project '{project}' is not a project.");
+            if (sessionId is null)
+                return Task.FromResult<string?>(null);
+            return sessions is not null && sessions.TryGetValue(sessionId, out var key)
+                ? Task.FromResult<string?>(key)
+                : throw new MemoryProjectResolutionException($"sessionId '{sessionId}' is not a session.");
+        }
+    }
+
     private sealed class FakeEmbeddingService : IEmbeddingService
     {
         public bool IsAvailable => false;
@@ -261,16 +374,16 @@ public class MemoryMcpServerTests
         public Task UpsertEntityEdgesBatchAsync(IReadOnlyList<MemoryEntityEdge> edges) => Task.CompletedTask;
         public Task CreateObservationAsync(MemoryObservation obs) => Task.CompletedTask;
         public Task ResolveObservationAsync(string observationId, string resolution, string? resolvedByMemoryId) => Task.CompletedTask;
-        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5) =>
+        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null) =>
             Task.FromResult(new List<(MemoryEntity Entity, double Score)>());
-        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5) => Task.FromResult(new List<MemoryEntity>());
+        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null) => Task.FromResult(new List<MemoryEntity>());
         public Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId) => Task.FromResult(new List<MemoryRelationshipDetail>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds) =>
             Task.FromResult(new List<MemoryObservation>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds) =>
             Task.FromResult(new List<MemoryObservation>());
-        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0) => Task.FromResult(new MemoryGraphSnapshot());
-        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200) => Task.FromResult(new MemoryGraphSnapshot());
+        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null) => Task.FromResult(new MemoryGraphSnapshot());
+        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null) => Task.FromResult(new MemoryGraphSnapshot());
         public Task<List<string>> FindCandidateEntityIdsAsync(string candidateId, int limit = 20) => Task.FromResult(new List<string>());
         public Task<MemoryEntity?> GetEntityAsync(string entityId) => Task.FromResult<MemoryEntity?>(null);
         public Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId) => Task.FromResult<MemoryEntity?>(null);
@@ -279,12 +392,19 @@ public class MemoryMcpServerTests
         public Task<MemoryClaim?> GetClaimAsync(string claimId) => Task.FromResult<MemoryClaim?>(null);
         public Task<List<MemoryClaim>> GetClaimsByFactGroupAsync(string factGroupKey) => Task.FromResult(new List<MemoryClaim>());
         public Task<List<MemoryClaim>> GetClaimsBySubjectPredicateAsync(string subjectEntityId, string predicate) => Task.FromResult(new List<MemoryClaim>());
-        public Task<MemoryEntityBundle?> GetEntityBundleAsync(string entityId, bool includeSuperseded = false, bool includeConflicts = true, int neighborLimit = 20)
+        public Task<MemoryEntityBundle?> GetEntityBundleAsync(string entityId, bool includeSuperseded = false, bool includeConflicts = true, int neighborLimit = 20, string? projectKey = null)
             => Task.FromResult<MemoryEntityBundle?>(null);
-        public Task<MemoryClaimBundle?> GetClaimBundleAsync(string claimId, bool includeSupersessionChain = true, bool includeConflicts = true, bool includeEvidence = true)
+        public Task<MemoryClaimBundle?> GetClaimBundleAsync(string claimId, bool includeSupersessionChain = true, bool includeConflicts = true, bool includeEvidence = true, string? projectKey = null)
             => Task.FromResult<MemoryClaimBundle?>(null);
-        public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false)
+        public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false, string? projectKey = null)
             => Task.FromResult(new List<(MemoryClaim Claim, double Score, string MatchKind)>());
+        public List<(string ProjectKey, IReadOnlyCollection<string> EntityIds, IReadOnlyCollection<string> ClaimIds)> ProjectScopes { get; } = [];
+        public Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds)
+        {
+            ProjectScopes.Add((projectKey, entityIds, claimIds));
+            return Task.CompletedTask;
+        }
+        public Task<bool> IsEntityInProjectAsync(string entityId, string projectKey) => Task.FromResult(false);
         public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20,
             int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true)
             => Task.FromResult(new MemorySubgraphResult());

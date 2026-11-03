@@ -79,7 +79,7 @@ function createBatchStatus(repo: string): AnalysisBatchStatus {
   };
 }
 
-function createComponent() {
+function createComponent(query: Record<string, string> = {}) {
   const paramMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
   const queryParamMap$ = new Subject<ReturnType<typeof convertToParamMap>>();
   const detailSubjects = new Map<string, Subject<RepositoryDetailResponse>>();
@@ -137,7 +137,7 @@ function createComponent() {
       { provide: AuthService, useValue: auth },
       { provide: ChatContextService, useValue: { setRepo: vi.fn() } },
       { provide: Router, useValue: { navigate: vi.fn() } },
-      { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable(), queryParamMap: queryParamMap$.asObservable() } },
+      { provide: ActivatedRoute, useValue: { paramMap: paramMap$.asObservable(), queryParamMap: queryParamMap$.asObservable(), snapshot: { queryParamMap: convertToParamMap(query) } } },
       { provide: DomSanitizer, useValue: sanitizer },
       { provide: DestroyRef, useValue: { onDestroy: vi.fn((callback: () => void) => destroyCallbacks.push(callback)) } }
     ]
@@ -205,6 +205,27 @@ describe('RepoDetailComponent', () => {
     expect(component.readme()).toBe('repo-b readme');
     expect(component.batchStatus()?.repo).toBe('repo-b');
     expect(component.loading()).toBe(false);
+  });
+
+  it('opens the review run named by ?run= instead of the latest one', () => {
+    const { component, paramMap$, detailSubjects, api } = createComponent({ tab: 'reviews', run: '7' });
+    api.getRepositoryReview.mockReturnValue(throwError(() => ({ status: 404 })));
+    // A newer tracked (running) review must not take over the requested run.
+    const resume = vi.spyOn(component as unknown as { resumeTrackedRepositoryReview(repo: string): void }, 'resumeTrackedRepositoryReview');
+
+    component.ngOnInit();
+    paramMap$.next(convertToParamMap({ name: 'repo-a' }));
+    detailSubjects.get('repo-a')?.next(createDetail('repo-a'));
+
+    expect(api.getRepositoryReview).toHaveBeenCalledWith('repo-a', 7);
+    expect(api.getLatestRepositoryReview).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+
+    // A later reload (after a review stream fails) shows the latest run, not the one the link named.
+    (component as unknown as { loadLatestRepositoryReview(repo: string): void }).loadLatestRepositoryReview('repo-a');
+    expect(api.getLatestRepositoryReview).toHaveBeenCalledWith('repo-a');
+    expect(api.getRepositoryReview).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledWith('repo-a');
   });
 
   it('does not abort an in-flight repository review stream when the component is destroyed', async () => {

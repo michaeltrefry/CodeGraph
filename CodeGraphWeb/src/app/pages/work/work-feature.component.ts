@@ -22,7 +22,7 @@ type Tab = 'board' | 'graph' | 'progress' | 'docs' | 'plan';
       @if (feature(); as f) {
         <div class="wrk-head">
           <div>
-            <div class="wrk-key"><a [routerLink]="['/work/projects', f.project_key]">{{ f.project_key }}</a> · {{ f.key }} · v{{ f.version }}</div>
+            <div class="wrk-key"><a [routerLink]="['/projects', f.project_key, 'work']">{{ f.project_key }}</a> · {{ f.key }} · v{{ f.version }}</div>
             <h1>{{ f.title }}</h1>
           </div>
           <span class="wrk-chip" [attr.data-status]="f.status === 'complete' ? 'complete' : 'in_progress'">{{ f.status }}</span>

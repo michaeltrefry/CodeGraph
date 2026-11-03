@@ -125,6 +125,7 @@ public class MemoryControllerCleanupTests
             MemoryClaimExtractionResult extraction,
             string source,
             string inputMode,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
@@ -147,6 +148,7 @@ public class MemoryControllerCleanupTests
             string query,
             int entityLimit = 5,
             int claimLimit = 5,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
@@ -158,12 +160,14 @@ public class MemoryControllerCleanupTests
             bool includeSuperseded = false,
             bool includeConflicts = true,
             int neighborLimit = 20,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<MemoryGraphSnapshot> GetEntityGraphAsync(
             string entityId,
             int neighborLimit = 200,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
@@ -172,6 +176,7 @@ public class MemoryControllerCleanupTests
             bool includeSupersessionChain = true,
             bool includeConflicts = true,
             bool includeEvidence = true,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
@@ -192,7 +197,7 @@ public class MemoryControllerCleanupTests
             CancellationToken ct = default)
             => throw new NotSupportedException();
 
-        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, CancellationToken ct = default)
+        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<MemoryEntityWithRelationships?> GetEntityWithRelationshipsAsync(

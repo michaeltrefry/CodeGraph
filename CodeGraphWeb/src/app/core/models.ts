@@ -783,6 +783,31 @@ export interface RepositoryReviewRunResponse {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  /** True when the reviewed commit is behind the repository's head; missing means not stale. */
+  stale?: boolean;
+}
+
+/** One run in a repository's review history (GET /repositories/{repo}/code-review). */
+export interface RepositoryReviewRunSummary {
+  id: number;
+  repository: string;
+  status: string;
+  reviewMode: string;
+  reviewedCommitSha?: string;
+  model?: string;
+  requestedBy?: string;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  stale: boolean;
+  /** Lowercase severity to count. */
+  findingCounts: Record<string, number>;
+}
+
+export interface RepositoryReviewRunPage {
+  items: RepositoryReviewRunSummary[];
+  /** Pass as `before` for the next (older) page; null on the last page. */
+  nextBefore: number | null;
 }
 
 export interface RepositoryReviewFindingResponse {

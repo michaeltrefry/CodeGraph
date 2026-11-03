@@ -11,8 +11,9 @@ public sealed class LocalMemoryOperationsService(
         MemoryClaimExtractionResult extraction,
         string source,
         string inputMode,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.QueueClaimsAsync(extraction, source, inputMode, messageBus, ct);
+        => memoryService.QueueClaimsAsync(extraction, source, inputMode, messageBus, projectKey, ct);
 
     public Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId, CancellationToken ct = default)
         => memoryService.GetWriteReceiptAsync(receiptId);
@@ -49,8 +50,9 @@ public sealed class LocalMemoryOperationsService(
         string query,
         int entityLimit = 5,
         int claimLimit = 5,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.SearchMemoryAsync(query, entityLimit, claimLimit);
+        => memoryService.SearchMemoryAsync(query, entityLimit, claimLimit, projectKey);
 
     public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphRequest request, CancellationToken ct = default)
         => memoryService.GetMemorySubgraphAsync(request);
@@ -60,22 +62,25 @@ public sealed class LocalMemoryOperationsService(
         bool includeSuperseded = false,
         bool includeConflicts = true,
         int neighborLimit = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit);
+        => memoryService.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit, projectKey);
 
     public Task<MemoryGraphSnapshot> GetEntityGraphAsync(
         string entityId,
         int neighborLimit = 200,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.GetEntityGraphAsync(entityId, neighborLimit);
+        => memoryService.GetEntityGraphAsync(entityId, neighborLimit, projectKey);
 
     public Task<MemoryClaimBundle?> GetClaimBundleAsync(
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence);
+        => memoryService.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence, projectKey);
 
     public Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(
         MemoryFrontierExpansionRequest request,
@@ -97,8 +102,9 @@ public sealed class LocalMemoryOperationsService(
     public Task<MemoryGraphSnapshot> GetFullGraphAsync(
         int limit = 200,
         int skip = 0,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.GetFullGraphAsync(limit, skip);
+        => memoryService.GetFullGraphAsync(limit, skip, projectKey);
 
     public async Task<MemoryEntityWithRelationships?> GetEntityWithRelationshipsAsync(
         string entityId,

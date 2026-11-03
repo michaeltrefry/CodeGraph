@@ -17,6 +17,11 @@
   padding: 18px 20px 24px;
 }
 
+// Embedded in a project page tab: the tab supplies the page padding.
+.mp-page.mp-embedded {
+  padding: 0;
+}
+
 .mp-btn {
   appearance: none;
   padding: 6px 12px;

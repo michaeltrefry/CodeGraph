@@ -30,6 +30,51 @@ public class RepositoryReviewsControllerTests
     }
 
     [Fact]
+    public async Task Start_RecordsRequestingUser()
+    {
+        var service = new FakeRepositoryReviewService();
+        var controller = CreateController(service);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new System.Security.Claims.ClaimsPrincipal(
+                    new System.Security.Claims.ClaimsIdentity([new System.Security.Claims.Claim("preferred_username", "michael")], "test"))
+            }
+        };
+
+        await controller.Start("TestRepo", new StartRepositoryReviewRequest("full"), CancellationToken.None);
+
+        service.StartedBy.ShouldBe("michael");
+    }
+
+    [Fact]
+    public async Task List_ReturnsNotFoundWhenRepositoryUnknown()
+    {
+        var controller = CreateController(new FakeRepositoryReviewService());
+
+        var result = await controller.List("Nope");
+
+        result.Result.ShouldBeOfType<NotFoundResult>();
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(-5, 1)]
+    [InlineData(20, 20)]
+    [InlineData(500, 100)]
+    public async Task List_ClampsLimitAndPassesCursor(int requested, int expected)
+    {
+        var service = new FakeRepositoryReviewService { ListResponse = new RepositoryReviewRunPage([], null) };
+        var controller = CreateController(service);
+
+        var result = await controller.List("TestRepo", requested, 77);
+
+        result.Result.ShouldBeOfType<OkObjectResult>().Value.ShouldBe(service.ListResponse);
+        service.ListCall.ShouldBe(("TestRepo", expected, 77L));
+    }
+
+    [Fact]
     public async Task Latest_ReturnsNotFoundWhenMissing()
     {
         var controller = CreateController(new FakeRepositoryReviewService());
@@ -80,7 +125,10 @@ public class RepositoryReviewsControllerTests
     }
 
     private static RepositoryReviewsController CreateController(FakeRepositoryReviewService service)
-        => new(service, NullLogger<RepositoryReviewsController>.Instance);
+        => new(service, NullLogger<RepositoryReviewsController>.Instance)
+        {
+            ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() }
+        };
 
     private static RepositoryReviewResponse CreateReview(
         string status,
@@ -113,11 +161,17 @@ public class RepositoryReviewsControllerTests
         public Func<string, string, CancellationToken, Task<long>>? StartReviewAsyncHandler { get; init; }
         public Queue<RepositoryReviewResponse?> ReviewResponses { get; } = new();
         public RepositoryReviewResponse? LatestResponse { get; init; }
+        public RepositoryReviewRunPage? ListResponse { get; init; }
+        public (string Repo, int Limit, long? Before)? ListCall { get; private set; }
+        public string? StartedBy { get; private set; }
 
-        public Task<long> StartReviewAsync(string repo, string mode, CancellationToken ct = default)
-            => StartReviewAsyncHandler is null
+        public Task<long> StartReviewAsync(string repo, string mode, string? requestedBy = null, CancellationToken ct = default)
+        {
+            StartedBy = requestedBy;
+            return StartReviewAsyncHandler is null
                 ? Task.FromResult(1L)
                 : StartReviewAsyncHandler(repo, mode, ct);
+        }
 
         public Task ExecuteReviewRunAsync(long reviewRunId, CancellationToken ct = default) => Task.CompletedTask;
 
@@ -126,5 +180,11 @@ public class RepositoryReviewsControllerTests
 
         public Task<RepositoryReviewResponse?> GetLatestReviewAsync(string repo, CancellationToken ct = default)
             => Task.FromResult(LatestResponse);
+
+        public Task<RepositoryReviewRunPage?> ListReviewsAsync(string repo, int limit, long? before = null, CancellationToken ct = default)
+        {
+            ListCall = (repo, limit, before);
+            return Task.FromResult(ListResponse);
+        }
     }
 }

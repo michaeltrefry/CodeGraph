@@ -14,8 +14,9 @@ public sealed class RemoteMemoryOperationsService(
         MemoryClaimExtractionResult extraction,
         string source,
         string inputMode,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryClient.QueueClaimsAsync(ResolveUsername(), extraction, source, ct);
+        => memoryClient.QueueClaimsAsync(ResolveUsername(), extraction, source, projectKey, ct);
 
     public Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId, CancellationToken ct = default)
         => memoryClient.GetWriteStatusAsync(ResolveUsername(), receiptId, ct);
@@ -52,8 +53,9 @@ public sealed class RemoteMemoryOperationsService(
         string query,
         int entityLimit = 5,
         int claimLimit = 5,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryClient.SearchAsync(ResolveUsername(), query, entityLimit, claimLimit, ct);
+        => memoryClient.SearchAsync(ResolveUsername(), query, entityLimit, claimLimit, projectKey, ct);
 
     public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphRequest request, CancellationToken ct = default)
         => memoryClient.GetSubgraphAsync(ResolveUsername(), request, ct);
@@ -63,6 +65,7 @@ public sealed class RemoteMemoryOperationsService(
         bool includeSuperseded = false,
         bool includeConflicts = true,
         int neighborLimit = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
         => memoryClient.GetEntityBundleAsync(
             ResolveUsername(),
@@ -70,14 +73,16 @@ public sealed class RemoteMemoryOperationsService(
             includeSuperseded,
             includeConflicts,
             neighborLimit,
+            projectKey,
             ct);
 
     public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(
         string entityId,
         int neighborLimit = 200,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
-        return await memoryClient.GetEntityGraphAsync(ResolveUsername(), entityId, neighborLimit, ct)
+        return await memoryClient.GetEntityGraphAsync(ResolveUsername(), entityId, neighborLimit, projectKey, ct)
                ?? new MemoryGraphSnapshot();
     }
 
@@ -86,6 +91,7 @@ public sealed class RemoteMemoryOperationsService(
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
         => memoryClient.GetClaimBundleAsync(
             ResolveUsername(),
@@ -93,6 +99,7 @@ public sealed class RemoteMemoryOperationsService(
             includeSupersessionChain,
             includeConflicts,
             includeEvidence,
+            projectKey,
             ct);
 
     public Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(
@@ -115,8 +122,9 @@ public sealed class RemoteMemoryOperationsService(
     public Task<MemoryGraphSnapshot> GetFullGraphAsync(
         int limit = 200,
         int skip = 0,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryClient.GetGraphAsync(ResolveUsername(), limit, skip, ct);
+        => memoryClient.GetGraphAsync(ResolveUsername(), limit, skip, projectKey, ct);
 
     public async Task<MemoryEntityWithRelationships?> GetEntityWithRelationshipsAsync(
         string entityId,

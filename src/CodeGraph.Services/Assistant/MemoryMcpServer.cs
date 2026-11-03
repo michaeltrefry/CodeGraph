@@ -26,6 +26,7 @@ public class MemoryMcpServer
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }
         Claim format: { "subject": "michael", "predicate": "prefers", "valueText": "clean slate design", "confidence": 0.9 }
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
+        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project.
         """)]
     public static async Task<string> StoreMemoryV2(
         IMemoryOperationsService memoryOperations,
@@ -34,7 +35,10 @@ public class MemoryMcpServer
         [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays")] string? data = null,
         [Description("Typed memory entities to store")] List<MemoryMcpEntityInput>? entities = null,
         [Description("Typed atomic memory claims to store")] List<MemoryMcpClaimInput>? claims = null,
-        [Description("Typed evidence rows to store")] List<MemoryMcpEvidenceInput>? evidence = null)
+        [Description("Typed evidence rows to store")] List<MemoryMcpEvidenceInput>? evidence = null,
+        [Description("Optional key (such as SW) or id of the work project this memory belongs to; its entities and claims are listed under that project.")] string? project = null,
+        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins.")] string? sessionId = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
         var hasData = !string.IsNullOrWhiteSpace(data);
         var hasTypedInput = (entities?.Count ?? 0) > 0 || (claims?.Count ?? 0) > 0 || (evidence?.Count ?? 0) > 0;
@@ -56,10 +60,21 @@ public class MemoryMcpServer
         if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
             return SerializeError("empty_input", "No entities, claims, or evidence provided.");
 
+        string? projectKey;
+        try
+        {
+            projectKey = await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId);
+        }
+        catch (MemoryProjectResolutionException ex)
+        {
+            return SerializeError("invalid_project", ex.Message);
+        }
+
         var ack = await memoryOperations.QueueClaimsAsync(
             extraction,
             source,
-            hasData ? "json" : "typed");
+            hasData ? "json" : "typed",
+            projectKey);
 
         return JsonSerializer.Serialize(ack, JsonOptions);
     }

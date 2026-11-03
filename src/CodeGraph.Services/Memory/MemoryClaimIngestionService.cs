@@ -14,9 +14,14 @@ public class MemoryClaimIngestionService(
 {
     private const int MaxEmbeddingConcurrency = 5;
 
+    /// <param name="projectKey">
+    /// The work project the write is scoped to (CG-156): every entity and claim the batch writes or
+    /// re-asserts, each claim its evidence is attached to, and the entities those claims are about.
+    /// </param>
     public async Task<StoreMemoryResult> NormalizeAndUpsertClaimsAsync(
         MemoryClaimExtractionResult extraction,
-        string source)
+        string source,
+        string? projectKey = null)
     {
         var result = new StoreMemoryResult();
         var entityMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -45,6 +50,7 @@ public class MemoryClaimIngestionService(
         var entityEdges = new Dictionary<(string FromId, string ToId, string EdgeType), MemoryEntityEdge>();
         var observations = new List<MemoryObservation>();
         var claimIdByInputRef = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var writtenClaimIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var extractedClaim in extraction.Claims)
         {
@@ -77,6 +83,7 @@ public class MemoryClaimIngestionService(
             if (duplicate != null)
             {
                 claimIdByInputRef[claimId] = duplicate.Id;
+                writtenClaimIds.Add(duplicate.Id);
                 if (!string.IsNullOrWhiteSpace(extractedClaim.Id))
                     claimIdByInputRef[extractedClaim.Id] = duplicate.Id;
                 continue;
@@ -203,6 +210,7 @@ public class MemoryClaimIngestionService(
 
             claimsToUpsert[claim.Id] = claim;
             claimIdByInputRef[claim.Id] = claim.Id;
+            writtenClaimIds.Add(claim.Id);
             if (!string.IsNullOrWhiteSpace(extractedClaim.Id))
                 claimIdByInputRef[extractedClaim.Id] = claim.Id;
 
@@ -250,6 +258,12 @@ public class MemoryClaimIngestionService(
         }
 
         await store.AddEvidenceBatchAsync(evidenceToWrite);
+
+        if (projectKey is not null)
+        {
+            writtenClaimIds.UnionWith(evidenceToWrite.Select(item => item.ClaimId).OfType<string>());
+            await store.AddProjectScopeAsync(projectKey, entitiesById.Keys.ToList(), writtenClaimIds.ToList());
+        }
 
         result.ClaimsWritten = claimsToUpsert.Count;
         result.EdgesWritten = claimEdges.Count + entityEdges.Count;

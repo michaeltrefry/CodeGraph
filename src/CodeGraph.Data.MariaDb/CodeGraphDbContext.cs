@@ -519,6 +519,7 @@ public class CodeGraphDbContext(DbContextOptions<CodeGraphDbContext> options) : 
             e.HasKey(r => r.Id);
             e.Property(r => r.Id).HasColumnName("id");
             e.Property(r => r.Repo).HasColumnName("repo");
+            e.Property(r => r.RequestedByUsername).HasColumnName("requested_by_username");
             e.Property(r => r.ReviewedCommitSha).HasColumnName("reviewed_commit_sha");
             e.Property(r => r.BaselineReviewRunId).HasColumnName("baseline_review_run_id");
             e.Property(r => r.BaselineCommitSha).HasColumnName("baseline_commit_sha");

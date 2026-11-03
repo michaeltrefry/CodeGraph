@@ -331,6 +331,41 @@ public sealed class WorkMessagesMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     // ---- Blocking questions --------------------------------------------------------------------------------
 
     [Fact]
+    public async Task A_feature_counts_its_unfinished_blocked_items_in_get_and_in_the_full_list()
+    {
+        var project = await db.NewProjectAsync("BC");
+        string FeatureKey(JsonElement created) => created.GetProperty("feature").GetProperty("key").GetString()!;
+        var busy = FeatureKey(await db.CallAsync(WorkTools.CreateWork, new { project, feature = new { title = "Busy" } }));
+        var calm = FeatureKey(await db.CallAsync(WorkTools.CreateWork, new { project, feature = new { title = "Calm" } }));
+        async Task<string> ItemAsync(string title, string feature, string status = "ready", string[]? blockedBy = null) =>
+            (await db.CallAsync(WorkTools.CreateWork, new { project, item = new { title, status, feature, blocked_by = blockedBy } })).GetProperty("item").GetProperty("key").GetString()!;
+
+        var first = await ItemAsync("Unblocked", busy);
+        await ItemAsync("Waits on a blocker", busy, blockedBy: [first]);
+        var asking = await ItemAsync("Awaits the human", busy);
+        await ItemAsync("Finished", busy, status: "complete");
+        await ItemAsync("Finished but listed after a blocker", busy, status: "complete", blockedBy: [first]);
+        await ItemAsync("Fine", calm);
+        var s = await StartAsync(project, "claude-code");
+        await db.CallAsync(WorkTools.Post, new { session_id = s, item = asking, to_human = true, kind = "question", blocking = true, body = "May I proceed?" }, "michael");
+
+        async Task<int> GetCountAsync(string feature) => (await db.CallAsync(WorkTools.GetWork, new { id = feature })).GetProperty("blocked_count").GetInt32();
+        async Task<Dictionary<string, int>> ListCountsAsync() =>
+            (await db.CallAsync(WorkTools.FindWork, new { project, kind = "feature", detail = "full" })).GetProperty("items").EnumerateArray()
+                .ToDictionary(feature => feature.GetProperty("key").GetString()!, feature => feature.GetProperty("blocked_count").GetInt32());
+
+        // The blocked item and the one with the open blocking question; a finished item never counts.
+        (await GetCountAsync(busy)).ShouldBe(2);
+        (await GetCountAsync(calm)).ShouldBe(0);
+        (await ListCountsAsync()).ShouldBe(new Dictionary<string, int> { [busy] = 2, [calm] = 0 });
+
+        // The blocker completes: only the awaiting-human item is left.
+        await db.UpdateAsync(first, new { status = "complete" });
+        (await GetCountAsync(busy)).ShouldBe(1);
+        (await ListCountsAsync())[busy].ShouldBe(1);
+    }
+
+    [Fact]
     public async Task A_blocking_question_to_the_human_blocks_the_item_until_it_is_answered_or_declined()
     {
         var project = await db.NewProjectAsync("BQ");

@@ -21,10 +21,11 @@ public sealed class HttpMemoryClient(
         string username,
         MemoryClaimExtractionResult extraction,
         string source = "api",
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(extraction);
-        var path = "api/memory/claims/store" + BuildQueryString([("source", source)]);
+        var path = "api/memory/claims/store" + BuildQueryString([("source", source), ("project", projectKey)]);
         return SendJsonAsync<MemoryStoreAcceptedResult>(username, HttpMethod.Post, path, extraction, ct);
     }
 
@@ -119,13 +120,15 @@ public sealed class HttpMemoryClient(
         string query,
         int entityLimit = 5,
         int claimLimit = 5,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = "api/memory/search" + BuildQueryString(
         [
             ("query", NormalizeRequired(query, nameof(query))),
             ("entityLimit", Math.Clamp(entityLimit, 1, 25).ToString()),
-            ("claimLimit", Math.Clamp(claimLimit, 1, 25).ToString())
+            ("claimLimit", Math.Clamp(claimLimit, 1, 25).ToString()),
+            ("project", projectKey)
         ]);
 
         return SendJsonAsync<MemorySearchResult>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
@@ -182,6 +185,7 @@ public sealed class HttpMemoryClient(
         bool includeSuperseded = false,
         bool includeConflicts = true,
         int neighborLimit = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = $"api/memory/entities/{Uri.EscapeDataString(NormalizeRequired(entityId, nameof(entityId)))}/bundle" +
@@ -189,7 +193,8 @@ public sealed class HttpMemoryClient(
                    [
                        ("includeSuperseded", includeSuperseded.ToString().ToLowerInvariant()),
                        ("includeConflicts", includeConflicts.ToString().ToLowerInvariant()),
-                       ("neighborLimit", Math.Clamp(neighborLimit, 1, 500).ToString())
+                       ("neighborLimit", Math.Clamp(neighborLimit, 1, 500).ToString()),
+                       ("project", projectKey)
                    ]);
 
         return SendOptionalJsonAsync<MemoryEntityBundle>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
@@ -201,6 +206,7 @@ public sealed class HttpMemoryClient(
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = $"api/memory/claims/{Uri.EscapeDataString(NormalizeRequired(claimId, nameof(claimId)))}/bundle" +
@@ -208,7 +214,8 @@ public sealed class HttpMemoryClient(
                    [
                        ("includeSupersessionChain", includeSupersessionChain.ToString().ToLowerInvariant()),
                        ("includeConflicts", includeConflicts.ToString().ToLowerInvariant()),
-                       ("includeEvidence", includeEvidence.ToString().ToLowerInvariant())
+                       ("includeEvidence", includeEvidence.ToString().ToLowerInvariant()),
+                       ("project", projectKey)
                    ]);
 
         return SendOptionalJsonAsync<MemoryClaimBundle>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
@@ -235,12 +242,14 @@ public sealed class HttpMemoryClient(
         string username,
         int limit = 200,
         int skip = 0,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = "api/memory/graph" + BuildQueryString(
         [
             ("limit", Math.Clamp(limit, 1, 500).ToString()),
-            ("skip", Math.Max(skip, 0).ToString())
+            ("skip", Math.Max(skip, 0).ToString()),
+            ("project", projectKey)
         ]);
 
         return SendJsonAsync<MemoryGraphSnapshot>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
@@ -250,12 +259,14 @@ public sealed class HttpMemoryClient(
         string username,
         string entityId,
         int neighborLimit = 200,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = $"api/memory/entities/{Uri.EscapeDataString(NormalizeRequired(entityId, nameof(entityId)))}/graph" +
                    BuildQueryString(
                    [
-                       ("neighborLimit", Math.Clamp(neighborLimit, 1, 500).ToString())
+                       ("neighborLimit", Math.Clamp(neighborLimit, 1, 500).ToString()),
+                       ("project", projectKey)
                    ]);
 
         return SendOptionalJsonAsync<MemoryGraphSnapshot>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);

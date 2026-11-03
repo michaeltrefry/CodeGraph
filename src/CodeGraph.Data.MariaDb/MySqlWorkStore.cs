@@ -467,7 +467,7 @@ public sealed partial class MySqlWorkStore(
         return rows.ToDictionary(row => row.Status, row => row.Count);
     }
 
-    private async Task<FeatureView?> LoadFeatureViewAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid featureId, bool withCounts, CancellationToken ct)
+    private async Task<FeatureView?> LoadFeatureViewAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid featureId, bool withCounts, CancellationToken ct, int? blockedCount = null)
     {
         var row = await ReadFeatureRowAsync(connection, transaction, featureId, ct);
         if (row is null)
@@ -479,6 +479,8 @@ public sealed partial class MySqlWorkStore(
         var counts = withCounts
             ? await CountsAsync(connection, transaction, "feature_id = @id", featureId, ct)
             : null;
+        if (withCounts)
+            blockedCount ??= (await BlockedCountsAsync(connection, transaction, [featureId], ct)).GetValueOrDefault(featureId);
         var (status, completion, requirements) = await CompletionAsync(connection, transaction, row, ct);
         var goals = ReadList<string>(row.GoalsJson);
         var tests = ReadList<string>(row.AcceptanceTestsJson);
@@ -489,7 +491,19 @@ public sealed partial class MySqlWorkStore(
             status, completion, goals.Count == 0 ? null : goals, requirements.Count == 0 ? null : requirements, tests.Count == 0 ? null : tests,
             ReadImported(row.ImportedJson),
             // Reconciled once a planning agent has given the feature structured requirements.
-            row.RequirementsUnreconciled && requirements.Count == 0 ? true : null);
+            row.RequirementsUnreconciled && requirements.Count == 0 ? true : null,
+            withCounts ? blockedCount : null);
+    }
+
+    /// <summary>Per feature, its unfinished items that are blocked (the same derived state an item shows): one query for any number of features.</summary>
+    private static async Task<IReadOnlyDictionary<Guid, int>> BlockedCountsAsync(MySqlConnection connection, MySqlTransaction? transaction, IReadOnlyCollection<Guid> featureIds, CancellationToken ct)
+    {
+        if (featureIds.Count == 0)
+            return new Dictionary<Guid, int>();
+        var rows = await connection.QueryAsync<(Guid FeatureId, int Count)>(new CommandDefinition(
+            $"SELECT i.feature_id, COUNT(*) FROM work_items i WHERE i.feature_id IN @featureIds AND i.status NOT IN ('complete', 'closed') AND {BlockedCondition} GROUP BY i.feature_id",
+            new { featureIds }, transaction, cancellationToken: ct));
+        return rows.ToDictionary(row => row.FeatureId, row => row.Count);
     }
 
     private static ImportedView? ReadImported(string? json) =>
@@ -812,11 +826,14 @@ public sealed partial class MySqlWorkStore(
             $"SELECT {FeatureColumns} FROM work_features f JOIN work_projects p ON p.id = f.project_id WHERE {string.Join(" AND ", where)} ORDER BY f.number LIMIT @limit",
             parameters, cancellationToken: ct))).ToList();
 
+        var blocked = spec.Detail == WorkDetail.Full
+            ? await BlockedCountsAsync(connection, null, rows.Select(row => row.Id).ToList(), ct)
+            : null;
         var results = new List<object>();
         foreach (var row in rows)
         {
             results.Add(spec.Detail == WorkDetail.Full
-                ? (await LoadFeatureViewAsync(connection, null, row.Id, withCounts: true, ct))!
+                ? (await LoadFeatureViewAsync(connection, null, row.Id, withCounts: true, ct, blocked!.GetValueOrDefault(row.Id)))!
                 : new WorkRow(row.Id, WorkKeys.Feature(row.ProjectKey, row.Number), "feature", row.Title, Version: row.Version));
         }
 
