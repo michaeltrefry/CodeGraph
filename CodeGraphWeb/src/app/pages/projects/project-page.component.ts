@@ -8,6 +8,7 @@ import { AgoPipe } from '../work/work-shared';
 import { ProjectView } from '../work/work.models';
 import { PROJECT_TABS, ProjectSignalsService, ProjectTab, isProjectTab, itemTotals } from './project-data';
 import { ProjectOverviewComponent } from './project-overview.component';
+import { ProjectWorkComponent } from './project-work.component';
 import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
 import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
 import { LessonsPageComponent } from '../knowledge/lessons-page.component';
@@ -21,7 +22,7 @@ import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.compone
 @Component({
   selector: 'app-project-page',
   standalone: true,
-  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent, ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent],
+  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent, ProjectWorkComponent, ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent],
   styleUrl: './projects.scss',
   template: `
     <div class="wrk-page">
@@ -60,8 +61,7 @@ import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.compone
               <app-project-overview [project]="p" [revision]="revision()" (editDescription)="dialog.set('edit')" />
             }
             @case ('work') {
-              <!-- TAB: work -->
-              <div class="wrk-card"><div class="wrk-empty">The Work tab is not built yet. Use the cross-project <a routerLink="/work" (click)="ctx.select(p.key)">Work</a> page meanwhile.</div></div>
+              <app-project-work [project]="p" [revision]="revision()" />
             }
             @case ('approvals') {
               <app-review-queue-page [project]="p.key" />

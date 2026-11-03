@@ -66,6 +66,8 @@ export interface FeatureView {
   item_counts?: Record<string, number>;
   status: 'open' | 'complete';
   completion?: { items: number; finished: number; complete: number; uncovered_requirements?: string[] };
+  /** Unfinished items of the feature that are blocked (any reason); missing from older servers, read as 0. */
+  blocked_count?: number;
   goals?: string[];
   requirements?: Requirement[];
   acceptance_tests?: string[];
