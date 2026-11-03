@@ -314,6 +314,9 @@ public static class Startup
             services.AddCodeGraphMemoryClient(configuration);
             services.AddTransient<IMemoryOperationsService, RemoteMemoryOperationsService>();
             services.AddTransient<IMemoryAdministrationService, RemoteMemoryAdministrationService>();
+            // Memory is on the memory host's database: a project's scope backfill (CG-167) runs there,
+            // replacing the local MariaDB one registered with the persistence.
+            services.AddTransient<IMemoryProjectScopeBackfill, RemoteMemoryProjectScopeBackfill>();
             return;
         }
 

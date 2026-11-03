@@ -294,6 +294,26 @@ public sealed class HttpMemoryClient(
         return await response.Content.ReadFromJsonAsync<MemoryEntityWithRelationshipsResponse>(JsonOptions, ct);
     }
 
+    public async Task BackfillProjectScopesAsync(
+        string username,
+        string projectKey,
+        IReadOnlyCollection<string> repositories,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(
+            username,
+            HttpMethod.Post,
+            "api/memory/project-scopes/backfill",
+            new MemoryProjectScopeBackfillRequest
+            {
+                ProjectKey = NormalizeRequired(projectKey, nameof(projectKey)),
+                Repositories = NormalizeIds(repositories),
+            },
+            ct,
+            allowRetry: true);
+        await EnsureSuccessAsync(response, ct);
+    }
+
     private async Task<T> SendJsonAsync<T>(
         string username,
         HttpMethod method,

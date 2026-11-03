@@ -379,6 +379,7 @@ public sealed class WorkContractTests
         public Task<long> GetMessageEventHeadAsync(CancellationToken ct = default) => throw Fail();
         public Task<MessageListPage> ListMessagesAsync(MessageListQuery query, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<SessionView>> ListSessionsAsync(Guid projectId, bool liveOnly, int limit, CancellationToken ct = default) => throw Fail();
+        public Task<IReadOnlyList<SessionView>> ListLiveSessionsOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ResourceView>> ListResourcesAsync(Guid projectId, string? afterName, int limit, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ChangeView>> ReadRecentChangesAsync(Guid projectId, int limit, CancellationToken ct = default) => throw Fail();
         public Task<IReadOnlyList<ChangeView>> ReadEntityChangesAsync(Guid entityId, int limit, CancellationToken ct = default) => throw Fail();

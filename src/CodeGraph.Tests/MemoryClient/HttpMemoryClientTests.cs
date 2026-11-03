@@ -11,6 +11,22 @@ namespace CodeGraph.Tests.MemoryClient;
 public class HttpMemoryClientTests
 {
     [Fact]
+    public async Task BackfillProjectScopesAsync_PostsTheProjectAndItsRepositoriesAsTheGivenIdentity()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.NoContent, null);
+
+        await CreateClient(handler).BackfillProjectScopesAsync("system", "CG", ["codegraph", " mlx-rs ", "codegraph"]);
+
+        var request = handler.Requests.Single();
+        request.Method.ShouldBe(HttpMethod.Post);
+        request.RequestUri!.PathAndQuery.ShouldBe("/api/memory/project-scopes/backfill");
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("system");
+        using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+        body.RootElement.GetProperty("projectKey").GetString().ShouldBe("CG");
+        body.RootElement.GetProperty("repositories").EnumerateArray().Select(name => name.GetString()).ShouldBe(["codegraph", "mlx-rs"]);
+    }
+
+    [Fact]
     public async Task QueueClaimsAsync_PostsRequestWithInternalIdentityHeader()
     {
         var handler = new RecordingHandler(new MemoryStoreAcceptedResult

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -26,7 +27,7 @@ public class MemoryMcpServer
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }
         Claim format: { "subject": "michael", "predicate": "prefers", "valueText": "clean slate design", "confidence": 0.9 }
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
-        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project.
+        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project. With neither, the memory is scoped to the project of your only live CodeGraph session; with no live session, or several, it is stored unscoped.
         """)]
     public static async Task<string> StoreMemoryV2(
         IMemoryOperationsService memoryOperations,
@@ -37,8 +38,9 @@ public class MemoryMcpServer
         [Description("Typed atomic memory claims to store")] List<MemoryMcpClaimInput>? claims = null,
         [Description("Typed evidence rows to store")] List<MemoryMcpEvidenceInput>? evidence = null,
         [Description("Optional key (such as SW) or id of the work project this memory belongs to; its entities and claims are listed under that project.")] string? project = null,
-        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins.")] string? sessionId = null,
-        IMemoryProjectResolver? projectResolver = null)
+        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins. With neither, the project your live sessions share is used; with no live session, or live sessions in several projects, the memory is unscoped.")] string? sessionId = null,
+        IMemoryProjectResolver? projectResolver = null,
+        ClaimsPrincipal? user = null)
     {
         var hasData = !string.IsNullOrWhiteSpace(data);
         var hasTypedInput = (entities?.Count ?? 0) > 0 || (claims?.Count ?? 0) > 0 || (evidence?.Count ?? 0) > 0;
@@ -63,7 +65,7 @@ public class MemoryMcpServer
         string? projectKey;
         try
         {
-            projectKey = await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId);
+            projectKey = await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId, MemoryWriteCaller.Of(user));
         }
         catch (MemoryProjectResolutionException ex)
         {
