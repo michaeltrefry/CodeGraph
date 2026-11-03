@@ -68,7 +68,10 @@ describe('ProjectWorkComponent', () => {
   it('shows Blocked on you, Live sessions, Features, Holds and waiters and Recent activity for the project', async () => {
     const { root, api, streamMessages } = await render();
     const headings = [...root.querySelectorAll('h2')].map(h2 => h2.textContent?.replace(/\s+/g, ' ').trim());
-    expect(headings).toEqual(['Blocked on you 1', 'Live sessions 1', 'Features', 'Holds and waiters', 'Recent activity']);
+    expect(headings).toEqual(['Blocked on you 1', 'Features', 'Holds and waiters', 'Recent activity', 'Live sessions 1']);
+    // Live sessions is the sidebar; Features follows Blocked on you in the main column.
+    expect(root.querySelector('.prj-work-side h2')?.textContent?.trim()).toBe('Live sessions 1');
+    expect([...root.querySelectorAll('.prj-work-main > section h2')].map(h => h.id)).toEqual(['prj-h-you', 'prj-h-features']);
     expect(api.features).toHaveBeenCalledWith('W');
     expect(api.messages).toHaveBeenCalledWith('W', { open: true, toHuman: true, limit: 50 });
     expect(streamMessages).toHaveBeenCalledWith('W', expect.any(Function), undefined, expect.any(Function));

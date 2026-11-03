@@ -195,6 +195,10 @@ a.wrk-tab {
 .prj-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 // ---- work tab ----
 .prj-work { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+// Main column (Blocked on you, Features, Holds, Recent activity) and the Live sessions sidebar;
+// below 960px the sidebar stacks under the main column.
+.prj-work-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.prj-work-side { min-width: 0; }
 
 .wrk-card.prj-features { padding: 0; overflow: hidden; }
 
