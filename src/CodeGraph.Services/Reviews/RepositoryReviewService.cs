@@ -270,6 +270,7 @@ public class RepositoryReviewService(
         var hasMore = runs.Count > limit;
         var page = runs.Take(limit).ToList();
         var counts = await store.GetRepositoryReviewFindingCountsAsync(page.Select(r => r.Id).ToList());
+        var currentCommitSha = ResolveCurrentCommitSha(repository);
 
         var items = page.Select(run => new RepositoryReviewRunSummary(
                 run.Id,
@@ -282,7 +283,7 @@ public class RepositoryReviewService(
                 run.CreatedAt,
                 run.StartedAt,
                 run.CompletedAt,
-                IsStale(run, repository.LastCommitSha),
+                IsStale(run, currentCommitSha),
                 counts.GetValueOrDefault(run.Id) ?? new Dictionary<string, int>()))
             .ToList();
 
@@ -323,8 +324,9 @@ public class RepositoryReviewService(
             .ToList();
 
         // Only a completed run can be stale, so skip the repository lookup for in-flight runs (the SSE stream polls this).
-        var currentCommitSha = string.Equals(run.Status, "completed", StringComparison.OrdinalIgnoreCase)
-            ? (await store.GetRepositoryByName(run.Repo))?.LastCommitSha
+        var currentCommitSha = string.Equals(run.Status, "completed", StringComparison.OrdinalIgnoreCase) &&
+                               await store.GetRepositoryByName(run.Repo) is { } repository
+            ? ResolveCurrentCommitSha(repository)
             : null;
 
         return new RepositoryReviewResponse(
@@ -1293,7 +1295,7 @@ public class RepositoryReviewService(
         };
     }
 
-    /// <summary>A completed run is stale when the repository's current (indexed) commit differs from the one it reviewed.</summary>
+    /// <summary>A completed run is stale when the repository's current commit differs from the one it reviewed.</summary>
     private static bool IsStale(RepositoryReviewRunEntity run, string? currentCommitSha)
         => string.Equals(run.Status, "completed", StringComparison.OrdinalIgnoreCase) &&
            !string.IsNullOrWhiteSpace(run.ReviewedCommitSha) &&
@@ -1368,6 +1370,10 @@ public class RepositoryReviewService(
 
         return null;
     }
+
+    /// <summary>The repository's current commit, resolved like a run's reviewed commit (checkout HEAD, else the indexed commit) so the two compare.</summary>
+    private string? ResolveCurrentCommitSha(RepositoryInfo repository)
+        => ResolveReviewedCommitSha(repository, ResolveRepoRoot(repository.Name, repository));
 
     private string? ResolveReviewedCommitSha(RepositoryInfo repository, string? repoRoot)
     {

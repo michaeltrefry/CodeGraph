@@ -76,7 +76,7 @@
                   <details open><summary>Result / proposal</summary><pre class="dream-data">{{ action.result | json }}</pre></details>
                 </article>
               } @empty { <p class="cg-muted">No writes or proposals recorded.</p> }
-              <a class="cg-btn secondary" routerLink="/review-queue">Review proposals</a>
+              <a class="cg-btn secondary" [routerLink]="embedded() ? ['/projects', project(), 'approvals'] : '/approvals'">Review proposals</a>
               <h3>Recurrence after a rule was served</h3>
               <p class="cg-muted cg-small">Distinct correction events before and after each change. Counts come from lesson events; the after period grows over time and is not a causal score.</p>
               @if (effectsError()) { <p role="alert" class="adm-banner err">{{ effectsError() }}</p> }

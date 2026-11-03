@@ -133,6 +133,8 @@ export class ProjectPageComponent extends WorkPageBase implements OnInit {
   readonly planError = signal('');
   planJson = '';
   private readonly keys = { item: new KeyHolder('ui-item'), plan: new KeyHolder('ui-plan') };
+  /** Bumped by every reload, so only the newest one (for the current key) applies its result. */
+  private generation = 0;
 
   constructor() {
     super();
@@ -168,17 +170,19 @@ export class ProjectPageComponent extends WorkPageBase implements OnInit {
   protected async reload(): Promise<void> {
     const key = this.key();
     if (!key) return;
+    const generation = ++this.generation;
+    const current = () => generation === this.generation && key === this.key();
     try {
       const [project, approvals] = await Promise.all([
         this.api.get<ProjectView>(key),
         this.signals.openApprovals(key).catch(() => null)
       ]);
-      if (key !== this.key()) return;
+      if (!current()) return;
       this.project.set(project);
       this.approvals.set(approvals);
       this.revision.update(revision => revision + 1);
     } catch (error) {
-      await this.run(() => Promise.reject(error));
+      if (current()) await this.run(() => Promise.reject(error));
     }
   }
 

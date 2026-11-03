@@ -213,7 +213,9 @@ export class RepoDetailComponent implements OnInit {
         this.loading.set(false);
         this.initializeProjectDiagnosticsStates(n, d);
         if (!this.isSchemaRepository()) {
-          this.loadLatestRepositoryReview(n);
+          // A ?run= link (the project Code reviews page) opens that run on arrival; later reloads show the latest.
+          const requestedRunId = Number.parseInt(this.route.snapshot?.queryParamMap.get('run') ?? '', 10);
+          this.loadLatestRepositoryReview(n, requestedRunId > 0 ? requestedRunId : undefined);
         }
       },
       error: () => {
@@ -447,7 +449,7 @@ export class RepoDetailComponent implements OnInit {
     }
   }
 
-  private loadLatestRepositoryReview(repo: string) {
+  private loadLatestRepositoryReview(repo: string, runId?: number) {
     this.resumeTrackedRepositoryReview(repo);
 
     this.updateRepositoryReviewState(state => ({
@@ -456,10 +458,8 @@ export class RepoDetailComponent implements OnInit {
       streamError: null
     }));
 
-    // A ?run= link (the project Code reviews page) opens that run instead of the latest one.
-    const requestedRunId = Number.parseInt(this.route.snapshot?.queryParamMap.get('run') ?? '', 10);
-    const review$ = requestedRunId > 0
-      ? this.api.getRepositoryReview(repo, requestedRunId)
+    const review$ = runId
+      ? this.api.getRepositoryReview(repo, runId)
       : this.api.getLatestRepositoryReview(repo);
     review$.subscribe({
       next: review => {

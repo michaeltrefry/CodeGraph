@@ -53,11 +53,15 @@ export function share(part: number, total: number): number {
 
 export type ReviewState = 'running' | 'completed' | 'stale' | 'failed';
 
-/** Running (queued or running), Failed, Stale (completed but behind head), or Completed. A missing stale flag is not stale. */
+/**
+ * Running (queued or running), Stale (completed but behind head), Completed, or else Failed: a run that failed or was
+ * interrupted (by an API restart) needs a retry. A missing stale flag is not stale.
+ */
 export function reviewState(run: Pick<RepositoryReviewRunResponse, 'status' | 'stale'>): ReviewState {
-  if (run.status === 'failed') return 'failed';
-  if (run.status === 'queued' || run.status === 'running') return 'running';
-  return run.stale === true ? 'stale' : 'completed';
+  const status = run.status.toLowerCase();
+  if (status === 'queued' || status === 'running') return 'running';
+  if (status === 'completed') return run.stale === true ? 'stale' : 'completed';
+  return 'failed';
 }
 
 export const REVIEW_STATE_LABEL: Record<ReviewState, string> = { running: 'Running', completed: 'Completed', stale: 'Stale', failed: 'Failed' };

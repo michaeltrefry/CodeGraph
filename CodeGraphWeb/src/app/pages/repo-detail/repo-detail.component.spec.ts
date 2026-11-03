@@ -217,6 +217,11 @@ describe('RepoDetailComponent', () => {
 
     expect(api.getRepositoryReview).toHaveBeenCalledWith('repo-a', 7);
     expect(api.getLatestRepositoryReview).not.toHaveBeenCalled();
+
+    // A later reload (after a review stream fails) shows the latest run, not the one the link named.
+    (component as unknown as { loadLatestRepositoryReview(repo: string): void }).loadLatestRepositoryReview('repo-a');
+    expect(api.getLatestRepositoryReview).toHaveBeenCalledWith('repo-a');
+    expect(api.getRepositoryReview).toHaveBeenCalledTimes(1);
   });
 
   it('does not abort an in-flight repository review stream when the component is destroyed', async () => {

@@ -29,12 +29,13 @@ const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageC
 const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, MemoryStub, DreamingStub, WorkStub];
 
 describe('overview mapping', () => {
-  it('gives each latest review its chip: failed wins, queued is running, a missing stale flag is not stale', () => {
+  it('gives each latest review its chip: failed wins, queued is running, interrupted is failed, a missing stale flag is not stale', () => {
     expect(reviewState({ status: 'failed', stale: true })).toBe('failed');
     expect(reviewState({ status: 'queued' })).toBe('running');
     expect(reviewState({ status: 'running' })).toBe('running');
     expect(reviewState({ status: 'completed', stale: true })).toBe('stale');
     expect(reviewState({ status: 'completed' })).toBe('completed');
+    expect(reviewState({ status: 'interrupted' })).toBe('failed');
 
     expect(reviewRow('codegraph', review({ status: 'completed', stale: true }, ['low', 'high', 'medium', 'high', 'low', 'low'])))
       .toMatchObject({ state: 'stale', label: 'Stale', chip: 'cg-chip-warn', summary: '2 high · 1 medium · 3 low findings', at: '2026-01-02T01:00:00Z' });
@@ -180,5 +181,20 @@ describe('ProjectPageComponent', () => {
     expect(get).toHaveBeenLastCalledWith('X');
     expect(root.querySelector('h1')?.textContent).toBe('Other');
     expect(root.querySelector('.wrk-head .wrk-key')?.textContent?.trim()).toBe('X · v7');
+  });
+
+  it('drops a slow reload of the previous project, even one that fails', async () => {
+    const other: ProjectView = { ...project, key: 'X', name: 'Other', version: 7 };
+    let failSlowReload: (reason: unknown) => void = () => undefined;
+    const get = vi.fn((key: string) => Promise.resolve(key === 'X' ? other : project));
+    const { fixture, root, params } = await render('overview', { get });
+    get.mockImplementationOnce(() => new Promise((_, reject) => { failSlowReload = reject; }));
+    void (fixture.componentInstance as unknown as { reload(): Promise<void> }).reload();
+    params.next(convertToParamMap({ key: 'X', tab: 'overview' }));
+    await settle(fixture);
+    failSlowReload({ status: 500, error: { message: 'boom' } });
+    await settle(fixture);
+    expect(root.querySelector('h1')?.textContent).toBe('Other');
+    expect(root.querySelector('[role="alert"]')).toBeNull();
   });
 });

@@ -130,6 +130,61 @@ public class RepositoryReviewServiceTests
         items.Single().Stale.ShouldBeFalse();
     }
 
+    [Fact]
+    public async Task ListReviewsAsync_ComparesWithCheckoutHead_NotTheIndexedCommit()
+    {
+        var repoPath = Path.Combine(Path.GetTempPath(), "cg-review-stale-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(repoPath);
+        try
+        {
+            Git(repoPath, "init -q");
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "a.txt"), "a");
+            Git(repoPath, "add a.txt");
+            Git(repoPath, "-c user.name=t -c user.email=t@t commit -q -m a");
+            var checkoutHead = Git(repoPath, "rev-parse HEAD");
+
+            var store = new InMemoryGraphStore();
+            // The checkout was pulled ahead of the last successful index.
+            await store.UpsertRepositoryAsync(new RepositoryEntity
+            {
+                Name = "TestRepo",
+                LocalPath = repoPath,
+                LastCommitSha = "indexed-older",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+            var atHead = await AddRunAsync(store, "TestRepo", "completed", checkoutHead);
+            var atIndexed = await AddRunAsync(store, "TestRepo", "completed", "indexed-older");
+            var service = CreateHistoryService(store);
+
+            var items = (await service.ListReviewsAsync("TestRepo", 20))!.Items.ToDictionary(i => i.Id);
+
+            items[atHead].Stale.ShouldBeFalse();
+            items[atIndexed].Stale.ShouldBeTrue();
+            (await service.GetReviewAsync(atHead))!.Run.Stale.ShouldBeFalse();
+        }
+        finally
+        {
+            try { Directory.Delete(repoPath, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    private static string Git(string workingDirectory, string arguments)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo("git", arguments)
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+        process.ExitCode.ShouldBe(0, process.StandardError.ReadToEnd());
+        return output.Trim();
+    }
+
     private static RepositoryReviewService CreateHistoryService(InMemoryGraphStore store)
         => CreateRepositoryService(store, new RecordingProvider(), CreateRepositoryService(store, new RecordingProvider()));
 
