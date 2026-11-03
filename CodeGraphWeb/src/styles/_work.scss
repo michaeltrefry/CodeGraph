@@ -20,7 +20,8 @@
 .wrk-sub { color: var(--muted); font-size: var(--fs-sm); }
 .wrk-key { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--muted); }
 
-.wrk-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); align-items: start; }
+// A column is 340px wide at least, but never wider than a phone's viewport.
+.wrk-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); align-items: start; }
 .wrk-grid-2 { display: grid; gap: 14px; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); align-items: start; }
 @media (max-width: 960px) { .wrk-grid-2 { grid-template-columns: 1fr; } }
 
