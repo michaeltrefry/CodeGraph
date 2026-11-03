@@ -247,13 +247,16 @@ export class ApiService {
   }
 
   // Memory
-  getMemoryGraph(limit = 200, skip = 0): Observable<MemoryGraphResponse> {
-    const params = new HttpParams().set('limit', limit).set('skip', skip);
+  // `project` (a work project key) limits memory to that project's entities and claims.
+  getMemoryGraph(limit = 200, skip = 0, project?: string): Observable<MemoryGraphResponse> {
+    let params = new HttpParams().set('limit', limit).set('skip', skip);
+    if (project) params = params.set('project', project);
     return this.http.get<MemoryGraphResponse>(`${API}/memory/graph`, { params });
   }
 
-  getMemoryEntityGraph(id: string, neighborLimit = 200): Observable<MemoryGraphResponse> {
-    const params = new HttpParams().set('neighborLimit', neighborLimit);
+  getMemoryEntityGraph(id: string, neighborLimit = 200, project?: string): Observable<MemoryGraphResponse> {
+    let params = new HttpParams().set('neighborLimit', neighborLimit);
+    if (project) params = params.set('project', project);
     return this.http.get<MemoryGraphResponse>(`${API}/memory/entities/${encodeURIComponent(id)}/graph`, { params });
   }
 
@@ -264,19 +267,21 @@ export class ApiService {
     return this.http.get<MemoryDiagnostics>(`${API}/memory/diagnostics`, { params });
   }
 
-  searchMemory(query: string, entityLimit = 8, claimLimit = 8): Observable<MemorySearchResult> {
-    const params = new HttpParams()
+  searchMemory(query: string, entityLimit = 8, claimLimit = 8, project?: string): Observable<MemorySearchResult> {
+    let params = new HttpParams()
       .set('query', query)
       .set('entityLimit', entityLimit)
       .set('claimLimit', claimLimit);
+    if (project) params = params.set('project', project);
     return this.http.get<MemorySearchResult>(`${API}/memory/search`, { params });
   }
 
   getMemoryEntityBundle(
     id: string,
-    options?: { includeSuperseded?: boolean; includeConflicts?: boolean; neighborLimit?: number }
+    options?: { includeSuperseded?: boolean; includeConflicts?: boolean; neighborLimit?: number; project?: string }
   ): Observable<MemoryEntityBundle> {
     let params = new HttpParams();
+    if (options?.project) params = params.set('project', options.project);
     if (options?.includeSuperseded != null) params = params.set('includeSuperseded', options.includeSuperseded);
     if (options?.includeConflicts != null) params = params.set('includeConflicts', options.includeConflicts);
     if (options?.neighborLimit != null) params = params.set('neighborLimit', options.neighborLimit);

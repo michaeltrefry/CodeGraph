@@ -14,6 +14,7 @@ import { ProjectWorkComponent } from './project-work.component';
 import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
 import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
 import { LessonsPageComponent } from '../knowledge/lessons-page.component';
+import { MemoryPageComponent } from '../memory/memory-page.component';
 import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.component';
 
 const template = '<i class="stub-project">{{ project() }}</i>';
@@ -21,10 +22,11 @@ const template = '<i class="stub-project">{{ project() }}</i>';
 @Component({ selector: 'app-knowledge-page', standalone: true, template }) class KnowledgeStub { readonly project = input<string | undefined>(); }
 @Component({ selector: 'app-lessons-page', standalone: true, template }) class LessonsStub { readonly project = input<string | undefined>(); }
 @Component({ selector: 'app-dreaming-page', standalone: true, template }) class DreamingStub { readonly project = input<string | undefined>(); }
+@Component({ selector: 'app-memory-page', standalone: true, template }) class MemoryStub { readonly project = input<string | undefined>(); }
 @Component({ selector: 'app-project-work', standalone: true, template: '<i class="stub-project">{{ project().key }}</i><i class="stub-revision">{{ revision() }}</i>' })
 class WorkStub { readonly project = input.required<ProjectView>(); readonly revision = input(0); }
-const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent, ProjectWorkComponent];
-const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, DreamingStub, WorkStub];
+const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, MemoryPageComponent, DreamingPageComponent, ProjectWorkComponent];
+const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, MemoryStub, DreamingStub, WorkStub];
 
 describe('overview mapping', () => {
   it('gives each latest review its chip: failed wins, queued is running, a missing stale flag is not stale', () => {
@@ -160,6 +162,7 @@ describe('ProjectPageComponent', () => {
     ['approvals', 'app-review-queue-page'],
     ['knowledge', 'app-knowledge-page'],
     ['lessons', 'app-lessons-page'],
+    ['memory', 'app-memory-page'],
     ['dreaming', 'app-dreaming-page']
   ])('embeds the %s page scoped to the route project', async (tab, selector) => {
     const { root } = await render(tab);

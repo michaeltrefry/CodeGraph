@@ -10,6 +10,7 @@ import { PROJECT_TABS, ProjectSignalsService, ProjectTab, isProjectTab, itemTota
 import { ProjectOverviewComponent } from './project-overview.component';
 import { ProjectWorkComponent } from './project-work.component';
 import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
+import { MemoryPageComponent } from '../memory/memory-page.component';
 import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
 import { LessonsPageComponent } from '../knowledge/lessons-page.component';
 import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.component';
@@ -22,7 +23,7 @@ import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.compone
 @Component({
   selector: 'app-project-page',
   standalone: true,
-  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent, ProjectWorkComponent, ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent],
+  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent, ProjectWorkComponent, ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, MemoryPageComponent, DreamingPageComponent],
   styleUrl: './projects.scss',
   template: `
     <div class="wrk-page">
@@ -73,8 +74,7 @@ import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.compone
               <app-lessons-page [project]="p.key" />
             }
             @case ('memory') {
-              <!-- TAB: memory -->
-              <div class="wrk-card"><div class="wrk-empty">The Memory tab is not built yet. Use the cross-project <a routerLink="/memory">Memory</a> page meanwhile.</div></div>
+              <app-memory-page [project]="p.key" />
             }
             @case ('dreaming') {
               <app-dreaming-page [project]="p.key" />

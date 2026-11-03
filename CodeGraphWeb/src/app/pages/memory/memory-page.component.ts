@@ -1,5 +1,5 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
-import { DecimalPipe } from '@angular/common';
+import { Component, OnInit, computed, inject, input, signal } from '@angular/core';
+import { DecimalPipe, NgTemplateOutlet } from '@angular/common';
 import { forkJoin } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import {
@@ -18,12 +18,15 @@ import { MemoryGraphViewComponent } from './memory-graph-view.component';
 @Component({
   selector: 'app-memory-page',
   standalone: true,
-  imports: [DecimalPipe, MemoryDetailPanelComponent, MemoryGraphViewComponent],
+  imports: [DecimalPipe, NgTemplateOutlet, MemoryDetailPanelComponent, MemoryGraphViewComponent],
   templateUrl: './memory-page.component.html',
   styleUrl: './memory-page.component.scss'
 })
 export class MemoryPageComponent implements OnInit {
   private api = inject(ApiService);
+  /** A work project key: embedded in that project's page, the browser shows only its memory and no page header. */
+  readonly project = input<string | undefined>();
+  readonly embedded = computed(() => !!this.project());
 
   loading = signal(true);
   loadingDetail = signal(false);
@@ -131,8 +134,7 @@ export class MemoryPageComponent implements OnInit {
   });
 
   ngOnInit(): void {
-    this.loadDiagnostics();
-    this.loadOverview();
+    this.refreshOverview();
   }
 
   setViewMode(mode: 'graph' | 'list'): void {
@@ -166,7 +168,7 @@ export class MemoryPageComponent implements OnInit {
     }
 
     this.searching.set(true);
-    this.api.searchMemory(query, 8, 8).subscribe({
+    this.api.searchMemory(query, 8, 8, this.project()).subscribe({
       next: result => {
         this.searchResults.set(result);
         this.searching.set(false);
@@ -181,7 +183,8 @@ export class MemoryPageComponent implements OnInit {
   }
 
   refreshOverview(): void {
-    this.loadDiagnostics();
+    // The diagnostics count the whole memory store, so a project's tab leaves them out.
+    if (!this.embedded()) this.loadDiagnostics();
     this.loadOverview();
   }
 
@@ -210,11 +213,12 @@ export class MemoryPageComponent implements OnInit {
     }
 
     forkJoin({
-      graph: this.api.getMemoryEntityGraph(entityId, 500),
+      graph: this.api.getMemoryEntityGraph(entityId, 500, this.project()),
       bundle: this.api.getMemoryEntityBundle(entityId, {
         includeSuperseded: true,
         includeConflicts: true,
-        neighborLimit: 500
+        neighborLimit: 500,
+        project: this.project()
       })
     }).subscribe({
       next: ({ graph, bundle }) => {
@@ -303,7 +307,7 @@ export class MemoryPageComponent implements OnInit {
       this.clearSelection();
     }
 
-    this.api.getMemoryGraph(this.pageSize(), this.pageIndex() * this.pageSize()).subscribe({
+    this.api.getMemoryGraph(this.pageSize(), this.pageIndex() * this.pageSize(), this.project()).subscribe({
       next: graph => {
         this.syncTypeFilters(graph.nodes);
         this.graphData.set(graph);

@@ -1,24 +1,30 @@
-<div class="cg-page mp-page">
-  <header class="cg-page-header">
-    <div>
-      <h1>Memory browser</h1>
-      <p>
-        @if (graphData()) {
-          {{ nodes().length }} shown | {{ graphData()!.totalNodeCount }} available |
-          {{ links().length }} visible edges
-        } @else {
-          Knowledge graph of entities, claims, and their provenance.
-        }
-      </p>
-    </div>
-    <div class="cg-page-header-actions">
-      <div class="cg-segmented" role="group" aria-label="View mode">
-        <button type="button" [class.active]="viewMode() === 'graph'" (click)="setViewMode('graph')">Graph</button>
-        <button type="button" [class.active]="viewMode() === 'list'" (click)="setViewMode('list')">List</button>
+<div class="cg-page mp-page" [class.mp-embedded]="embedded()">
+  @if (!embedded()) {
+    <header class="cg-page-header">
+      <div>
+        <h1>Memory browser</h1>
+        <p>
+          @if (graphData()) {
+            {{ nodes().length }} shown | {{ graphData()!.totalNodeCount }} available |
+            {{ links().length }} visible edges
+          } @else {
+            Knowledge graph of entities, claims, and their provenance.
+          }
+        </p>
       </div>
-      <button class="mp-btn" type="button" (click)="refreshOverview()">Refresh</button>
+      <div class="cg-page-header-actions">
+        <ng-container [ngTemplateOutlet]="viewActions" />
+      </div>
+    </header>
+  }
+
+  <ng-template #viewActions>
+    <div class="cg-segmented" role="group" aria-label="View mode">
+      <button type="button" [class.active]="viewMode() === 'graph'" (click)="setViewMode('graph')">Graph</button>
+      <button type="button" [class.active]="viewMode() === 'list'" (click)="setViewMode('list')">List</button>
     </div>
-  </header>
+    <button class="mp-btn" type="button" (click)="refreshOverview()">Refresh</button>
+  </ng-template>
 
   <section class="mp-toolbar">
     <div class="mp-search">
@@ -41,6 +47,9 @@
     </div>
 
     <div class="mp-controls">
+      @if (embedded()) {
+        <ng-container [ngTemplateOutlet]="viewActions" />
+      }
       @if (focusMode()) {
         <button class="mp-btn" type="button" (click)="loadOverview()">Back to overview</button>
       } @else {
