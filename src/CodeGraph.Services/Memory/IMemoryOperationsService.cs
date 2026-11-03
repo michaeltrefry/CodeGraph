@@ -63,6 +63,7 @@ public interface IMemoryOperationsService
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(

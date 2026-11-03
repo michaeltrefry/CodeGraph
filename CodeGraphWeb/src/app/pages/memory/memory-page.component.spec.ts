@@ -223,7 +223,8 @@ describe('MemoryPageComponent', () => {
     expect(api.getMemoryClaimBundle).toHaveBeenCalledWith('claim_1', {
       includeSupersessionChain: true,
       includeConflicts: true,
-      includeEvidence: true
+      includeEvidence: true,
+      project: undefined
     });
     expect(component.selectedClaimBundle()?.claim.id).toBe('claim_1');
   });
@@ -257,6 +258,9 @@ describe('MemoryPageComponent', () => {
       expect(api.searchMemory).toHaveBeenCalledWith('codegraph', 8, 8, 'CG');
       expect(api.getMemoryEntityGraph).toHaveBeenCalledWith('project_codegraph', 500, 'CG');
       expect(api.getMemoryEntityBundle).toHaveBeenCalledWith('project_codegraph', expect.objectContaining({ project: 'CG' }));
+
+      page.inspectClaim('claim_1');
+      expect(api.getMemoryClaimBundle).toHaveBeenCalledWith('claim_1', expect.objectContaining({ project: 'CG' }));
     });
   });
 

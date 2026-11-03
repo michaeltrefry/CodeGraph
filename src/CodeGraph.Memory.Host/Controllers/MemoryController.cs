@@ -144,13 +144,15 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         string id,
         [FromQuery] bool? includeSupersessionChain,
         [FromQuery] bool? includeConflicts,
-        [FromQuery] bool? includeEvidence)
+        [FromQuery] bool? includeEvidence,
+        [FromQuery] string? project)
     {
         var bundle = await memoryService.GetClaimBundleAsync(
             id,
             includeSupersessionChain ?? true,
             includeConflicts ?? true,
-            includeEvidence ?? true);
+            includeEvidence ?? true,
+            ProjectKey(project));
 
         return bundle == null ? NotFound() : Ok(bundle);
     }

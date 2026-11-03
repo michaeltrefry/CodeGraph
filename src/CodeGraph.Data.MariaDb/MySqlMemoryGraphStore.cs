@@ -1582,19 +1582,26 @@ public class MySqlMemoryGraphStore(
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true)
+        bool includeEvidence = true,
+        string? projectKey = null)
     {
         var claim = await GetClaimAsync(claimId);
         if (claim is null)
             return null;
 
         await using var connection = CreateConnection();
+        if (projectKey is not null && !await IsClaimInProjectAsync(connection, claim.Id, projectKey))
+            return null;
+
+        var factGroupPeers = (await GetClaimsByFactGroupAsync(claim.FactGroupKey))
+            .Where(peer => !peer.Id.Equals(claim.Id, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var bundle = new MemoryClaimBundle
         {
             Claim = claim,
-            FactGroupPeers = (await GetClaimsByFactGroupAsync(claim.FactGroupKey))
-                .Where(peer => !peer.Id.Equals(claim.Id, StringComparison.OrdinalIgnoreCase))
-                .ToList(),
+            FactGroupPeers = projectKey is null
+                ? factGroupPeers
+                : await FilterClaimsInProjectAsync(connection, factGroupPeers, projectKey),
         };
 
         if (includeSupersessionChain || includeConflicts)
@@ -1618,7 +1625,8 @@ public class MySqlMemoryGraphStore(
                     ? edge.ToClaimId
                     : edge.FromClaimId;
                 var otherClaim = await GetClaimAsync(connection, otherId);
-                if (otherClaim is null)
+                if (otherClaim is null
+                    || (projectKey is not null && !await IsClaimInProjectAsync(connection, otherClaim.Id, projectKey)))
                     continue;
 
                 if (edge.EdgeType.Equals("supersedes", StringComparison.OrdinalIgnoreCase) && includeSupersessionChain)
@@ -1777,6 +1785,21 @@ public class MySqlMemoryGraphStore(
                 WHERE entity.username = @username AND entity.external_id = @entityId AND scope.project_key = @projectKey);
             """,
             new { username = DefaultUsername, entityId, projectKey });
+    }
+
+    private async Task<List<MemoryClaim>> FilterClaimsInProjectAsync(
+        MySqlConnection connection,
+        List<MemoryClaim> claims,
+        string projectKey)
+    {
+        var scoped = new List<MemoryClaim>();
+        foreach (var claim in claims)
+        {
+            if (await IsClaimInProjectAsync(connection, claim.Id, projectKey))
+                scoped.Add(claim);
+        }
+
+        return scoped;
     }
 
     private async Task<bool> IsClaimInProjectAsync(MySqlConnection connection, string claimId, string projectKey) =>

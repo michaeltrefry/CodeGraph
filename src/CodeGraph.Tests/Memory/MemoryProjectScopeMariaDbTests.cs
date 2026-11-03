@@ -124,6 +124,55 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
     }
 
     [Fact]
+    public async Task The_claim_bundle_honours_project_and_is_unchanged_without_one()
+    {
+        var project = await db.NewProjectAsync("MC");
+        var user = $"user:bundle-{Guid.NewGuid():N}";
+        var tenant = new MemoryTenantContext();
+        var store = new MySqlMemoryGraphStore(StorageOptions(), tenant);
+        using var _ = tenant.Enter(user);
+
+        await store.UpsertEntitiesBatchAsync([Entity("repo", "Repo"), Entity("db", "Db"), Entity("other", "Other")]);
+        // Claim in the project, with a fact-group peer, a conflict and a supersession peer outside it
+        // and a conflict inside it.
+        var inside = Claim("claim_inside", "repo", "db");
+        var outsideConflict = Claim("claim_outside_conflict", "repo", "other");
+        var outsideOlder = Claim("claim_outside_older", "repo", "other");
+        var insideConflict = Claim("claim_inside_conflict", "repo", "db");
+        var elsewhere = Claim("claim_elsewhere", "other", "db");
+        inside.FactGroupKey = outsideConflict.FactGroupKey = "group_inside";
+        await store.UpsertClaimsBatchAsync([inside, outsideConflict, outsideOlder, insideConflict, elsewhere]);
+        await store.AddClaimEdgesBatchAsync(
+        [
+            Edge("claim_inside", "claim_outside_conflict", "conflicts_with"),
+            Edge("claim_inside", "claim_inside_conflict", "conflicts_with"),
+            Edge("claim_inside", "claim_outside_older", "supersedes"),
+        ]);
+        await store.AddEvidenceBatchAsync([Evidence("evidence_inside", "claim_inside", "note")]);
+        await store.AddProjectScopeAsync(project, [], ["claim_inside", "claim_inside_conflict"]);
+
+        // Without a project nothing is filtered.
+        var unscoped = (await store.GetClaimBundleAsync("claim_inside"))!;
+        unscoped.Conflicts.Select(claim => claim.Id).ShouldBe(["claim_outside_conflict", "claim_inside_conflict"], ignoreOrder: true);
+        unscoped.SupersessionChain.Select(claim => claim.Id).ShouldBe(["claim_outside_older"]);
+        unscoped.FactGroupPeers.Select(claim => claim.Id).ShouldBe(["claim_outside_conflict"]);
+        (await store.GetClaimBundleAsync("claim_elsewhere"))!.Claim.Id.ShouldBe("claim_elsewhere");
+
+        // In the project the claim keeps its evidence but drops the peers scoped elsewhere.
+        var scoped = (await store.GetClaimBundleAsync("claim_inside", projectKey: project))!;
+        scoped.Claim.Id.ShouldBe("claim_inside");
+        scoped.Conflicts.Select(claim => claim.Id).ShouldBe(["claim_inside_conflict"]);
+        scoped.SupersessionChain.ShouldBeEmpty();
+        scoped.FactGroupPeers.ShouldBeEmpty();
+        scoped.Evidence.Select(evidence => evidence.Id).ShouldBe(["evidence_inside"]);
+
+        // A claim outside the project (or in another project) is not found in it.
+        (await store.GetClaimBundleAsync("claim_elsewhere", projectKey: project)).ShouldBeNull();
+        (await store.GetClaimBundleAsync("claim_inside", projectKey: "ZZNOPE")).ShouldBeNull();
+        (await store.GetClaimBundleAsync("missing", projectKey: project)).ShouldBeNull();
+    }
+
+    [Fact]
     public async Task The_backfill_scopes_memory_naming_a_member_repository_as_a_whole_token_and_is_safe_to_replay()
     {
         var project = $"MB{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
@@ -227,6 +276,14 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         ObjectEntityId = obj,
         NormalizedText = $"{subject} relates_to {obj}",
         Status = MemoryClaimStatus.Active,
+        Source = "test",
+    };
+
+    private static MemoryClaimEdge Edge(string from, string to, string edgeType) => new()
+    {
+        FromClaimId = from,
+        ToClaimId = to,
+        EdgeType = edgeType,
         Source = "test",
     };
 

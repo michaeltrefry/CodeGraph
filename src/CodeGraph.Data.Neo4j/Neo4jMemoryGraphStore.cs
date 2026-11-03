@@ -976,8 +976,10 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true)
+        bool includeEvidence = true,
+        string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         var claim = await GetClaimAsync(claimId);
         if (claim == null)
             return null;

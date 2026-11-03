@@ -190,9 +190,10 @@ public class MemoryService
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true)
+        bool includeEvidence = true,
+        string? projectKey = null)
     {
-        return await _retrieval.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence);
+        return await _retrieval.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence, projectKey);
     }
 
     public async Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(MemoryFrontierExpansionRequest request)

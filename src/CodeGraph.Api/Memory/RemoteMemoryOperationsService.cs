@@ -91,6 +91,7 @@ public sealed class RemoteMemoryOperationsService(
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
         => memoryClient.GetClaimBundleAsync(
             ResolveUsername(),
@@ -98,6 +99,7 @@ public sealed class RemoteMemoryOperationsService(
             includeSupersessionChain,
             includeConflicts,
             includeEvidence,
+            projectKey,
             ct);
 
     public Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(
