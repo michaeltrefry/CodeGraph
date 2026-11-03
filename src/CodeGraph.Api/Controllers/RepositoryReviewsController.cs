@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using CodeGraph.Models.Requests;
@@ -21,8 +22,19 @@ public class RepositoryReviewsController(
         [FromBody] StartRepositoryReviewRequest request,
         CancellationToken ct)
     {
-        var reviewRunId = await reviewService.StartReviewAsync(repo, request.Mode, ct);
+        var reviewRunId = await reviewService.StartReviewAsync(repo, request.Mode, GetUsername(), ct);
         return Accepted(new StartRepositoryReviewResponse(reviewRunId, "queued"));
+    }
+
+    [HttpGet]
+    public async Task<ActionResult<RepositoryReviewRunPage>> List(
+        string repo,
+        [FromQuery] int limit = 20,
+        [FromQuery] long? before = null,
+        CancellationToken ct = default)
+    {
+        var page = await reviewService.ListReviewsAsync(repo, Math.Clamp(limit, 1, 100), before, ct);
+        return page is null ? NotFound() : Ok(page);
     }
 
     [HttpGet("latest")]
@@ -129,6 +141,12 @@ public class RepositoryReviewsController(
         await Response.Body.WriteAsync(bytes, ct);
         await Response.Body.FlushAsync(ct);
     }
+
+    private string GetUsername() =>
+        User.FindFirstValue("preferred_username")
+        ?? User.FindFirstValue("username")
+        ?? User.Identity?.Name
+        ?? "unknown";
 
     private static bool BelongsToRepo(RepositoryReviewResponse? review, string repo)
         => review is not null &&

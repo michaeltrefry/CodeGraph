@@ -202,12 +202,57 @@ public class MariaDbReviewStoreTests
 
             (await store.GetRepositoryReviewFindingsAsync(repositoryRunId)).Single().Title.ShouldBe("Finding");
             (await store.GetRepositoryReviewProjectSectionsAsync(repositoryRunId)).Single().ReusedFromBaseline.ShouldBeTrue();
+
+            // History paging: newest first by id, scoped to the repository, with a requested-by round trip.
+            var olderRunId = await store.CreateRepositoryReviewRunAsync(new RepositoryReviewRunEntity
+            {
+                Repo = "CodeGraph",
+                RequestedByUsername = "michael",
+                Status = "completed",
+                PromptVersion = "v1",
+                CreatedAt = now.AddDays(-1)
+            });
+            await store.CreateRepositoryReviewRunAsync(new RepositoryReviewRunEntity
+            {
+                Repo = "OtherRepo",
+                Status = "completed",
+                PromptVersion = "v1",
+                CreatedAt = now
+            });
+            await store.UpsertRepositoryReviewFindingsAsync(repositoryRunId,
+            [
+                Finding("High"), Finding("high"), Finding("medium")
+            ]);
+
+            var history = await store.GetRepositoryReviewRunsAsync("CodeGraph", 10);
+            history.Select(r => r.Id).ShouldBe([olderRunId, repositoryRunId]);
+            history[0].RequestedByUsername.ShouldBe("michael");
+            (await store.GetRepositoryReviewRunsAsync("CodeGraph", 1)).Single().Id.ShouldBe(olderRunId);
+            (await store.GetRepositoryReviewRunsAsync("CodeGraph", 10, olderRunId)).Single().Id.ShouldBe(repositoryRunId);
+
+            var counts = await store.GetRepositoryReviewFindingCountsAsync([repositoryRunId, olderRunId]);
+            counts.ShouldContainKey(repositoryRunId);
+            counts.ShouldNotContainKey(olderRunId);
+            counts[repositoryRunId]["high"].ShouldBe(2);
+            counts[repositoryRunId]["medium"].ShouldBe(1);
         }
         finally
         {
             await DropDatabaseAsync(builder.ConnectionString, databaseName);
         }
     }
+
+    private static RepositoryReviewFindingEntity Finding(string severity) => new()
+    {
+        Severity = severity,
+        Category = "bug",
+        Title = "t",
+        Explanation = "e",
+        Evidence = "ev",
+        FilePath = "a.cs",
+        SuggestedImprovement = "s",
+        Confidence = "high"
+    };
 
     private static async Task DropDatabaseAsync(string connectionString, string databaseName)
     {

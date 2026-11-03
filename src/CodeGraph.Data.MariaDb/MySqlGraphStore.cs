@@ -1271,6 +1271,12 @@ public partial class MySqlGraphStore(
     public Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsByStatusAsync(IReadOnlyList<string> statuses)
         => reviewStore.GetRepositoryReviewRunsByStatusAsync(statuses);
 
+    public Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsAsync(string repo, int limit, long? before = null)
+        => reviewStore.GetRepositoryReviewRunsAsync(repo, limit, before);
+
+    public Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>> GetRepositoryReviewFindingCountsAsync(IReadOnlyList<long> reviewRunIds)
+        => reviewStore.GetRepositoryReviewFindingCountsAsync(reviewRunIds);
+
     public Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId)
         => reviewStore.GetRepositoryReviewFindingsAsync(reviewRunId);
 

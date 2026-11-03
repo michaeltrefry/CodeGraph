@@ -26,6 +26,10 @@ public interface IReviewStore
     Task<RepositoryReviewRunEntity?> GetRepositoryReviewRunAsync(long reviewRunId);
     Task<RepositoryReviewRunEntity?> GetLatestRepositoryReviewRunAsync(string repo);
     Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsByStatusAsync(IReadOnlyList<string> statuses);
+    /// <summary>A repository's runs newest first by id; <paramref name="before"/> returns only runs with a smaller id.</summary>
+    Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsAsync(string repo, int limit, long? before = null);
+    /// <summary>Finding counts per lowercase severity for each run id (runs without findings are absent).</summary>
+    Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>> GetRepositoryReviewFindingCountsAsync(IReadOnlyList<long> reviewRunIds);
     Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId);
     Task<IReadOnlyList<RepositoryReviewProjectSectionEntity>> GetRepositoryReviewProjectSectionsAsync(long reviewRunId);
 }

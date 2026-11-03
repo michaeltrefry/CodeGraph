@@ -341,6 +341,7 @@ public partial class Neo4jGraphStore
                 CREATE (r:RepositoryReviewRun {
                     appId: newId,
                     repo: $repo,
+                    requestedByUsername: $requestedByUsername,
                     reviewedCommitSha: $reviewedCommitSha,
                     baselineReviewRunId: $baselineReviewRunId,
                     baselineCommitSha: $baselineCommitSha,
@@ -359,6 +360,7 @@ public partial class Neo4jGraphStore
                 new
                 {
                     repo = run.Repo,
+                    requestedByUsername = (object?)run.RequestedByUsername,
                     reviewedCommitSha = (object?)run.ReviewedCommitSha,
                     baselineReviewRunId = (object?)run.BaselineReviewRunId,
                     baselineCommitSha = (object?)run.BaselineCommitSha,
@@ -634,6 +636,58 @@ public partial class Neo4jGraphStore
         });
     }
 
+    public async Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsAsync(
+        string repo, int limit, long? before = null)
+    {
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        return await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (r:RepositoryReviewRun {repo: $repo})
+                WHERE $before IS NULL OR r.appId < $before
+                RETURN r
+                ORDER BY r.appId DESC
+                LIMIT $limit
+                """,
+                new { repo, limit, before = (object?)before });
+
+            var results = new List<RepositoryReviewRunEntity>();
+            await foreach (var record in cursor)
+                results.Add(MapRepositoryReviewRunNode(record["r"].As<INode>()));
+
+            return (IReadOnlyList<RepositoryReviewRunEntity>)results;
+        });
+    }
+
+    public async Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>> GetRepositoryReviewFindingCountsAsync(
+        IReadOnlyList<long> reviewRunIds)
+    {
+        var counts = new Dictionary<long, Dictionary<string, int>>();
+        if (reviewRunIds.Count == 0)
+            return new Dictionary<long, IReadOnlyDictionary<string, int>>();
+
+        await using var session = sessionFactory.GetSession(AccessMode.Read);
+        await session.ExecuteReadAsync(async tx =>
+        {
+            var cursor = await tx.RunAsync("""
+                MATCH (r:RepositoryReviewRun)-[:HAS_FINDING]->(f:RepositoryReviewFinding)
+                WHERE r.appId IN $reviewRunIds
+                RETURN r.appId AS runId, toLower(coalesce(f.severity, '')) AS severity, count(f) AS total
+                """,
+                new { reviewRunIds });
+
+            await foreach (var record in cursor)
+            {
+                var runId = record["runId"].As<long>();
+                if (!counts.TryGetValue(runId, out var bySeverity))
+                    counts[runId] = bySeverity = new Dictionary<string, int>();
+                bySeverity[record["severity"].As<string>()] = record["total"].As<int>();
+            }
+        });
+
+        return counts.ToDictionary(kv => kv.Key, kv => (IReadOnlyDictionary<string, int>)kv.Value);
+    }
+
     public async Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId)
     {
         await using var session = sessionFactory.GetSession(AccessMode.Read);
@@ -748,6 +802,7 @@ public partial class Neo4jGraphStore
     {
         Id = node["appId"].As<long>(),
         Repo = node["repo"].As<string>(),
+        RequestedByUsername = GetStringOrNull(node, "requestedByUsername"),
         ReviewedCommitSha = GetStringOrNull(node, "reviewedCommitSha"),
         BaselineReviewRunId = node.Properties.TryGetValue("baselineReviewRunId", out var baselineReviewRunId) &&
                               baselineReviewRunId is not null

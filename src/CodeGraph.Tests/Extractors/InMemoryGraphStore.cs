@@ -1590,6 +1590,23 @@ public class InMemoryGraphStore : IGraphStore, IExclusionStore
                 .ToList());
     }
 
+    public Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsAsync(string repo, int limit, long? before = null) =>
+        Task.FromResult<IReadOnlyList<RepositoryReviewRunEntity>>(
+            _repositoryReviewRuns.Where(r => r.Repo == repo && (before == null || r.Id < before))
+                .OrderByDescending(r => r.Id)
+                .Take(limit)
+                .ToList());
+
+    public Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>> GetRepositoryReviewFindingCountsAsync(
+        IReadOnlyList<long> reviewRunIds) =>
+        Task.FromResult<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>>(
+            _repositoryReviewFindings.Where(f => reviewRunIds.Contains(f.ReviewRunId))
+                .GroupBy(f => f.ReviewRunId)
+                .ToDictionary(
+                    g => g.Key,
+                    g => (IReadOnlyDictionary<string, int>)g.GroupBy(f => f.Severity.ToLowerInvariant())
+                        .ToDictionary(s => s.Key, s => s.Count())));
+
     public Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId) =>
         Task.FromResult<IReadOnlyList<RepositoryReviewFindingEntity>>(
             _repositoryReviewFindings.Where(f => f.ReviewRunId == reviewRunId)
