@@ -1,5 +1,5 @@
 import { DatePipe } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeApiService } from './knowledge-api.service';
@@ -26,7 +26,12 @@ const MAX_CHAIN = 20;
 })
 export class KnowledgePageComponent implements OnInit {
   private readonly api = inject(KnowledgeApiService);
-  readonly project = inject(KnowledgeProjectService);
+  readonly selection = inject(KnowledgeProjectService);
+
+  /** Set by an embedding project page: the knowledge is that project's, without the page header or project select. */
+  readonly project = input<string | undefined>();
+  readonly embedded = computed(() => !!this.project());
+  readonly current = computed(() => this.project() || this.selection.selected());
 
   readonly kinds = KNOWLEDGE_KINDS;
   readonly actorLabel = actorLabel;
@@ -62,19 +67,32 @@ export class KnowledgePageComponent implements OnInit {
   private searchSequence = 0;
   private selectSequence = 0;
 
+  constructor() {
+    // The embedding page reuses this component when its project changes: start over for the new one.
+    effect(() => {
+      if (this.project()) untracked(() => void this.reopen());
+    });
+  }
+
   async ngOnInit(): Promise<void> {
-    if (await this.project.load()) await this.search();
+    if (!this.embedded() && await this.selection.load()) await this.search();
   }
 
   async changeProject(key: string): Promise<void> {
-    this.project.select(key);
+    this.selection.select(key);
+    await this.reopen();
+  }
+
+  private async reopen(): Promise<void> {
     this.selected.set(null);
     this.chain.set([]);
+    this.mode.set(null);
+    this.notice.set(null);
     await this.search();
   }
 
   filters(cursor?: string): RecallFilters {
-    const filters: RecallFilters = { project: this.project.selected()!, detail: 'full', limit: PAGE_SIZE };
+    const filters: RecallFilters = { project: this.current()!, detail: 'full', limit: PAGE_SIZE };
     if (this.kind) filters.kind = [this.kind];
     filters.status = this.status === 'all' ? ['active', 'superseded', 'retracted'] : [this.status];
     if (this.stale !== 'any') filters.possibly_stale = this.stale === 'stale';
@@ -90,7 +108,7 @@ export class KnowledgePageComponent implements OnInit {
    * response that is no longer the latest request's is dropped.
    */
   async search(more = false, rethrow = false): Promise<void> {
-    if (!this.project.selected()) return;
+    if (!this.current()) return;
     const cursor = this.nextCursor();
     if (more && (!cursor || !this.pageFilters)) return;
     const filters = more ? { ...this.pageFilters!, cursor: cursor! } : this.filters();

@@ -248,3 +248,31 @@ describe('KnowledgePageComponent', () => {
     expect(buttons()).not.toContain('Acknowledge');
   });
 });
+
+describe('KnowledgePageComponent embedded in a project page', () => {
+  it('renders the toolbar and list without the page header or project select, for the input project, and reloads when it changes', async () => {
+    TestBed.resetTestingModule();
+    localStorage.removeItem('codegraph.knowledge.project');
+    const api = { listProjects: vi.fn().mockReturnValue(of([])), recall: vi.fn().mockReturnValue(of({ items: [entry()] })), getEntry: vi.fn(), record: vi.fn() };
+    await TestBed.configureTestingModule({ imports: [KnowledgePageComponent], providers: [{ provide: KnowledgeApiService, useValue: api }] }).compileComponents();
+    const fixture = TestBed.createComponent(KnowledgePageComponent);
+    fixture.componentRef.setInput('project', 'ONE');
+    const settle = async () => { fixture.detectChanges(); for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve)); fixture.detectChanges(); };
+    await settle();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.cg-page-header')).toBeNull();
+    expect(el.querySelector('select[aria-label="Project"]')).toBeNull();
+    expect(el.querySelector('.kn-toolbar')).not.toBeNull();
+    expect(el.querySelector('.kn-layout')).not.toBeNull();
+    expect(api.listProjects).not.toHaveBeenCalled();
+    expect(api.recall).toHaveBeenCalledTimes(1);
+    expect(api.recall).toHaveBeenLastCalledWith({ project: 'ONE', detail: 'full', limit: 10, status: ['active'] });
+
+    fixture.componentRef.setInput('project', 'TWO');
+    await settle();
+    expect(api.recall).toHaveBeenCalledTimes(2);
+    expect(api.recall).toHaveBeenLastCalledWith({ project: 'TWO', detail: 'full', limit: 10, status: ['active'] });
+    expect(localStorage.getItem('codegraph.knowledge.project')).toBeNull();
+  });
+});

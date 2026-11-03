@@ -136,3 +136,30 @@ describe('LessonsPageComponent', () => {
     expect(merged.map(group => [group.activity, group.lessons.map(lesson => lesson.id)])).toEqual([['merging', ['a', 'b']], ['testing', ['c']]]);
   });
 });
+
+describe('LessonsPageComponent embedded in a project page', () => {
+  it('renders the lesson views without the page header or project select, for the input project, and reloads when it changes', async () => {
+    TestBed.resetTestingModule();
+    localStorage.removeItem('codegraph.knowledge.project');
+    const api = { listProjects: vi.fn().mockReturnValue(of([])), lessons: vi.fn().mockReturnValue(of({ view: 'recently_learned', items: [lessonRow()] })), recall: vi.fn(), getEntry: vi.fn(), record: vi.fn(), promote: vi.fn(), challenge: vi.fn() };
+    await TestBed.configureTestingModule({ imports: [LessonsPageComponent], providers: [{ provide: KnowledgeApiService, useValue: api }] }).compileComponents();
+    const fixture = TestBed.createComponent(LessonsPageComponent);
+    fixture.componentRef.setInput('project', 'ONE');
+    const settle = async () => { fixture.detectChanges(); for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve)); fixture.detectChanges(); };
+    await settle();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.cg-page-header')).toBeNull();
+    expect(el.querySelector('select[aria-label="Project"]')).toBeNull();
+    expect(el.querySelector('.cg-segmented')?.textContent).toContain('All lessons');
+    expect(api.listProjects).not.toHaveBeenCalled();
+    expect(api.lessons).toHaveBeenCalledTimes(1);
+    expect(api.lessons).toHaveBeenLastCalledWith({ project: 'ONE', view: 'recently_learned', limit: 20 });
+
+    fixture.componentRef.setInput('project', 'TWO');
+    await settle();
+    expect(api.lessons).toHaveBeenCalledTimes(2);
+    expect(api.lessons).toHaveBeenLastCalledWith({ project: 'TWO', view: 'recently_learned', limit: 20 });
+    expect(localStorage.getItem('codegraph.knowledge.project')).toBeNull();
+  });
+});

@@ -167,3 +167,32 @@ describe('ReviewQueuePageComponent', () => {
     expect(api.record).toHaveBeenLastCalledWith({ relate: { id: 'r-1', expected_version: 5, same_as: 'l-2' } });
   });
 });
+
+describe('ReviewQueuePageComponent embedded in a project page', () => {
+  it('renders the approvals heading without the page header or project select, for the input project, and reloads when it changes', async () => {
+    TestBed.resetTestingModule();
+    localStorage.removeItem('codegraph.knowledge.project');
+    const api = { listProjects: vi.fn().mockReturnValue(of([])), reviewQueue: vi.fn().mockReturnValue(of({ items: [reviewItem()] })) };
+    await TestBed.configureTestingModule({ imports: [ReviewQueuePageComponent], providers: [{ provide: KnowledgeApiService, useValue: api }] }).compileComponents();
+    const fixture = TestBed.createComponent(ReviewQueuePageComponent);
+    fixture.componentRef.setInput('project', 'ONE');
+    const settle = async () => { fixture.detectChanges(); for (let i = 0; i < 5; i++) await new Promise(resolve => setTimeout(resolve)); fixture.detectChanges(); };
+    await settle();
+
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('.cg-page-header')).toBeNull();
+    expect(el.querySelector('select')).toBeNull();
+    expect(el.querySelector('h2')?.textContent).toBe('Knowledge approvals');
+    expect(el.textContent).toContain('Proposed changes to knowledge and lessons, by priority then recurrence');
+    expect(el.textContent).toContain('Squash fixups before review');
+    expect(api.listProjects).not.toHaveBeenCalled();
+    expect(api.reviewQueue).toHaveBeenCalledTimes(1);
+    expect(api.reviewQueue).toHaveBeenLastCalledWith('ONE', 20, undefined);
+
+    fixture.componentRef.setInput('project', 'TWO');
+    await settle();
+    expect(api.reviewQueue).toHaveBeenCalledTimes(2);
+    expect(api.reviewQueue).toHaveBeenLastCalledWith('TWO', 20, undefined);
+    expect(localStorage.getItem('codegraph.knowledge.project')).toBeNull();
+  });
+});

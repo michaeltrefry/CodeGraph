@@ -1,5 +1,5 @@
-import { CurrencyPipe, DatePipe, JsonPipe } from '@angular/common';
-import { Component, DestroyRef, OnInit, computed, inject, signal } from '@angular/core';
+import { CurrencyPipe, DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
+import { Component, DestroyRef, OnInit, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, RouterLink } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -11,7 +11,7 @@ import { DreamAction, DreamEffects, DreamInstructionSet, DreamRevertResult, Drea
 
 @Component({
   selector: 'app-dreaming-page',
-  imports: [CurrencyPipe, DatePipe, JsonPipe, FormsModule, RouterLink],
+  imports: [CurrencyPipe, DatePipe, JsonPipe, NgTemplateOutlet, FormsModule, RouterLink],
   templateUrl: './dreaming-page.component.html',
   styleUrls: ['../knowledge/knowledge.scss', './dreaming-page.component.scss']
 })
@@ -21,7 +21,12 @@ export class DreamingPageComponent implements OnInit {
   private readonly api = inject(DreamingApiService);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
-  readonly project = inject(KnowledgeProjectService);
+  readonly selection = inject(KnowledgeProjectService);
+
+  /** Set by an embedding project page: dreaming is that project's (the route key is ignored), without the page header or project select. */
+  readonly project = input<string | undefined>();
+  readonly embedded = computed(() => !!this.project());
+  readonly current = computed(() => this.project() || this.selection.selected());
   readonly words = words;
   readonly actorLabel = actorLabel;
   readonly runs = signal<DreamRun[]>([]);
@@ -47,17 +52,28 @@ export class DreamingPageComponent implements OnInit {
   private generation = 0;
   private detailGeneration = 0;
 
+  constructor() {
+    // The embedding page reuses this component when its project changes: start over for the new one.
+    effect(() => {
+      if (this.project()) untracked(() => void this.reopen());
+    });
+  }
+
   async ngOnInit(): Promise<void> {
-    if (!await this.project.load()) return;
+    if (this.embedded() || !await this.selection.load()) return;
     this.route.paramMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const key = params.get('key');
-      if (key) this.project.select(key);
-      void this.changeProject(this.project.selected()!);
+      if (key) this.selection.select(key);
+      void this.changeProject(this.current()!);
     });
   }
 
   async changeProject(key: string): Promise<void> {
-    this.project.select(key);
+    this.selection.select(key);
+    await this.reopen();
+  }
+
+  private async reopen(): Promise<void> {
     ++this.generation;
     ++this.detailGeneration;
     this.selected.set(null);
@@ -76,7 +92,7 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async reload(): Promise<void> {
-    const key = this.project.selected();
+    const key = this.current();
     if (!key) return;
     const generation = ++this.generation;
     this.loading.set(true);
@@ -99,7 +115,7 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async more(): Promise<void> {
-    const key = this.project.selected()!;
+    const key = this.current()!;
     const before = this.runs().at(-1)?.id;
     if (!before || this.loading()) return;
     const generation = this.generation;
@@ -118,7 +134,7 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async select(id: string): Promise<void> {
-    const key = this.project.selected()!;
+    const key = this.current()!;
     const generation = ++this.detailGeneration;
     this.selected.set(null);
     this.effects.set(null);
@@ -144,10 +160,10 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async runNow(): Promise<void> {
-    const key = this.project.selected()!;
+    const key = this.current()!;
     await this.write(async () => {
       const run = await firstValueFrom(this.api.runNow(key));
-      if (key !== this.project.selected()) return;
+      if (key !== this.current()) return;
       await this.reload();
       await this.select(run.id);
       this.notice.set(`Run ${words(run.status)}${run.reason ? ': ' + run.reason : '.'}`);
@@ -155,12 +171,12 @@ export class DreamingPageComponent implements OnInit {
   }
 
   async revert(): Promise<void> {
-    const key = this.project.selected()!;
+    const key = this.current()!;
     const run = this.selected();
     if (!run || !this.confirmRevert()) return;
     await this.write(async () => {
       const result = await firstValueFrom(this.api.revert(key, run.id));
-      if (key !== this.project.selected() || this.selected()?.id !== run.id) return;
+      if (key !== this.current() || this.selected()?.id !== run.id) return;
       this.revertResult.set(result);
       this.confirmRevert.set(false);
       this.notice.set('Revert finished. Check each result below; conflicts keep the later edit.');
@@ -169,7 +185,7 @@ export class DreamingPageComponent implements OnInit {
 
   async saveSettings(): Promise<void> {
     if (!this.canEditSettings() || !this.settings || this.settingsConflict()) return;
-    const key = this.project.selected()!;
+    const key = this.current()!;
     const settings = { ...this.settings };
     if (!settings.default_provider.trim() || !settings.default_model.trim() || !settings.schedule.trim() ||
       !Number.isInteger(settings.max_turns) || settings.max_turns < 1 || !Number.isInteger(settings.max_tokens_per_run) || settings.max_tokens_per_run < 1 ||
@@ -182,9 +198,9 @@ export class DreamingPageComponent implements OnInit {
     await this.write(async () => {
       try {
         const saved = await firstValueFrom(this.api.saveSettings(key, settings));
-        if (key === this.project.selected()) { this.settings = { ...saved }; this.notice.set('Dreaming settings saved.'); }
+        if (key === this.current()) { this.settings = { ...saved }; this.notice.set('Dreaming settings saved.'); }
       } catch (error) {
-        if (workError(error).code === 'conflict' && key === this.project.selected()) {
+        if (workError(error).code === 'conflict' && key === this.current()) {
           this.settingsConflict.set(true);
           throw new Error('Settings changed since you read them. Your unsaved edits are preserved and nothing was saved. Copy any edits you want to keep, then refresh and review the current settings before saving.');
         }
@@ -196,22 +212,22 @@ export class DreamingPageComponent implements OnInit {
   async saveInstructions(scope: 'base' | 'project'): Promise<void> {
     const current = this.instructions()?.[scope];
     if (!current) return;
-    const key = this.project.selected()!;
+    const key = this.current()!;
     const content = scope === 'base' ? this.baseContent : this.projectContent;
     if (scope === 'base' && !content.trim()) { this.error.set('Base instructions cannot be empty.'); return; }
     await this.write(async () => {
       try {
         await firstValueFrom(this.api.saveInstructions(key, scope, content, current.revision));
       } catch (error) {
-        if (workError(error).code === 'conflict' && key === this.project.selected()) {
+        if (workError(error).code === 'conflict' && key === this.current()) {
           this.setInstructions(await firstValueFrom(this.api.instructions(key)));
           throw new Error('Instructions changed since you read them. The current revisions have been reloaded; review them before editing again.');
         }
         throw error;
       }
-      if (key !== this.project.selected()) return;
+      if (key !== this.current()) return;
       const latest = await firstValueFrom(this.api.instructions(key));
-      if (key !== this.project.selected()) return;
+      if (key !== this.current()) return;
       this.setInstructions(latest);
       this.notice.set(`${scope === 'base' ? 'Base instructions' : 'Project addendum'} saved with revision history.`);
     });

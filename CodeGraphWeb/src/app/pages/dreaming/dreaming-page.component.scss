@@ -1,3 +1,5 @@
+.dream-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.dream-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .dream-layout { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2fr); gap: 16px; align-items: start; }
 .dream-report, .dream-form { display: flex; flex-direction: column; gap: 14px; padding: 20px; min-width: 0; }
 .dream-action { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); display: flex; flex-direction: column; gap: 8px; }

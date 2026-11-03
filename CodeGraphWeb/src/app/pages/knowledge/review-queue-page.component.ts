@@ -1,5 +1,5 @@
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, effect, inject, input, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { KnowledgeApiService } from './knowledge-api.service';
@@ -38,7 +38,12 @@ const PAGE_SIZE = 20;
 })
 export class ReviewQueuePageComponent implements OnInit {
   private readonly api = inject(KnowledgeApiService);
-  readonly project = inject(KnowledgeProjectService);
+  readonly selection = inject(KnowledgeProjectService);
+
+  /** Set by an embedding project page: the queue is that project's, without the page header or project select. */
+  readonly project = input<string | undefined>();
+  readonly embedded = computed(() => !!this.project());
+  readonly current = computed(() => this.project() || this.selection.selected());
 
   readonly kindLabels = REVIEW_KIND_LABELS;
   readonly actorLabel = actorLabel;
@@ -56,12 +61,30 @@ export class ReviewQueuePageComponent implements OnInit {
   reason = '';
   amendSummary = '';
 
+  private loadSequence = 0;
+
+  constructor() {
+    // The embedding page reuses this component when its project changes: start over for the new one.
+    effect(() => {
+      if (this.project()) untracked(() => void this.reopen());
+    });
+  }
+
   async ngOnInit(): Promise<void> {
-    if (await this.project.load()) await this.load();
+    if (!this.embedded() && await this.selection.load()) await this.load();
   }
 
   async changeProject(key: string): Promise<void> {
-    this.project.select(key);
+    this.selection.select(key);
+    await this.reopen();
+  }
+
+  private async reopen(): Promise<void> {
+    this.items.set([]);
+    this.nextCursor.set(null);
+    this.form.set(null);
+    this.error.set(null);
+    this.notice.set(null);
     await this.load();
   }
 
@@ -70,17 +93,19 @@ export class ReviewQueuePageComponent implements OnInit {
   }
 
   async load(more = false): Promise<void> {
-    const project = this.project.selected();
+    const project = this.current();
     if (!project) return;
+    const sequence = ++this.loadSequence;
     this.loading.set(true);
     try {
       const page = await firstValueFrom(this.api.reviewQueue(project, PAGE_SIZE, more ? this.nextCursor() ?? undefined : undefined));
+      if (sequence !== this.loadSequence) return;
       this.items.set(more ? [...this.items(), ...page.items] : page.items);
       this.nextCursor.set(page.next_cursor ?? null);
     } catch (error) {
-      this.error.set(errorText(error));
+      if (sequence === this.loadSequence) this.error.set(errorText(error));
     } finally {
-      this.loading.set(false);
+      if (sequence === this.loadSequence) this.loading.set(false);
     }
   }
 
@@ -100,7 +125,7 @@ export class ReviewQueuePageComponent implements OnInit {
   /** Approve: a proposed rule becomes a rule; an autonomous decision is acknowledged (it stands). */
   async approve(item: ReviewItem): Promise<void> {
     if (item.kind === 'dream_proposal' && item.proposal) {
-      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.project.selected()!, item.proposal!.version, 'accept')),
+      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.current()!, item.proposal!.version, 'accept')),
         item.proposal.draft ? 'Draft accepted. Apply the draft outside CodeGraph.' : 'Proposal accepted.');
     } else if (item.kind === 'proposed_rule') {
       await this.run(() => firstValueFrom(this.api.promote(item.entry.id, { expected_version: item.entry.version, action: 'approve' })), 'Approved: it is a rule now.');
@@ -135,7 +160,7 @@ export class ReviewQueuePageComponent implements OnInit {
 
     if (item.kind === 'dream_proposal' && item.proposal) {
       if (!reason) return this.need('Give a reason for rejecting this proposal.');
-      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.project.selected()!, item.proposal!.version, 'reject', reason)),
+      await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.current()!, item.proposal!.version, 'reject', reason)),
         'Rejected. The same action stays suppressed until new evidence arrives.');
       return;
     }

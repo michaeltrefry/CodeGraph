@@ -1,24 +1,26 @@
-<section class="cg-page">
-  <header class="cg-page-header">
-    <div>
-      <h1>Lessons</h1>
-      <p>Corrections agents were given and the rules they became. Recurrence is evidence. Scheduled Dreaming runs curate knowledge under a reversible write policy; proposals appear in the review queue.</p>
-    </div>
-    <div class="cg-page-header-actions">
-      <label class="cg-field">
-        <span class="cg-field-label">Project</span>
-        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
-          @for (p of project.projects(); track p.key) {
-            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
-          }
-        </select>
-      </label>
-    </div>
-  </header>
+<section class="cg-page" [class.kn-embedded]="embedded()">
+  @if (!embedded()) {
+    <header class="cg-page-header">
+      <div>
+        <h1>Lessons</h1>
+        <p>Corrections agents were given and the rules they became. Recurrence is evidence. Scheduled Dreaming runs curate knowledge under a reversible write policy; proposals appear in the review queue.</p>
+      </div>
+      <div class="cg-page-header-actions">
+        <label class="cg-field">
+          <span class="cg-field-label">Project</span>
+          <select class="cg-select" aria-label="Project" [ngModel]="current()" (ngModelChange)="changeProject($event)">
+            @for (p of selection.projects(); track p.key) {
+              <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+            }
+          </select>
+        </label>
+      </div>
+    </header>
+  }
 
-  @if (project.error()) {
-    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
-  } @else if (!project.selected()) {
+  @if (selection.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ selection.error() }}</p>
+  } @else if (!current()) {
     <p class="kn-empty">No projects yet.</p>
   } @else {
     <div class="cg-segmented" role="tablist" aria-label="Lesson views">

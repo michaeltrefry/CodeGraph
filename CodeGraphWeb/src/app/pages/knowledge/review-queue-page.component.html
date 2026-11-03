@@ -1,25 +1,32 @@
-<section class="cg-page">
-  <header class="cg-page-header">
-    <div>
-      <h1>Review queue</h1>
-      <p>Challenged rules, proposed rules, contradicting lessons and decisions agents made on their own, by priority then recurrence.</p>
+<section class="cg-page" [class.kn-embedded]="embedded()" [class.kn-approvals]="embedded()">
+  @if (embedded()) {
+    <div class="kn-embedded-head">
+      <h2>Knowledge approvals</h2>
+      <span class="cg-muted cg-small">Proposed changes to knowledge and lessons, by priority then recurrence</span>
     </div>
-    <div class="cg-page-header-actions">
-      <label class="cg-field">
-        <span class="cg-field-label">Project</span>
-        <select class="cg-select" aria-label="Project" [ngModel]="project.selected()" (ngModelChange)="changeProject($event)">
-          @for (p of project.projects(); track p.key) {
-            <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
-          }
-        </select>
-      </label>
-    </div>
-  </header>
+  } @else {
+    <header class="cg-page-header">
+      <div>
+        <h1>Review queue</h1>
+        <p>Challenged rules, proposed rules, contradicting lessons and decisions agents made on their own, by priority then recurrence.</p>
+      </div>
+      <div class="cg-page-header-actions">
+        <label class="cg-field">
+          <span class="cg-field-label">Project</span>
+          <select class="cg-select" aria-label="Project" [ngModel]="current()" (ngModelChange)="changeProject($event)">
+            @for (p of selection.projects(); track p.key) {
+              <option [value]="p.key">{{ p.key }} · {{ p.title }}</option>
+            }
+          </select>
+        </label>
+      </div>
+    </header>
+  }
 
   <p class="adm-banner kn-banner">Nothing here blocks work. A challenged rule is still served, a proposed lesson still becomes a rule on recurrence and an agent's decision stands until you overturn it. Agents can settle any of these too.</p>
 
-  @if (project.error()) {
-    <p class="adm-banner err kn-banner" role="alert">{{ project.error() }}</p>
+  @if (selection.error()) {
+    <p class="adm-banner err kn-banner" role="alert">{{ selection.error() }}</p>
   }
   @if (error()) {
     <p class="adm-banner err kn-banner" role="alert">{{ error() }}</p>
