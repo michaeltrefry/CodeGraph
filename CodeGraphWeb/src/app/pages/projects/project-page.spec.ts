@@ -1,3 +1,4 @@
+import { Component, input } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 import { BehaviorSubject } from 'rxjs';
@@ -9,6 +10,18 @@ import { FeatureView, ProjectView } from '../work/work.models';
 import { ProjectSignalsService, inProgressItems, inProgressRow, reviewRow, reviewState } from './project-data';
 import { fakeLive, project, review, settle } from './project-fixtures';
 import { ProjectPageComponent } from './project-page.component';
+import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
+import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
+import { LessonsPageComponent } from '../knowledge/lessons-page.component';
+import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.component';
+
+const template = '<i class="stub-project">{{ project() }}</i>';
+@Component({ selector: 'app-review-queue-page', standalone: true, template }) class ApprovalsStub { readonly project = input<string | undefined>(); }
+@Component({ selector: 'app-knowledge-page', standalone: true, template }) class KnowledgeStub { readonly project = input<string | undefined>(); }
+@Component({ selector: 'app-lessons-page', standalone: true, template }) class LessonsStub { readonly project = input<string | undefined>(); }
+@Component({ selector: 'app-dreaming-page', standalone: true, template }) class DreamingStub { readonly project = input<string | undefined>(); }
+const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent];
+const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, DreamingStub];
 
 describe('overview mapping', () => {
   it('gives each latest review its chip: failed wins, queued is running, a missing stale flag is not stale', () => {
@@ -69,7 +82,7 @@ describe('ProjectPageComponent', () => {
         { provide: ProjectSignalsService, useValue: signals },
         { provide: ActivatedRoute, useValue: { snapshot: { paramMap: params.value }, paramMap: params } }
       ]
-    }).compileComponents();
+    }).overrideComponent(ProjectPageComponent, { remove: { imports: embedded }, add: { imports: stubs } }).compileComponents();
     const fixture = TestBed.createComponent(ProjectPageComponent);
     fixture.detectChanges();
     await settle(fixture);
@@ -137,6 +150,17 @@ describe('ProjectPageComponent', () => {
     params.next(convertToParamMap({ key: 'W', tab: 'nope' }));
     await settle(fixture);
     expect(navigate).toHaveBeenCalledWith(['/projects', 'W', 'overview'], { replaceUrl: true });
+  });
+
+  it.each([
+    ['approvals', 'app-review-queue-page'],
+    ['knowledge', 'app-knowledge-page'],
+    ['lessons', 'app-lessons-page'],
+    ['dreaming', 'app-dreaming-page']
+  ])('embeds the %s page scoped to the route project', async (tab, selector) => {
+    const { root } = await render(tab);
+    expect(root.querySelector(`[role="tabpanel"] ${selector} .stub-project`)?.textContent).toBe('W');
+    expect(root.querySelector('app-project-overview')).toBeNull();
   });
 
   it('shows the new project when only the route key changes', async () => {

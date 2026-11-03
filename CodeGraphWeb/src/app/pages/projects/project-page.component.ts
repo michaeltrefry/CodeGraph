@@ -8,6 +8,10 @@ import { AgoPipe } from '../work/work-shared';
 import { ProjectView } from '../work/work.models';
 import { PROJECT_TABS, ProjectSignalsService, ProjectTab, isProjectTab, itemTotals } from './project-data';
 import { ProjectOverviewComponent } from './project-overview.component';
+import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
+import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
+import { LessonsPageComponent } from '../knowledge/lessons-page.component';
+import { ReviewQueuePageComponent } from '../knowledge/review-queue-page.component';
 
 /**
  * A project page: /projects/:key/:tab. The project comes from the route key (never from
@@ -17,7 +21,7 @@ import { ProjectOverviewComponent } from './project-overview.component';
 @Component({
   selector: 'app-project-page',
   standalone: true,
-  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent],
+  imports: [FormsModule, RouterLink, AgoPipe, ErrorComponent, DialogComponent, ItemFormComponent, ProjectFormComponent, ProjectOverviewComponent, ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent],
   styleUrl: './projects.scss',
   template: `
     <div class="wrk-page">
@@ -60,24 +64,20 @@ import { ProjectOverviewComponent } from './project-overview.component';
               <div class="wrk-card"><div class="wrk-empty">The Work tab is not built yet. Use the cross-project <a routerLink="/work" (click)="ctx.select(p.key)">Work</a> page meanwhile.</div></div>
             }
             @case ('approvals') {
-              <!-- TAB: approvals -->
-              <div class="wrk-card"><div class="wrk-empty">The Approvals tab is not built yet. Use the cross-project <a routerLink="/approvals">Approvals</a> page meanwhile.</div></div>
+              <app-review-queue-page [project]="p.key" />
             }
             @case ('knowledge') {
-              <!-- TAB: knowledge -->
-              <div class="wrk-card"><div class="wrk-empty">The Knowledge tab is not built yet. Use the cross-project <a routerLink="/knowledge">Knowledge</a> page meanwhile.</div></div>
+              <app-knowledge-page [project]="p.key" />
             }
             @case ('lessons') {
-              <!-- TAB: lessons -->
-              <div class="wrk-card"><div class="wrk-empty">The Lessons tab is not built yet. Use the cross-project <a routerLink="/lessons">Lessons</a> page meanwhile.</div></div>
+              <app-lessons-page [project]="p.key" />
             }
             @case ('memory') {
               <!-- TAB: memory -->
               <div class="wrk-card"><div class="wrk-empty">The Memory tab is not built yet. Use the cross-project <a routerLink="/memory">Memory</a> page meanwhile.</div></div>
             }
             @case ('dreaming') {
-              <!-- TAB: dreaming -->
-              <div class="wrk-card"><div class="wrk-empty">The Dreaming tab is not built yet. Use the cross-project <a routerLink="/dreaming">Dreaming</a> page meanwhile.</div></div>
+              <app-dreaming-page [project]="p.key" />
             }
           }
         </div>
