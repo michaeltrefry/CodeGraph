@@ -159,3 +159,36 @@ a.wrk-tab {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+// ---- code reviews ----
+.prj-review-actions { align-items: flex-end; }
+
+.prj-reviews {
+  th.prj-num, td.prj-num { text-align: right; }
+}
+
+.prj-repo-cell { white-space: nowrap; }
+
+.prj-latest {
+  margin-left: 8px;
+  display: inline-flex;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--surface-3);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+.prj-sev { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.prj-commit, .prj-by { color: var(--text-2); }
+.prj-model { color: var(--text-2); white-space: nowrap; }
+.prj-when { white-space: nowrap; }
+
+.prj-empty { padding: 14px; }
+
+.prj-more { display: flex; justify-content: center; }
+
+.prj-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

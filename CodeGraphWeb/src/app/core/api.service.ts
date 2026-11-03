@@ -73,6 +73,7 @@ import {
   ProjectReviewStreamEvent,
   StartProjectReviewResponse,
   RepositoryReviewResponse,
+  RepositoryReviewRunPage,
   RepositoryReviewStreamEvent,
   StartRepositoryReviewResponse
 } from './models';
@@ -142,6 +143,14 @@ export class ApiService {
     return this.http.post<StartRepositoryReviewResponse>(
       `${API}/repositories/${encodeURIComponent(repo)}/code-review`,
       { mode });
+  }
+
+  listRepositoryReviews(repo: string, limit = 20, before?: number): Observable<RepositoryReviewRunPage> {
+    let params = new HttpParams().set('limit', limit);
+    if (before != null) params = params.set('before', before);
+    return this.http.get<RepositoryReviewRunPage>(
+      `${API}/repositories/${encodeURIComponent(repo)}/code-review`,
+      { params });
   }
 
   getLatestRepositoryReview(repo: string): Observable<RepositoryReviewResponse> {
