@@ -287,7 +287,7 @@ public sealed class ConsolidatedMcpServer
     }
 
     [McpServerTool(Name = "memory_store", Title = "Store Memory", ReadOnly = false, Destructive = false)]
-    [Description("Store claim-centric memory. operation=store queues entities, claims, and evidence into the memory graph. Pass sessionId or project to scope it to a work project; with neither, it is scoped to the project of your only live CodeGraph session, and with no live session, or several, it is stored unscoped.")]
+    [Description("Store claim-centric memory. operation=store queues entities, claims, and evidence into the memory graph. Pass sessionId or project to scope it to a work project; with neither, it is scoped to the project all your live CodeGraph sessions share, and with no live session, or live sessions in several projects, it is stored unscoped.")]
     public static async Task<string> MemoryStore(
         IMemoryOperationsService memoryOperations,
         ILogger<MemoryMcpServer> logger,

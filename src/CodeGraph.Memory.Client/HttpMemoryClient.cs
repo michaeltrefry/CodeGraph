@@ -310,7 +310,8 @@ public sealed class HttpMemoryClient(
                 Repositories = NormalizeIds(repositories),
             },
             ct,
-            allowRetry: true);
+            // A full scan; idempotent, but a proxy timeout must not run it again and again.
+            allowRetry: false);
         await EnsureSuccessAsync(response, ct);
     }
 

@@ -17,7 +17,8 @@ namespace CodeGraph.Data.MariaDb;
 public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStorageOptions> options) : IMemoryProjectScopeBackfill
 {
     private const int MinimumNameLength = 3;
-    private const int CommandTimeoutSeconds = 600;
+    // Bounded: a project write waits for the backfill, and a later project change retries one that times out.
+    private const int CommandTimeoutSeconds = 120;
 
     // A name made of other characters is never a whole token, so it can never match.
     [GeneratedRegex("^[a-z0-9._-]+$")]
@@ -85,8 +86,14 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
         await using var connection = new MySqlConnection(options.Value.ConnectionString);
         await connection.OpenAsync(ct);
         foreach (var statement in Statements)
+        {
+            // READ COMMITTED reads the scanned memory rows consistently without locking them, so memory
+            // ingestion is not blocked for the length of the scan (REPEATABLE READ would lock every row read).
+            await using var transaction = await connection.BeginTransactionAsync(System.Data.IsolationLevel.ReadCommitted, ct);
             await connection.ExecuteAsync(new CommandDefinition(
-                statement, new { projectKey, pattern }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+                statement, new { projectKey, pattern }, transaction, CommandTimeoutSeconds, cancellationToken: ct));
+            await transaction.CommitAsync(ct);
+        }
     }
 
     /// <summary>The expression matching any of the names as a whole token of a lowercased text, or null when no name can match.</summary>

@@ -595,6 +595,50 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, bob)).ShouldBe([$"entity:codegraph@{key}:backfill"]);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_backfill_that_fails_or_times_out_leaves_the_project_write_standing(bool timeout)
+    {
+        var key = $"BX{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var repository = $"repo-{key.ToLowerInvariant()}";
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repository), ('mlx-rs')", new { repository });
+        var backfill = new ThrowingBackfill(timeout
+            // An HTTP client timeout surfaces as a TaskCanceledException.
+            ? new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.")
+            : new InvalidOperationException("memory host unreachable"));
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfill: backfill);
+
+        var created = await CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Backfill fails", repositories = new[] { new { repository, role = "owned" } } },
+        });
+        created.GetProperty("created").GetBoolean().ShouldBeTrue();
+
+        var version = (await CallAsync(work, WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        var updated = await CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = key,
+            expected_version = version,
+            repositories = new[] { new { repository, role = "owned" }, new { repository = "mlx-rs", role = "dependency" } },
+        });
+        updated.GetProperty("project").GetProperty("repositories").GetArrayLength().ShouldBe(2);
+        backfill.Calls.ShouldBe(2);
+    }
+
+    private sealed class ThrowingBackfill(Exception exception) : IMemoryProjectScopeBackfill
+    {
+        public int Calls { get; private set; }
+
+        public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromException(exception);
+        }
+    }
+
     private static async Task<JsonElement> CallAsync(WorkService work, string tool, object arguments)
     {
         var result = await work.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), new WorkActor("alice"));

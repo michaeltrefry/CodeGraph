@@ -42,11 +42,19 @@ public sealed class WorkMemoryProjectResolver(IWorkStore? store = null) : IMemor
             // Inferred, never refused: without work tracking or a known caller the write stays unscoped.
             if (store is null || caller is null)
                 return null;
-            var projects = (await store.ListLiveSessionsOfIdentityAsync(caller, limit: 50, ct))
-                .Select(session => session.ProjectKey)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            return projects.Count == 1 ? projects[0] : null;
+            try
+            {
+                var projects = (await store.ListLiveSessionsOfIdentityAsync(caller, limit: 1000, ct))
+                    .Select(session => session.ProjectKey)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                return projects.Count == 1 ? projects[0] : null;
+            }
+            catch (Exception) when (!ct.IsCancellationRequested)
+            {
+                // The work store is unreachable (or refuses, as in a dream scope): the write stays unscoped.
+                return null;
+            }
         }
         if (store is null)
             throw new MemoryProjectResolutionException("Scoping memory to a project needs work tracking, which this host does not have.");

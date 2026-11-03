@@ -337,6 +337,14 @@ public sealed class WorkContractTests
             AssertClosed(items, $"{where}[]");
     }
 
+    [Fact]
+    public async Task A_memory_write_naming_no_project_stays_unscoped_when_the_work_store_fails()
+    {
+        // Inferring the project from live sessions must never fail the memory write (CG-166).
+        var resolver = new CodeGraph.Services.Memory.WorkMemoryProjectResolver(new UnreachableStore());
+        (await resolver.ResolveAsync(null, null, new WorkActor("alice"))).ShouldBeNull();
+    }
+
     private sealed class UnreachableStore : IWorkStore
     {
         private static Exception Fail() => new InvalidOperationException("The store must not be reached.");

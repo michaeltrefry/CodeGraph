@@ -27,7 +27,7 @@ public class MemoryMcpServer
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }
         Claim format: { "subject": "michael", "predicate": "prefers", "valueText": "clean slate design", "confidence": 0.9 }
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
-        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project. With neither, the memory is scoped to the project of your only live CodeGraph session; with no live session, or several, it is stored unscoped.
+        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project. With neither, the memory is scoped to the project all your live CodeGraph sessions share; with no live session, or live sessions in several projects, it is stored unscoped.
         """)]
     public static async Task<string> StoreMemoryV2(
         IMemoryOperationsService memoryOperations,
