@@ -240,7 +240,8 @@ export class MemoryPageComponent implements OnInit {
     this.api.getMemoryClaimBundle(claimId, {
       includeSupersessionChain: true,
       includeConflicts: true,
-      includeEvidence: true
+      includeEvidence: true,
+      project: this.project()
     }).subscribe({
       next: bundle => this.selectedClaimBundle.set(bundle)
     });
@@ -250,7 +251,8 @@ export class MemoryPageComponent implements OnInit {
     this.api.getMemoryClaimBundle(claim.claimId, {
       includeSupersessionChain: true,
       includeConflicts: true,
-      includeEvidence: true
+      includeEvidence: true,
+      project: this.project()
     }).subscribe({
       next: bundle => {
         this.selectedClaimBundle.set(bundle);

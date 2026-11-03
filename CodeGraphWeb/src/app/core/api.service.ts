@@ -290,9 +290,10 @@ export class ApiService {
 
   getMemoryClaimBundle(
     id: string,
-    options?: { includeSupersessionChain?: boolean; includeConflicts?: boolean; includeEvidence?: boolean }
+    options?: { includeSupersessionChain?: boolean; includeConflicts?: boolean; includeEvidence?: boolean; project?: string }
   ): Observable<MemoryClaimBundle> {
     let params = new HttpParams();
+    if (options?.project) params = params.set('project', options.project);
     if (options?.includeSupersessionChain != null) params = params.set('includeSupersessionChain', options.includeSupersessionChain);
     if (options?.includeConflicts != null) params = params.set('includeConflicts', options.includeConflicts);
     if (options?.includeEvidence != null) params = params.set('includeEvidence', options.includeEvidence);

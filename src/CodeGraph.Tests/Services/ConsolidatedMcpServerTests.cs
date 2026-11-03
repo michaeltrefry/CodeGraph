@@ -316,7 +316,7 @@ public class ConsolidatedMcpServerTests
 
         public Task<MemoryClaimBundle?> GetClaimBundleAsync(
             string claimId, bool includeSupersessionChain = true, bool includeConflicts = true,
-            bool includeEvidence = true, CancellationToken ct = default)
+            bool includeEvidence = true, string? projectKey = null, CancellationToken ct = default)
         {
             Calls.Add(nameof(GetClaimBundleAsync));
             return Task.FromResult<MemoryClaimBundle?>(null);

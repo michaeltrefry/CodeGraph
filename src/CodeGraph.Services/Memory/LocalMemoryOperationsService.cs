@@ -78,8 +78,9 @@ public sealed class LocalMemoryOperationsService(
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence);
+        => memoryService.GetClaimBundleAsync(claimId, includeSupersessionChain, includeConflicts, includeEvidence, projectKey);
 
     public Task<MemoryFrontierExpansionResult> ExpandMemoryFrontierAsync(
         MemoryFrontierExpansionRequest request,

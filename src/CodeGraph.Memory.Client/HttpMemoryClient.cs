@@ -206,6 +206,7 @@ public sealed class HttpMemoryClient(
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
         bool includeEvidence = true,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = $"api/memory/claims/{Uri.EscapeDataString(NormalizeRequired(claimId, nameof(claimId)))}/bundle" +
@@ -213,7 +214,8 @@ public sealed class HttpMemoryClient(
                    [
                        ("includeSupersessionChain", includeSupersessionChain.ToString().ToLowerInvariant()),
                        ("includeConflicts", includeConflicts.ToString().ToLowerInvariant()),
-                       ("includeEvidence", includeEvidence.ToString().ToLowerInvariant())
+                       ("includeEvidence", includeEvidence.ToString().ToLowerInvariant()),
+                       ("project", projectKey)
                    ]);
 
         return SendOptionalJsonAsync<MemoryClaimBundle>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);

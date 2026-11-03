@@ -145,7 +145,7 @@ public class MemoryTenantPatEndToEndTests
                     IMemoryOperationsService operations,
                     CancellationToken ct) =>
                 {
-                    var bundle = await operations.GetClaimBundleAsync(claimId, true, true, true, ct);
+                    var bundle = await operations.GetClaimBundleAsync(claimId, true, true, true, null, ct);
                     return bundle is null ? Results.NotFound() : Results.Ok(bundle);
                 });
                 group.MapPost("/cleanup/{source}", async (

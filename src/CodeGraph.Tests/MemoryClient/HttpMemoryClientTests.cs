@@ -102,6 +102,16 @@ public class HttpMemoryClientTests
         await CreateClient(bundle).GetEntityBundleAsync("michael", "codegraph", projectKey: "CG");
         bundle.Requests.Single().RequestUri!.PathAndQuery
             .ShouldBe("/api/memory/entities/codegraph/bundle?includeSuperseded=false&includeConflicts=true&neighborLimit=20&project=CG");
+
+        var claimBundle = new RecordingHandler(new MemoryClaimBundle { Claim = new MemoryClaim { Id = "claim_1", ClaimKey = "claim_1", FactGroupKey = "claim_1", SubjectEntityId = "codegraph", Predicate = "uses", NormalizedText = "codegraph uses", Source = "test" } });
+        await CreateClient(claimBundle).GetClaimBundleAsync("michael", "claim_1", projectKey: "CG");
+        claimBundle.Requests.Single().RequestUri!.PathAndQuery
+            .ShouldBe("/api/memory/claims/claim_1/bundle?includeSupersessionChain=true&includeConflicts=true&includeEvidence=true&project=CG");
+
+        var unscopedClaimBundle = new RecordingHandler(new MemoryClaimBundle { Claim = new MemoryClaim { Id = "claim_1", ClaimKey = "claim_1", FactGroupKey = "claim_1", SubjectEntityId = "codegraph", Predicate = "uses", NormalizedText = "codegraph uses", Source = "test" } });
+        await CreateClient(unscopedClaimBundle).GetClaimBundleAsync("michael", "claim_1");
+        unscopedClaimBundle.Requests.Single().RequestUri!.PathAndQuery
+            .ShouldBe("/api/memory/claims/claim_1/bundle?includeSupersessionChain=true&includeConflicts=true&includeEvidence=true");
     }
 
     [Fact]

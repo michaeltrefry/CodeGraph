@@ -162,13 +162,15 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         string id,
         [FromQuery] bool? includeSupersessionChain,
         [FromQuery] bool? includeConflicts,
-        [FromQuery] bool? includeEvidence)
+        [FromQuery] bool? includeEvidence,
+        [FromQuery] string? project)
     {
         var bundle = await memoryOperations.GetClaimBundleAsync(
             id,
             includeSupersessionChain ?? true,
             includeConflicts ?? true,
             includeEvidence ?? true,
+            ProjectKey(project),
             HttpContext.RequestAborted);
 
         if (bundle == null) return NotFound();

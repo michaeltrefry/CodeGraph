@@ -102,7 +102,8 @@ public interface IMemoryGraphStore
         string claimId,
         bool includeSupersessionChain = true,
         bool includeConflicts = true,
-        bool includeEvidence = true);
+        bool includeEvidence = true,
+        string? projectKey = null);
     Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(
         string query,
         float[]? queryEmbedding,
