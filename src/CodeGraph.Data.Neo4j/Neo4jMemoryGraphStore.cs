@@ -358,8 +358,9 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         });
     }
 
-    public async Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5)
+    public async Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         int[] overfetchFactors = [5, 20, 100];
         foreach (var factor in overfetchFactors)
         {
@@ -414,8 +415,9 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         return results;
     }
 
-    public async Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5)
+    public async Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
         try
         {
@@ -573,8 +575,24 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         return results;
     }
 
-    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0)
+    // Project scoping (CG-156) is stored in MariaDB only; this compatibility/export store has none.
+    public Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds) =>
+        throw new NotSupportedException(ProjectScopeUnsupported);
+
+    public Task<bool> IsEntityInProjectAsync(string entityId, string projectKey) =>
+        throw new NotSupportedException(ProjectScopeUnsupported);
+
+    private const string ProjectScopeUnsupported = "Project-scoped memory requires the MariaDB memory store.";
+
+    private static void RejectProjectScope(string? projectKey)
     {
+        if (projectKey is not null)
+            throw new NotSupportedException(ProjectScopeUnsupported);
+    }
+
+    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null)
+    {
+        RejectProjectScope(projectKey);
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
         var snapshot = new MemoryGraphSnapshot();
 
@@ -637,8 +655,9 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         return snapshot;
     }
 
-    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200)
+    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
         var snapshot = new MemoryGraphSnapshot();
 
@@ -884,8 +903,10 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         string entityId,
         bool includeSuperseded = false,
         bool includeConflicts = true,
-        int neighborLimit = 20)
+        int neighborLimit = 20,
+        string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         var entity = await GetEntityAsync(entityId);
         if (entity == null)
             return null;
@@ -1054,8 +1075,10 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         string query,
         float[]? queryEmbedding,
         int limit = 5,
-        bool includeSuperseded = false)
+        bool includeSuperseded = false,
+        string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
 
         var results = new Dictionary<string, (MemoryClaim Claim, double Score, string MatchKind)>(StringComparer.OrdinalIgnoreCase);

@@ -9,4 +9,7 @@ public class MemoryStoreAcceptedResult
     public int EntitiesRequested { get; set; }
     public int ClaimsRequested { get; set; }
     public int EvidenceRequested { get; set; }
+
+    /// <summary>The key of the work project this write's entities and claims are scoped to, if any.</summary>
+    public string? Project { get; set; }
 }

@@ -18,7 +18,7 @@ public class StoreMemoryClaimsConsumer(
 
         try
         {
-            var result = await memoryService.StoreClaimsAsync(message.Extraction, message.Source);
+            var result = await memoryService.StoreClaimsAsync(message.Extraction, message.Source, message.ProjectKey);
 
             if (!string.IsNullOrWhiteSpace(message.ReceiptId))
                 await memoryService.CompleteWriteReceiptAsync(message.ReceiptId, result);

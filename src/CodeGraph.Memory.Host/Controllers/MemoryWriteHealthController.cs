@@ -21,7 +21,7 @@ public class MemoryWriteHealthController(MemoryService memoryService, IMessageBu
             ProbeSource,
             "typed",
             messageBus,
-            ct);
+            ct: ct);
 
         MemoryWriteReceipt? receipt = null;
         for (var attempt = 0; attempt < MaxAttempts; attempt++)

@@ -2,12 +2,15 @@ using CodeGraph.Models.Memory;
 
 namespace CodeGraph.Services.Memory;
 
+// projectKey: the key of a work project (CG-156). On a write it scopes what is written to that
+// project; on a read it limits the answer to what is scoped to it. Null leaves both unscoped.
 public interface IMemoryOperationsService
 {
     Task<MemoryStoreAcceptedResult> QueueClaimsAsync(
         MemoryClaimExtractionResult extraction,
         string source,
         string inputMode,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryWriteReceipt?> GetWriteReceiptAsync(string receiptId, CancellationToken ct = default);
@@ -32,7 +35,12 @@ public interface IMemoryOperationsService
         bool dryRun,
         CancellationToken ct = default);
 
-    Task<MemorySearchResult> SearchMemoryAsync(string query, int entityLimit = 5, int claimLimit = 5, CancellationToken ct = default);
+    Task<MemorySearchResult> SearchMemoryAsync(
+        string query,
+        int entityLimit = 5,
+        int claimLimit = 5,
+        string? projectKey = null,
+        CancellationToken ct = default);
 
     Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphRequest request, CancellationToken ct = default);
 
@@ -41,9 +49,14 @@ public interface IMemoryOperationsService
         bool includeSuperseded = false,
         bool includeConflicts = true,
         int neighborLimit = 20,
+        string? projectKey = null,
         CancellationToken ct = default);
 
-    Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, CancellationToken ct = default);
+    Task<MemoryGraphSnapshot> GetEntityGraphAsync(
+        string entityId,
+        int neighborLimit = 200,
+        string? projectKey = null,
+        CancellationToken ct = default);
 
     Task<MemoryClaimBundle?> GetClaimBundleAsync(
         string claimId,
@@ -62,7 +75,11 @@ public interface IMemoryOperationsService
 
     Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20, CancellationToken ct = default);
 
-    Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, CancellationToken ct = default);
+    Task<MemoryGraphSnapshot> GetFullGraphAsync(
+        int limit = 200,
+        int skip = 0,
+        string? projectKey = null,
+        CancellationToken ct = default);
 
     Task<MemoryEntityWithRelationships?> GetEntityWithRelationshipsAsync(string entityId, CancellationToken ct = default);
 }

@@ -158,13 +158,13 @@ public class MemoryObservationMigrationServiceTests
             return Task.CompletedTask;
         }
         public Task ResolveObservationAsync(string observationId, string resolution, string? resolvedByMemoryId) => Task.CompletedTask;
-        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5) => Task.FromResult(new List<(MemoryEntity Entity, double Score)>());
-        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5) => Task.FromResult(new List<MemoryEntity>());
+        public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null) => Task.FromResult(new List<(MemoryEntity Entity, double Score)>());
+        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null) => Task.FromResult(new List<MemoryEntity>());
         public Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId) => Task.FromResult(new List<MemoryRelationshipDetail>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds) => Task.FromResult(new List<MemoryObservation>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds) => Task.FromResult(new List<MemoryObservation>());
-        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0) => Task.FromResult(new MemoryGraphSnapshot());
-        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200) => Task.FromResult(new MemoryGraphSnapshot());
+        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null) => Task.FromResult(new MemoryGraphSnapshot());
+        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null) => Task.FromResult(new MemoryGraphSnapshot());
         public Task<List<string>> FindCandidateEntityIdsAsync(string candidateId, int limit = 20) => Task.FromResult(new List<string>());
         public Task<MemoryEntity?> GetEntityAsync(string entityId) => Task.FromResult<MemoryEntity?>(null);
         public Task<MemoryEntity?> GetEntityByExternalIdAsync(string externalId) => Task.FromResult<MemoryEntity?>(null);
@@ -173,12 +173,14 @@ public class MemoryObservationMigrationServiceTests
         public Task<MemoryClaim?> GetClaimAsync(string claimId) => Task.FromResult<MemoryClaim?>(null);
         public Task<List<MemoryClaim>> GetClaimsByFactGroupAsync(string factGroupKey) => Task.FromResult(new List<MemoryClaim>());
         public Task<List<MemoryClaim>> GetClaimsBySubjectPredicateAsync(string subjectEntityId, string predicate) => Task.FromResult(new List<MemoryClaim>());
-        public Task<MemoryEntityBundle?> GetEntityBundleAsync(string entityId, bool includeSuperseded = false, bool includeConflicts = true, int neighborLimit = 20)
+        public Task<MemoryEntityBundle?> GetEntityBundleAsync(string entityId, bool includeSuperseded = false, bool includeConflicts = true, int neighborLimit = 20, string? projectKey = null)
             => Task.FromResult<MemoryEntityBundle?>(null);
         public Task<MemoryClaimBundle?> GetClaimBundleAsync(string claimId, bool includeSupersessionChain = true, bool includeConflicts = true, bool includeEvidence = true)
             => Task.FromResult<MemoryClaimBundle?>(null);
-        public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false)
+        public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false, string? projectKey = null)
             => Task.FromResult(SearchResults.GetValueOrDefault(query, []).Take(limit).ToList());
+        public Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds) => Task.CompletedTask;
+        public Task<bool> IsEntityInProjectAsync(string entityId, string projectKey) => Task.FromResult(false);
         public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20, int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true)
             => Task.FromResult(new MemorySubgraphResult());
     }

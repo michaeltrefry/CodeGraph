@@ -290,14 +290,17 @@ public sealed class ConsolidatedMcpServer
         [Description("Legacy JSON object with 'entities', 'claims', and optional 'evidence' arrays.")] string? data = null,
         [Description("Typed memory entities to store.")] List<MemoryMcpEntityInput>? entities = null,
         [Description("Typed atomic memory claims to store.")] List<MemoryMcpClaimInput>? claims = null,
-        [Description("Typed evidence rows to store.")] List<MemoryMcpEvidenceInput>? evidence = null)
+        [Description("Typed evidence rows to store.")] List<MemoryMcpEvidenceInput>? evidence = null,
+        [Description("Optional key (such as SW) or id of the work project this memory belongs to; its entities and claims are listed under that project.")] string? project = null,
+        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins.")] string? sessionId = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
         const string tool = "memory_store";
         switch (Normalize(operation))
         {
             case "" or "store":
                 return Wrap(tool, "store", await MemoryMcpServer.StoreMemoryV2(
-                    memoryOperations, logger, source, data, entities, claims, evidence));
+                    memoryOperations, logger, source, data, entities, claims, evidence, project, sessionId, projectResolver));
             default:
                 return InvalidOperation(tool, operation, "store");
         }
