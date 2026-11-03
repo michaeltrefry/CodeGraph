@@ -149,10 +149,16 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
             Edge("claim_inside", "claim_outside_older", "supersedes"),
         ]);
         await store.AddEvidenceBatchAsync([Evidence("evidence_inside", "claim_inside", "note")]);
-        await store.AddProjectScopeAsync(project, [], ["claim_inside", "claim_inside_conflict"]);
+        await store.AddProjectScopeAsync(project, ["repo"], ["claim_inside", "claim_inside_conflict"]);
+        // One observation is about the project's claim only; the other also about a claim scoped elsewhere.
+        await store.CreateObservationAsync(Observation("obs_inside", ["claim_inside"]));
+        await store.CreateObservationAsync(Observation("obs_mixed", ["claim_inside", "claim_outside_conflict"]));
 
         // Without a project nothing is filtered.
         var unscoped = (await store.GetClaimBundleAsync("claim_inside"))!;
+        unscoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside", "obs_mixed"], ignoreOrder: true);
+        (await store.GetEntityBundleAsync("repo"))!.Observations.Select(observation => observation.Id)
+            .ShouldBe(["obs_inside", "obs_mixed"], ignoreOrder: true);
         unscoped.Conflicts.Select(claim => claim.Id).ShouldBe(["claim_outside_conflict", "claim_inside_conflict"], ignoreOrder: true);
         unscoped.SupersessionChain.Select(claim => claim.Id).ShouldBe(["claim_outside_older"]);
         unscoped.FactGroupPeers.Select(claim => claim.Id).ShouldBe(["claim_outside_conflict"]);
@@ -165,6 +171,9 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         scoped.SupersessionChain.ShouldBeEmpty();
         scoped.FactGroupPeers.ShouldBeEmpty();
         scoped.Evidence.Select(evidence => evidence.Id).ShouldBe(["evidence_inside"]);
+        scoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
+        (await store.GetEntityBundleAsync("repo", projectKey: project))!.Observations.Select(observation => observation.Id)
+            .ShouldBe(["obs_inside"]);
 
         // A claim outside the project (or in another project) is not found in it.
         (await store.GetClaimBundleAsync("claim_elsewhere", projectKey: project)).ShouldBeNull();
@@ -303,4 +312,14 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         public float[] GenerateEmbedding(string text) => [];
         public IReadOnlyList<float[]> GenerateEmbeddings(IReadOnlyList<string> texts) => [];
     }
+
+    private static MemoryObservation Observation(string id, List<string> claimIds) => new()
+    {
+        Id = id,
+        Claim = "the first statement",
+        ConflictsWith = "the second statement",
+        Source = "test",
+        AboutEntityIds = ["repo"],
+        AboutClaimIds = claimIds,
+    };
 }

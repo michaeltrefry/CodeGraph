@@ -450,7 +450,8 @@ export class RepoDetailComponent implements OnInit {
   }
 
   private loadLatestRepositoryReview(repo: string, runId?: number) {
-    this.resumeTrackedRepositoryReview(repo);
+    // A requested historical run must not be replaced by a newer tracked run's stream.
+    if (!runId) this.resumeTrackedRepositoryReview(repo);
 
     this.updateRepositoryReviewState(state => ({
       ...state,

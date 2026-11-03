@@ -1574,7 +1574,8 @@ public class MySqlMemoryGraphStore(
                 ? claims.Where(claim => claim.Status == MemoryClaimStatus.Superseded).ToList()
                 : [],
             NeighborEdges = neighborEdges,
-            Observations = await GetUnresolvedObservationsForEntitiesAsync([entityId]),
+            Observations = await FilterObservationsInProjectAsync(
+                connection, await GetUnresolvedObservationsForEntitiesAsync([entityId]), projectKey),
         };
     }
 
@@ -1655,9 +1656,10 @@ public class MySqlMemoryGraphStore(
                 .ToList();
         }
 
-        bundle.Observations = await GetUnresolvedObservationsAsync(
-            [claim.SubjectEntityId, claim.ObjectEntityId ?? ""],
-            [claim.Id]);
+        bundle.Observations = await FilterObservationsInProjectAsync(
+            connection,
+            await GetUnresolvedObservationsAsync([claim.SubjectEntityId, claim.ObjectEntityId ?? ""], [claim.Id]),
+            projectKey);
         return bundle;
     }
 
@@ -1800,6 +1802,36 @@ public class MySqlMemoryGraphStore(
         }
 
         return scoped;
+    }
+
+    /// <summary>
+    /// Within a project, keeps only the observations whose every claim and entity (at least one of them) is in it:
+    /// a shared entity's observations can be about another project's claims.
+    /// </summary>
+    private async Task<List<MemoryObservation>> FilterObservationsInProjectAsync(
+        MySqlConnection connection,
+        List<MemoryObservation> observations,
+        string? projectKey)
+    {
+        if (projectKey is null)
+            return observations;
+
+        var kept = new List<MemoryObservation>();
+        foreach (var observation in observations)
+        {
+            if (observation.AboutClaimIds.Count == 0 && observation.AboutEntityIds.Count == 0)
+                continue;
+
+            var inProject = true;
+            foreach (var claimId in observation.AboutClaimIds)
+                inProject = inProject && await IsClaimInProjectAsync(connection, claimId, projectKey);
+            foreach (var entityId in observation.AboutEntityIds)
+                inProject = inProject && await IsEntityInProjectAsync(entityId, projectKey);
+            if (inProject)
+                kept.Add(observation);
+        }
+
+        return kept;
     }
 
     private async Task<bool> IsClaimInProjectAsync(MySqlConnection connection, string claimId, string projectKey) =>
