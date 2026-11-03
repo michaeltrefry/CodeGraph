@@ -247,4 +247,47 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
         rejected.GetProperty("entry").GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rejected");
         rejected.GetProperty("entry").GetProperty("lesson").GetProperty("rejected_reason").GetString().ShouldBe("Too noisy");
     }
+    [Fact]
+    public async Task The_review_queue_total_counts_every_item_of_the_project_across_pages_and_a_single_item_request_returns_it()
+    {
+        var key = await NewProjectAsync("KT");
+        var other = await NewProjectAsync("KO");
+        foreach (var (project, count) in new[] { (key, 5), (other, 2) })
+            for (var n = 0; n < count; n++)
+                (await Call(HttpMethod.Post, "/api/work/knowledge", new
+                {
+                    project, idempotency_key = $"ui-total-{project}-{n}",
+                    entry = new { kind = "decision", summary = $"Decision {n}", why = "No human was there", made_autonomously = true }
+                })).Status.ShouldBe(200);
+        var rule = await RecordRuleAsync(key, "Never push to main", "merging");
+        (await Call(HttpMethod.Post, "/api/work/knowledge/challenges", new
+        {
+            idempotency_key = "ui-total-challenge",
+            open = new { id = rule.GetProperty("id").GetString(), reason = "Hotfixes", evidence = new[] { new { kind = "link", summary = "HOTFIX.md" } } }
+        })).Status.ShouldBe(200);
+
+        // The Approvals tab pages through the queue (here 2 at a time); every page carries the same total.
+        var listed = 0;
+        var totals = new List<int>();
+        string? cursor = null;
+        do
+        {
+            var (status, page) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=2" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}"));
+            status.ShouldBe(200);
+            listed += page.GetProperty("items").GetArrayLength();
+            totals.Add(page.GetProperty("total").GetInt32());
+            cursor = page.TryGetProperty("next_cursor", out var next) ? next.GetString() : null;
+        } while (cursor is not null);
+
+        totals.Count.ShouldBeGreaterThan(1);
+        listed.ShouldBe(6);
+        totals.ShouldAllBe(total => total == listed);
+
+        // The count the Projects list and project page read: one request for one item, the same total, scoped to the project.
+        var (_, single) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=1");
+        single.GetProperty("items").GetArrayLength().ShouldBe(1);
+        single.GetProperty("total").GetInt32().ShouldBe(listed);
+        var (_, otherSingle) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={other}&limit=1");
+        otherSingle.GetProperty("total").GetInt32().ShouldBe(2);
+    }
 }

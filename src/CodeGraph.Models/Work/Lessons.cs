@@ -430,7 +430,8 @@ public sealed record ReviewItem(
     WorkActor? OtherAuthor = null,
     DreamProposalView? Proposal = null);
 
-public sealed record ReviewQueueResult(IReadOnlyList<ReviewItem> Items, string? NextCursor = null);
+/// <param name="Total">Every item in the queue, across all pages (a count needs no paging). Left out of a dream's snapshot read.</param>
+public sealed record ReviewQueueResult(IReadOnlyList<ReviewItem> Items, string? NextCursor = null, int? Total = null);
 
 public sealed record PromoteResult(KnowledgeView Entry, bool Changed);
 
