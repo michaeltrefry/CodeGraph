@@ -252,10 +252,15 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
                 Claim("claim_repo_other", "repo", "other"),
                 Claim("claim_other_db", "other", "db"),
             ]);
+            // repo and db are both in the project, but this relationship was asserted only outside it.
+            var elsewhere = Claim("claim_repo_db_elsewhere", "repo", "db");
+            elsewhere.Predicate = "deployed_with";
+            await store.UpsertClaimsBatchAsync([elsewhere]);
             await store.UpsertEntityEdgesBatchAsync(
             [
                 new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "db", EdgeType = "relates_to" },
                 new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "other", EdgeType = "relates_to" },
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "db", EdgeType = "deployed_with", BestActiveClaimId = "claim_repo_db_elsewhere" },
             ]);
             // Scopes repo, db (the claim's subject and object) and claim_repo_db; other and its claims stay outside.
             await store.AddProjectScopeAsync(project, [], ["claim_repo_db"]);
@@ -281,8 +286,8 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
             });
             unscoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db", "other"], ignoreOrder: true);
             unscoped.Claims.Select(claim => claim.Claim.Id)
-                .ShouldBe(["claim_repo_db", "claim_repo_other", "claim_other_db"], ignoreOrder: true);
-            unscoped.EntityEdges.Select(edge => edge.ToEntityId).ShouldBe(["db", "other"], ignoreOrder: true);
+                .ShouldBe(["claim_repo_db", "claim_repo_db_elsewhere", "claim_repo_other", "claim_other_db"], ignoreOrder: true);
+            unscoped.EntityEdges.Select(edge => $"{edge.ToEntityId}:{edge.EdgeType}").ShouldBe(["db:relates_to", "other:relates_to", "db:deployed_with"], ignoreOrder: true);
             unscoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside", "obs_mixed"], ignoreOrder: true);
 
             // In the project: seeds outside it are dropped, as are claims, edges and observations reaching outside it.
@@ -294,7 +299,9 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
             });
             scoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db"], ignoreOrder: true);
             scoped.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
-            scoped.EntityEdges.ShouldHaveSingleItem().ToEntityId.ShouldBe("db");
+            // Only the edge the project's own claim supports, with that claim as its best one.
+            var edge = scoped.EntityEdges.ShouldHaveSingleItem();
+            (edge.ToEntityId, edge.EdgeType, edge.BestActiveClaimId).ShouldBe(("db", "relates_to", "claim_repo_db"));
             scoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
             (await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest { SeedEntityIds = ["repo"], ProjectKey = "ZZNOPE" }))
                 .Entities.ShouldBeEmpty();
@@ -312,7 +319,7 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
 
             // Frontier expansion.
             (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"] }))
-                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db", "claim_repo_other"], ignoreOrder: true);
+                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db", "claim_repo_db_elsewhere", "claim_repo_other"], ignoreOrder: true);
             (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"], ProjectKey = project }))
                 .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
             var outside = await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest

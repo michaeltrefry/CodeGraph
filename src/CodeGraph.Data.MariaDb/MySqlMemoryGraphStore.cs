@@ -2361,9 +2361,24 @@ public class MySqlMemoryGraphStore(
         if (sourceOrTargetRowIds.Count == 0)
             return [];
 
-        var sql = """
+        // An entity edge is a convenience derived from active claims (subject -> object, the predicate as its
+        // type). Within a project it stands only on the project's own claims: shared endpoints are not enough,
+        // and its best claim is the project's most recent one, never another project's.
+        const string projectSupportingClaim = """
+            FROM memory_claims supporting
+            JOIN memory_claim_projects supporting_scope ON supporting_scope.claim_id = supporting.id AND supporting_scope.project_key = @projectKey
+            WHERE supporting.username = edge.username
+              AND supporting.subject_entity_id = edge.from_entity_id
+              AND supporting.object_entity_id = edge.to_entity_id
+              AND supporting.predicate = edge.edge_type
+              AND LOWER(supporting.status) = 'active'
+            """;
+        var bestActiveClaimId = projectKey is null
+            ? "claim.external_id"
+            : $"(SELECT supporting.external_id {projectSupportingClaim} ORDER BY supporting.recorded_at DESC LIMIT 1)";
+        var sql = $"""
             SELECT source.external_id AS FromEntityId, target.external_id AS ToEntityId,
-                   edge.edge_type AS EdgeType, claim.external_id AS BestActiveClaimId,
+                   edge.edge_type AS EdgeType, {bestActiveClaimId} AS BestActiveClaimId,
                    edge.weight AS Weight, edge.created_at AS CreatedAt, edge.updated_at AS UpdatedAt
             FROM memory_entity_edges edge
             JOIN memory_entities_v2 source ON source.id = edge.from_entity_id
@@ -2387,6 +2402,7 @@ public class MySqlMemoryGraphStore(
                AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.from_entity_id AND scope.project_key = @projectKey)
                AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.to_entity_id AND scope.project_key = @projectKey)
             """;
+            sql += $"\n   AND EXISTS (SELECT 1 {projectSupportingClaim})";
         }
 
         sql += " ORDER BY edge.updated_at DESC;";
