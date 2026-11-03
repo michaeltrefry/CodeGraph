@@ -798,7 +798,7 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
         var pending = await state.ListPendingAsync();
         pending.Single(row => row.ProjectKey == first).Repositories.ShouldBe([repoA, repoB]);
         pending.Single(row => row.ProjectKey == second).Repositories.ShouldBe([repoC]);
-        // Taken as already backfilled, so only a scan of all memory could scope old_c to the second project.
+        // Taken as already backfilled, so only the first run's scan of all memory scopes old_c to the second project.
         await state.CompletePendingAsync(second, [repoC]);
         (await state.ListPendingAsync()).Select(row => row.ProjectKey).ShouldBe([first]);
 
@@ -807,18 +807,21 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
         clock.Advance(MySqlMemoryProjectScopeBackfill.SettleTime + TimeSpan.FromMinutes(1));
         var real = new MySqlMemoryProjectScopeBackfill(options, clock);
 
-        // 1. The first run records the watermark without a scan; the first project's backfill fails and stays pending.
+        // 1. The first run scans memory from zero, so old_c (written before the second project's own backfill
+        // completed) is scoped although that project is no longer pending; the first project's full backfill
+        // fails and stays pending, while the range pass still scopes old_a to it.
         var failing = new CountingBackfill(real) { FailingProject = first };
         var result = await RunAsync(state, failing);
         result.Success.ShouldBeFalse();
         result.Message.ShouldContain(first);
-        failing.RangeScans.ShouldBe(0);
+        failing.RangeScans.ShouldBeGreaterThan(0);
         var watermark = (await state.GetWatermarkAsync()).ShouldNotBeNull();
         watermark.EntitySeq.ShouldBeGreaterThan(0);
         var failed = (await state.ListPendingAsync()).ShouldHaveSingleItem();
         failed.Attempts.ShouldBe(1);
         failed.LastError.ShouldBe("memory host unreachable");
-        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBeEmpty();
+        string[] firstRun = [$"entity:old_a@{first}:backfill", $"entity:old_c@{second}:backfill"];
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(firstRun);
 
         // 2. The next run repairs it: a full backfill of its pending repositories, and no new memory to scan.
         var counting = new CountingBackfill(real);
@@ -826,7 +829,7 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
         counting.FullScans.ShouldBe([$"{first}:{repoA},{repoB}"]);
         counting.RangeScans.ShouldBe(0);
         (await state.ListPendingAsync()).ShouldBeEmpty();
-        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe([$"entity:old_a@{first}:backfill"]);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(firstRun);
 
         // 3. Nothing changed: no scan, and the watermark stays.
         counting = new CountingBackfill(real);
@@ -863,9 +866,10 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
             $"entity:new_c@{second}:backfill",
             $"entity:object@{first}:backfill",
             $"entity:old_a@{first}:backfill",
+            $"entity:old_c@{second}:backfill",
             $"entity:subject@{first}:backfill",
         ];
-        // old_c names repoC too, but it was written before the watermark: it is not rescanned.
+        // Only the new rows were scanned; old_c keeps the scope the first run gave it.
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(incremental);
         var advanced = (await state.GetWatermarkAsync()).ShouldNotBeNull();
         advanced.EntitySeq.ShouldBeGreaterThan(watermark.EntitySeq);
@@ -929,12 +933,12 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
         (await new MySqlMemoryProjectScopeBackfill(options).GetWatermarkAsync(advanced)).ShouldBe(advanced);
         (await real.GetWatermarkAsync(advanced)).EntitySeq.ShouldBeGreaterThan(advanced.EntitySeq);
 
-        // The range backfill found what a full backfill finds in the new memory: a full one adds only the
-        // old row deliberately left out above (and the fresh row, not yet passed by the watermark).
+        // The range backfills found what a full backfill finds: a full one adds only the fresh row, not yet
+        // passed by the watermark.
         await real.BackfillAsync(first, [repoA, repoB]);
         await real.BackfillAsync(second, [repoC]);
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(
-            rewritten.Append($"entity:old_c@{second}:backfill").Append($"entity:fresh@{second}:backfill").Order(StringComparer.Ordinal).ToArray());
+            rewritten.Append($"entity:fresh@{second}:backfill").Order(StringComparer.Ordinal).ToArray());
     }
 
     [Fact]
@@ -969,8 +973,8 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
         result.Success.ShouldBeTrue(result.Message);
         result.Message.ShouldContain("reset");
         counting.FullScans.ShouldContain($"{key}:{repository}");
-        counting.RangeScans.ShouldBe(0);
-        (await state.GetWatermarkAsync()).ShouldBe(current);
+        // New memory is scanned from zero again, as on a first run, up to what has settled.
+        (await state.GetWatermarkAsync()).ShouldNotBeNull().IsAheadOf(current).ShouldBeFalse();
         (await state.ListPendingAsync()).ShouldBeEmpty();
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, erin)).ShouldBe([$"entity:restored@{key}:backfill"]);
     }

@@ -44,7 +44,13 @@ public sealed class ReconcileMemoryProjectScopesJob(
             logger.LogWarning("The memory scope watermark {Watermark} is ahead of memory ({Current}); every project is backfilled again.", since, current);
             since = null;
         }
-        var upTo = since is null ? current : await backfill.GetWatermarkAsync(since, ct);
+        // A first run (or a reset) scans the change marks from zero rather than recording the current
+        // maxima: memory written after a project's own backfill but before this first run would otherwise
+        // never be scanned. Rows from before the change marks have mark 0 and are covered by the pending
+        // full backfills; the evidence pass repeats them once, in bounded spans.
+        var firstRun = since is null;
+        since ??= MemoryScopeWatermark.Zero;
+        var upTo = await backfill.GetWatermarkAsync(since, ct);
         var projects = await workStore.ListProjectRepositoriesAsync(ct);
         if (reset)
         {
@@ -80,15 +86,10 @@ public sealed class ReconcileMemoryProjectScopesJob(
         }
 
         string newMemory;
-        if (since is null)
+        if (upTo == since)
         {
-            await reconciliation.SetWatermarkAsync(upTo, ct);
-            newMemory = reset
-                ? "reset the memory watermark, which was ahead of memory, without a scan"
-                : "recorded the memory watermark (first run, no scan)";
-        }
-        else if (upTo == since)
-        {
+            if (firstRun)
+                await reconciliation.SetWatermarkAsync(upTo, ct);
             newMemory = "no new memory";
         }
         else
@@ -118,7 +119,8 @@ public sealed class ReconcileMemoryProjectScopesJob(
             }
         }
 
-        var summary = $"{repaired} of {pending.Count} pending projects backfilled; {newMemory}.";
+        var start = reset ? "the memory watermark was ahead of memory and was reset; " : firstRun ? "first run; " : "";
+        var summary = $"{start}{repaired} of {pending.Count} pending projects backfilled; {newMemory}.";
         return failures.Count == 0
             ? new JobExecutionResult(true, $"Memory scope reconciliation: {summary}", startedAtUtc, DateTime.UtcNow)
             : new JobExecutionResult(false,

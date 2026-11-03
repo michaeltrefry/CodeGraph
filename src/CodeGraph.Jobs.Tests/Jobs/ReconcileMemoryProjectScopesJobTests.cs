@@ -27,7 +27,7 @@ public class ReconcileMemoryProjectScopesJobTests
     }
 
     [Fact]
-    public async Task The_first_run_records_the_watermark_without_a_scan()
+    public async Task The_first_run_scans_new_memory_from_zero_so_writes_after_a_projects_own_backfill_are_covered()
     {
         var backfill = new RecordingMemoryProjectScopeBackfill { Memory = Mark };
         var state = new InMemoryReconciliationStore();
@@ -35,7 +35,9 @@ public class ReconcileMemoryProjectScopesJobTests
         var result = await CreateJob(backfill, state, Alpha, Beta).ExecuteAsync(new EmptyJobRequest());
 
         result.Success.ShouldBeTrue(result.Message);
-        backfill.Scans.ShouldBe(0);
+        var range = backfill.RangeCalls.ShouldHaveSingleItem();
+        range.After.ShouldBe(MemoryScopeWatermark.Zero);
+        range.UpTo.ShouldBe(Mark);
         state.Watermark.ShouldBe(Mark);
     }
 
@@ -118,7 +120,8 @@ public class ReconcileMemoryProjectScopesJobTests
         result.Success.ShouldBeTrue(result.Message);
         result.Message.ShouldContain("reset");
         backfill.Calls.Select(call => $"{call.ProjectKey}:{string.Join(",", call.Repositories)}").ShouldBe(["ALPHA:alpha-api,alpha-web", "BETA:beta"]);
-        backfill.RangeCalls.ShouldBeEmpty();
+        // New memory is scanned from zero again, as on a first run.
+        backfill.RangeCalls.ShouldHaveSingleItem().After.ShouldBe(MemoryScopeWatermark.Zero);
         state.Watermark.ShouldBe(Mark);
         state.Pending.ShouldBeEmpty();
     }
