@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Memory;
@@ -8,6 +9,7 @@ using CodeGraph.Services.Memory;
 using CodeGraph.Services.Work;
 using CodeGraph.Tests.Work;
 using Dapper;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
@@ -548,12 +550,21 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         using (tenant.Enter(bob))
             await store.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("codegraph", "CodeGraph")]);
 
+        // The real queue and worker, draining into the MariaDB backfill; the test awaits each run.
+        var queue = new MemoryScopeBackfillQueue(NullLogger<MemoryScopeBackfillQueue>.Instance);
+        var backfill = new SignallingBackfill(new MySqlMemoryProjectScopeBackfill(options));
+        await using var provider = new ServiceCollection().AddSingleton<IMemoryProjectScopeBackfill>(backfill).BuildServiceProvider();
+        using var worker = new MemoryScopeBackfillWorker(queue, provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<MemoryScopeBackfillWorker>.Instance);
+        await worker.StartAsync(CancellationToken.None);
+
         var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
-            memoryScopeBackfill: new MySqlMemoryProjectScopeBackfill(options));
+            memoryScopeBackfillQueue: queue);
         await CallAsync(work, WorkTools.CreateWork, new
         {
             new_project = new { key, name = "Backfill on create", repositories = new[] { new { repository = "codegraph", role = "dependency" } } },
         });
+        (await backfill.NextRunAsync()).ShouldBe((key, "codegraph"));
 
         string[] afterCreate =
         [
@@ -579,6 +590,8 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
                 new { repository = "ab", role = "dependency" },
             },
         });
+        // Only the repositories the update added are backfilled.
+        (await backfill.NextRunAsync()).ShouldBe((key, "ab,mlx-rs"));
 
         string[] afterAdd =
         [
@@ -593,23 +606,20 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         await new MySqlMemoryProjectScopeBackfill(options).BackfillAsync(key, ["codegraph", "mlx-rs", "ab"]);
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, alice)).ShouldBe(afterAdd);
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, bob)).ShouldBe([$"entity:codegraph@{key}:backfill"]);
+        await worker.StopAsync(CancellationToken.None);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task A_backfill_that_fails_or_times_out_leaves_the_project_write_standing(bool timeout)
+    [Fact]
+    public async Task Only_a_created_project_or_the_repositories_an_update_added_are_queued_for_a_backfill_and_the_write_never_waits_for_it()
     {
         var key = $"BX{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
         var repository = $"repo-{key.ToLowerInvariant()}";
         await using (var connection = new MySqlConnection(db.ConnectionString))
             await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repository), ('mlx-rs')", new { repository });
-        var backfill = new ThrowingBackfill(timeout
-            // An HTTP client timeout surfaces as a TaskCanceledException.
-            ? new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout.")
-            : new InvalidOperationException("memory host unreachable"));
+        // A queue that never runs a backfill: every project write still stands without one.
+        var queue = new RecordingQueue();
         var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
-            memoryScopeBackfill: backfill);
+            memoryScopeBackfillQueue: queue);
 
         var create = new
         {
@@ -618,9 +628,9 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         };
         var created = await CallAsync(work, WorkTools.CreateWork, create);
         created.GetProperty("created").GetBoolean().ShouldBeTrue();
-        // An idempotent replay creates nothing and scans nothing.
+        // An idempotent replay creates nothing and queues nothing.
         (await CallAsync(work, WorkTools.CreateWork, create)).GetProperty("created").GetBoolean().ShouldBeFalse();
-        backfill.Calls.ShouldBe(1);
+        queue.Enqueued.ShouldBe([$"{key}:{repository}"]);
 
         var version = (await CallAsync(work, WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
         var updated = await CallAsync(work, WorkTools.UpdateWork, new
@@ -630,10 +640,9 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
             repositories = new[] { new { repository, role = "owned" }, new { repository = "mlx-rs", role = "dependency" } },
         });
         updated.GetProperty("project").GetProperty("repositories").GetArrayLength().ShouldBe(2);
-        backfill.Calls.ShouldBe(2);
-        backfill.LastRepositories.ShouldBe(["mlx-rs"]);
+        queue.Enqueued.ShouldBe([$"{key}:{repository}", $"{key}:mlx-rs"]);
 
-        // An update that adds no repository scans nothing.
+        // An update that adds no repository queues nothing.
         version = updated.GetProperty("project").GetProperty("version").GetInt64();
         await CallAsync(work, WorkTools.UpdateWork, new
         {
@@ -641,7 +650,7 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
             expected_version = version,
             repositories = new[] { new { repository = "mlx-rs", role = "dependency" }, new { repository, role = "owned" } },
         });
-        backfill.Calls.ShouldBe(2);
+        queue.Enqueued.Count.ShouldBe(2);
     }
 
     [Fact]
@@ -659,9 +668,9 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         using (tenant.Enter(carol))
             await new MySqlMemoryGraphStore(options, tenant).UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity(owned, owned)]);
 
-        // The backfill on create fails (the memory host is down): the project misses its scopes.
+        // The backfill queued on create never runs (the queue was full, or it failed): the project misses its scopes.
         var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
-            memoryScopeBackfill: new ThrowingBackfill(new InvalidOperationException("memory host unreachable")));
+            memoryScopeBackfillQueue: new RecordingQueue());
         await CallAsync(work, WorkTools.CreateWork, new
         {
             new_project = new { key, name = "Reconciled", repositories = new[] { new { repository = owned, role = "owned" }, new { repository = dependency, role = "dependency" } } },
@@ -679,17 +688,36 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBe([$"entity:{owned}@{key}:backfill"]);
     }
 
-    private sealed class ThrowingBackfill(Exception exception) : IMemoryProjectScopeBackfill
+    /// <summary>A queue that accepts and keeps every backfill, as "project:repository,…", and never runs one.</summary>
+    private sealed class RecordingQueue : IMemoryScopeBackfillQueue
     {
-        public int Calls { get; private set; }
-        public IReadOnlyCollection<string> LastRepositories { get; private set; } = [];
+        public List<string> Enqueued { get; } = [];
 
-        public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        public bool Enqueue(string projectKey, IReadOnlyCollection<string> repositories)
         {
-            Calls++;
-            LastRepositories = repositories;
-            return Task.FromException(exception);
+            Enqueued.Add($"{projectKey}:{string.Join(",", repositories)}");
+            return true;
         }
+    }
+
+    /// <summary>Runs the backfill and then reports the run, as (project, sorted repositories).</summary>
+    private sealed class SignallingBackfill(IMemoryProjectScopeBackfill inner) : IMemoryProjectScopeBackfill
+    {
+        private readonly Channel<(string, string)> runs = Channel.CreateUnbounded<(string, string)>();
+
+        public async Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        {
+            try
+            {
+                await inner.BackfillAsync(projectKey, repositories, ct);
+            }
+            finally
+            {
+                runs.Writer.TryWrite((projectKey, string.Join(",", repositories.Order(StringComparer.Ordinal))));
+            }
+        }
+
+        public async Task<(string, string)> NextRunAsync() => await runs.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60));
     }
 
     private static async Task<JsonElement> CallAsync(WorkService work, string tool, object arguments)

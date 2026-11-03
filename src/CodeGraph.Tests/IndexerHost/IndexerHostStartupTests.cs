@@ -43,6 +43,10 @@ public class IndexerHostStartupTests
         services.ShouldContain(d => d.ServiceType == typeof(TypeScriptServerManager));
         services.ShouldContain(d => d.ServiceType == typeof(IHostedService) &&
                                     d.ImplementationType == typeof(CodeGraph.Indexer.Host.Services.TypeScriptSidecarWarmupService));
+        services.ShouldContain(d => d.ServiceType == typeof(CodeGraph.Services.Memory.IMemoryScopeBackfillQueue));
+        services.ShouldContain(d => d.ServiceType == typeof(IHostedService) &&
+                                    d.ImplementationType == typeof(CodeGraph.Services.Memory.MemoryScopeBackfillWorker));
+        services.ShouldContain(d => d.ServiceType == typeof(CodeGraph.Data.IMemoryProjectScopeBackfill));
         AssertSharedIndexerConsumers(services);
     }
 

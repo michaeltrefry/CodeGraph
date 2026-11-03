@@ -37,8 +37,8 @@ public sealed partial class WorkService(
     CodeGraph.Services.Embeddings.IEmbeddingService? embeddingService = null,
     IOptions<WorkLessonOptions>? lessonOptions = null,
     IServiceProvider? serviceProvider = null,
-    // Scopes existing memory to a project when it is created or gains a repository (CG-167).
-    IMemoryProjectScopeBackfill? memoryScopeBackfill = null) : IWorkService
+    // Queues the scoping of existing memory to a project when it is created or gains a repository (CG-167).
+    CodeGraph.Services.Memory.IMemoryScopeBackfillQueue? memoryScopeBackfillQueue = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -412,7 +412,7 @@ public sealed partial class WorkService(
             var created = await Store.CreateProjectAsync(ReadNewProject(newProject), actor, keyHash, ct);
             // An idempotent replay creates nothing, so it scans nothing.
             if (created.Created)
-                await BackfillMemoryScopesAsync(created.Value.Key, created.Value.Repositories.Select(member => member.Repository).ToList(), ct);
+                BackfillMemoryScopes(created.Value.Key, created.Value.Repositories.Select(member => member.Repository).ToList());
             return new CreateWorkResult(created.Created, Project: created.Value);
         }
 
@@ -719,8 +719,8 @@ public sealed partial class WorkService(
                     knowledge), actor, ct));
                 // Only repositories the update added can name memory not yet scoped to the project.
                 if (request.Repositories is not null)
-                    await BackfillMemoryScopesAsync(result.Project!.Key,
-                        result.Project.Repositories.Select(member => member.Repository).Where(name => !repositoriesBefore.Contains(name)).ToList(), ct);
+                    BackfillMemoryScopes(result.Project!.Key,
+                        result.Project.Repositories.Select(member => member.Repository).Where(name => !repositoriesBefore.Contains(name)).ToList());
                 break;
 
             case WorkEntityKind.Feature:
@@ -750,23 +750,18 @@ public sealed partial class WorkService(
     }
 
     /// <summary>
-    /// Scopes the memory naming one of the given repositories (those a create or update added) to the
-    /// project (CG-167), once the project's write has committed. Best effort: the work write stands when memory cannot be reached or the
-    /// backfill times out (an HTTP timeout is an OperationCanceledException too), and the daily
-    /// ReconcileMemoryProjectScopes job retries it for every project (the backfill is idempotent).
+    /// Queues the scoping of the memory naming one of the given repositories (those a create or update
+    /// added) to the project (CG-167), once the project's write has committed. The backfill scans every
+    /// user's memory, so it never runs on the request path: the queue coalesces pending work per project
+    /// and a background worker runs one project at a time. Best effort: the work write stands when the
+    /// queue is full or the backfill fails, and the daily ReconcileMemoryProjectScopes job re-runs it
+    /// for every project (the backfill is idempotent).
     /// </summary>
-    private async Task BackfillMemoryScopesAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct)
+    private void BackfillMemoryScopes(string projectKey, IReadOnlyCollection<string> repositories)
     {
-        if (memoryScopeBackfill is null || repositories.Count == 0)
+        if (memoryScopeBackfillQueue is null || repositories.Count == 0)
             return;
-        try
-        {
-            await memoryScopeBackfill.BackfillAsync(projectKey, repositories, ct);
-        }
-        catch (Exception exception) when (!ct.IsCancellationRequested)
-        {
-            logger?.LogWarning(exception, "Memory naming the repositories of project {Project} could not be scoped to it.", projectKey);
-        }
+        memoryScopeBackfillQueue.Enqueue(projectKey, repositories);
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)
