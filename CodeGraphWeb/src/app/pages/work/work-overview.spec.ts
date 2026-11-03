@@ -8,8 +8,7 @@ import { fiftyItemFeature } from './work-fixtures';
 import { WorkLiveService } from './work-live.service';
 import { WorkMessagesComponent } from './work-messages.component';
 import { WorkNowComponent } from './work-now.component';
-import { WorkProjectComponent } from './work-project.component';
-import { FeatureView, HoldView, MessageView, ProjectView, ResourceView, SessionView, WorkChange } from './work.models';
+import { HoldView, MessageView, ProjectView, ResourceView, SessionView, WorkChange } from './work.models';
 
 const project: ProjectView = {
   kind: 'project', id: 'p', key: 'W', name: 'Workbench', goals: ['Ship the UI'], repositories: [{ repository: 'codegraph', role: 'owned' }],
@@ -70,35 +69,6 @@ describe('WorkNowComponent', () => {
     expect(text).toContain('training run');
     expect(text).toContain('last: updated');
     expect(text).toContain('status → in_progress');
-  });
-});
-
-describe('WorkProjectComponent', () => {
-  it('shows goals, member repositories, features with progress and recent activity', async () => {
-    const feature: FeatureView = {
-      kind: 'feature', id: 'f', key: 'W-F1', project_id: 'p', project_key: 'W', title: 'Board', documents: [], version: 1, created_by: 'michael',
-      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', status: 'open', item_counts: { complete: 2, ready: 1, in_progress: 1 }
-    };
-    const api = {
-      get: vi.fn().mockResolvedValue(project),
-      features: vi.fn().mockResolvedValue([feature]),
-      messages: vi.fn().mockResolvedValue({ items: [] }),
-      recentChanges: vi.fn().mockResolvedValue([change]),
-      recall: vi.fn().mockResolvedValue({ items: [{ id: 'k', kind: 'decision', summary: 'Use long-poll', confidence: 'high', version: 1 }] })
-    };
-    await TestBed.configureTestingModule({ imports: [WorkProjectComponent], providers: providers(api, 'W') }).compileComponents();
-    const fixture = TestBed.createComponent(WorkProjectComponent);
-    fixture.detectChanges();
-    await settle(fixture);
-    const root = fixture.nativeElement as HTMLElement;
-
-    expect(root.textContent).toContain('Ship the UI');
-    expect(root.textContent).toContain('codegraph');
-    expect(root.textContent).toContain('W-F1');
-    expect(root.textContent).toContain('2 / 4');
-    expect(root.querySelector('.wrk-progress')?.getAttribute('aria-label')).toBe('50% finished');
-    expect(root.textContent).toContain('Use long-poll');
-    expect(root.textContent).toContain('claude-code / opus @ mac-studio');
   });
 });
 

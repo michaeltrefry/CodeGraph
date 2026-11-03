@@ -302,10 +302,15 @@
   font-size: var(--fs-sm);
   gap: 8px;
   min-width: 0;
+  overflow: hidden;
 
   a {
     color: var(--muted);
+    min-width: 0;
+    overflow: hidden;
     text-decoration: none;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 
     &:hover {
       color: var(--text);
@@ -314,6 +319,7 @@
   }
 
   .breadcrumb-home {
+    flex: 0 0 auto;
     font-weight: 500;
   }
 

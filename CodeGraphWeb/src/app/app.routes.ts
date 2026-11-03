@@ -12,6 +12,19 @@ export const routes: Routes = [
     children: [
       { path: '', redirectTo: 'repos', pathMatch: 'full' },
       {
+        path: 'projects',
+        loadComponent: () => import('./pages/projects/projects-list.component').then(m => m.ProjectsListComponent)
+      },
+      { path: 'projects/:key', redirectTo: '/projects/:key/overview', pathMatch: 'full' },
+      {
+        path: 'projects/:key/code-reviews',
+        loadComponent: () => import('./pages/projects/project-code-reviews.component').then(m => m.ProjectCodeReviewsComponent)
+      },
+      {
+        path: 'projects/:key/:tab',
+        loadComponent: () => import('./pages/projects/project-page.component').then(m => m.ProjectPageComponent)
+      },
+      {
         path: 'repos',
         loadComponent: () => import('./pages/repos/repos.component').then(m => m.ReposComponent)
       },
@@ -63,14 +76,14 @@ export const routes: Routes = [
         path: 'dreaming',
         loadComponent: () => import('./pages/dreaming/dreaming-page.component').then(m => m.DreamingPageComponent)
       },
+      { path: 'work/projects/new', redirectTo: '/projects?new=1', pathMatch: 'full' },
+      { path: 'work/projects/:key', redirectTo: '/projects/:key/work', pathMatch: 'full' },
+      { path: 'work/projects/:key/dreaming', redirectTo: '/projects/:key/dreaming', pathMatch: 'full' },
       {
-        path: 'work/projects/:key/dreaming',
-        loadComponent: () => import('./pages/dreaming/dreaming-page.component').then(m => m.DreamingPageComponent)
-      },
-      {
-        path: 'review-queue',
+        path: 'approvals',
         loadComponent: () => import('./pages/knowledge/review-queue-page.component').then(m => m.ReviewQueuePageComponent)
       },
+      { path: 'review-queue', redirectTo: '/approvals', pathMatch: 'full' },
       {
         path: 'clusters',
         loadComponent: () => import('./pages/clusters/clusters-page.component').then(m => m.ClustersPageComponent)
@@ -86,10 +99,6 @@ export const routes: Routes = [
       {
         path: 'work/messages',
         loadComponent: () => import('./pages/work/work-messages.component').then(m => m.WorkMessagesComponent)
-      },
-      {
-        path: 'work/projects/:key',
-        loadComponent: () => import('./pages/work/work-project.component').then(m => m.WorkProjectComponent)
       },
       {
         path: 'work/features/:key',
