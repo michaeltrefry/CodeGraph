@@ -50,10 +50,8 @@ describe('projects list mapping', () => {
 });
 
 describe('ProjectSignalsService', () => {
-  it('counts every page of the review queue and reads a missing review as none', async () => {
-    const reviewQueue = vi.fn()
-      .mockReturnValueOnce(of({ items: new Array(50).fill({}), next_cursor: 'c1' }))
-      .mockReturnValueOnce(of({ items: new Array(3).fill({}) }));
+  it('reads the open approvals from one review-queue request and a missing review as none', async () => {
+    const reviewQueue = vi.fn().mockReturnValue(of({ items: [{}], next_cursor: 'c1', total: 53 }));
     const getLatestRepositoryReview = vi.fn((repo: string) => repo === 'codegraph'
       ? of(review({ status: 'failed' }))
       : throwError(() => new HttpErrorResponse({ status: 404 })));
@@ -66,7 +64,8 @@ describe('ProjectSignalsService', () => {
     const service = TestBed.inject(ProjectSignalsService);
 
     expect(await service.openApprovals('W')).toBe(53);
-    expect(reviewQueue).toHaveBeenLastCalledWith('W', 50, 'c1');
+    expect(reviewQueue).toHaveBeenCalledTimes(1);
+    expect(reviewQueue).toHaveBeenCalledWith('W', 1);
 
     const cache = new Map();
     const [first, missing] = await service.latestReviews(['codegraph', 'other'], cache);

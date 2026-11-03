@@ -274,7 +274,8 @@ public sealed partial class WorkService
             throw WorkException.Invalid($"limit must be 1 to {LessonLimits.MaxLimit}.");
         var offset = request.Cursor is { } cursor ? DecodeOffset(cursor, ReviewCursorKind, "review_queue") : 0;
         var page = await Knowledge.ReadReviewQueueAsync(project.Id, offset, completeDreamSnapshot ? int.MaxValue - 1 : limit, ct);
-        return new ReviewQueueResult(page.Items, page.More ? EncodeCursor(ReviewCursorKind, (offset + limit).ToString(CultureInfo.InvariantCulture)) : null);
+        return new ReviewQueueResult(page.Items, page.More ? EncodeCursor(ReviewCursorKind, (offset + limit).ToString(CultureInfo.InvariantCulture)) : null,
+            completeDreamSnapshot ? null : page.Total);
     }
 
     private static int DecodeOffset(string cursor, string kind, string tool)

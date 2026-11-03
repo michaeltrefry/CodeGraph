@@ -1311,6 +1311,6 @@ public sealed partial class MySqlWorkStore
             .ThenBy(item => item.Since)
             .ThenBy(item => item.Entry.Id)
             .ToList();
-        return new ReviewQueuePage(ranked.Skip(offset).Take(limit).ToList(), ranked.Count > offset + limit);
+        return new ReviewQueuePage(ranked.Skip(offset).Take(limit).ToList(), ranked.Count > offset + limit, ranked.Count);
     }
 }

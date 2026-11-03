@@ -113,7 +113,8 @@ public sealed record LessonsSpec(Guid ProjectId, LessonsView View, LessonActivit
 
 public sealed record LessonsPage(IReadOnlyList<LessonRow> Items, bool More, IReadOnlyList<UnlearnedReview>? Reviews = null);
 
-public sealed record ReviewQueuePage(IReadOnlyList<ReviewItem> Items, bool More);
+/// <param name="Total">Every item in the queue (the same selection the pages are cut from), not only this page.</param>
+public sealed record ReviewQueuePage(IReadOnlyList<ReviewItem> Items, bool More, int Total);
 
 /// <summary>
 /// A knowledge entry as the store writes it. <see cref="Repositories"/> null takes the default (the
