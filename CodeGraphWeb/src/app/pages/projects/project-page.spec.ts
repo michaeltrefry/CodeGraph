@@ -10,6 +10,7 @@ import { FeatureView, ProjectView } from '../work/work.models';
 import { ProjectSignalsService, inProgressItems, inProgressRow, reviewRow, reviewState } from './project-data';
 import { fakeLive, project, review, settle } from './project-fixtures';
 import { ProjectPageComponent } from './project-page.component';
+import { ProjectWorkComponent } from './project-work.component';
 import { DreamingPageComponent } from '../dreaming/dreaming-page.component';
 import { KnowledgePageComponent } from '../knowledge/knowledge-page.component';
 import { LessonsPageComponent } from '../knowledge/lessons-page.component';
@@ -20,8 +21,10 @@ const template = '<i class="stub-project">{{ project() }}</i>';
 @Component({ selector: 'app-knowledge-page', standalone: true, template }) class KnowledgeStub { readonly project = input<string | undefined>(); }
 @Component({ selector: 'app-lessons-page', standalone: true, template }) class LessonsStub { readonly project = input<string | undefined>(); }
 @Component({ selector: 'app-dreaming-page', standalone: true, template }) class DreamingStub { readonly project = input<string | undefined>(); }
-const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent];
-const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, DreamingStub];
+@Component({ selector: 'app-project-work', standalone: true, template: '<i class="stub-project">{{ project().key }}</i><i class="stub-revision">{{ revision() }}</i>' })
+class WorkStub { readonly project = input.required<ProjectView>(); readonly revision = input(0); }
+const embedded = [ReviewQueuePageComponent, KnowledgePageComponent, LessonsPageComponent, DreamingPageComponent, ProjectWorkComponent];
+const stubs = [ApprovalsStub, KnowledgeStub, LessonsStub, DreamingStub, WorkStub];
 
 describe('overview mapping', () => {
   it('gives each latest review its chip: failed wins, queued is running, a missing stale flag is not stale', () => {
@@ -140,11 +143,12 @@ describe('ProjectPageComponent', () => {
     expect(api.update).toHaveBeenCalledWith('W', { expected_version: 2, description: 'New words' });
   });
 
-  it('shows a marked placeholder for a tab not built yet and redirects an unknown tab to the overview', async () => {
+  it('embeds the Work tab given the route project and the revision, and redirects an unknown tab to the overview', async () => {
     const { fixture, root, params } = await render('work');
     expect(root.querySelector('[data-tab="work"]')?.getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-project-overview')).toBeNull();
-    expect(root.querySelector('[role="tabpanel"] .wrk-empty')?.textContent).toContain('Work');
+    expect(root.querySelector('[role="tabpanel"] app-project-work .stub-project')?.textContent).toBe('W');
+    expect(Number(root.querySelector('[role="tabpanel"] app-project-work .stub-revision')?.textContent)).toBeGreaterThan(0);
 
     const navigate = vi.spyOn(TestBed.inject(Router), 'navigate');
     params.next(convertToParamMap({ key: 'W', tab: 'nope' }));
