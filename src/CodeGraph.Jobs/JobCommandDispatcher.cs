@@ -17,6 +17,7 @@ public class JobCommandDispatcher(
     PruneWorkSessionsJob pruneWorkSessionsJob,
     PruneWorkMessagesJob pruneWorkMessagesJob,
     IndexerRunRetentionJob indexerRunRetentionJob,
+    ReconcileMemoryProjectScopesJob reconcileMemoryProjectScopesJob,
     DreamProjectsJob dreamProjectsJob) : IJobCommandDispatcher
 {
     public IReadOnlyList<string> GetSupportedJobTypes() => JobTypes.All;
@@ -37,6 +38,7 @@ public class JobCommandDispatcher(
             JobTypes.PruneWorkSessions => Serialize(new EmptyJobRequest()),
             JobTypes.PruneWorkMessages => Serialize(new EmptyJobRequest()),
             JobTypes.IndexerRunRetention => NormalizeRetentionArgs(args),
+            JobTypes.ReconcileMemoryProjectScopes => Serialize(new EmptyJobRequest()),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }
@@ -65,6 +67,7 @@ public class JobCommandDispatcher(
             JobTypes.PruneWorkSessions => pruneWorkSessionsJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.PruneWorkMessages => pruneWorkMessagesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             JobTypes.IndexerRunRetention => indexerRunRetentionJob.ExecuteAsync(Deserialize<IndexerRunRetentionJobRequest>(argsJson), ct),
+            JobTypes.ReconcileMemoryProjectScopes => reconcileMemoryProjectScopesJob.ExecuteAsync(Deserialize<EmptyJobRequest>(argsJson), ct),
             _ => throw new InvalidOperationException($"Unsupported job type '{jobType}'.")
         };
     }

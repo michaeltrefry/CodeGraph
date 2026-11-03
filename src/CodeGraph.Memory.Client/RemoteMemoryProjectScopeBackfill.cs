@@ -1,11 +1,11 @@
 using CodeGraph.Data;
-using CodeGraph.Memory.Client;
 
-namespace CodeGraph.Api.Memory;
+namespace CodeGraph.Memory.Client;
 
 /// <summary>
 /// The project-scope backfill (CG-167) when memory lives on the memory host: run there, against the
-/// memory host's database, as the system identity.
+/// memory host's database, as the system identity. Used by the API (a project's create or repository
+/// change) and the Jobs host (the daily reconciliation).
 /// </summary>
 public sealed class RemoteMemoryProjectScopeBackfill(IMemoryClient memoryClient) : IMemoryProjectScopeBackfill
 {

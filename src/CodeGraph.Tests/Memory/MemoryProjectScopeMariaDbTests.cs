@@ -628,6 +628,41 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         backfill.Calls.ShouldBe(2);
     }
 
+    [Fact]
+    public async Task The_daily_reconciliation_lists_every_project_with_repositories_and_scopes_one_whose_backfill_failed()
+    {
+        var key = $"RC{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var empty = $"RE{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var owned = key.ToLowerInvariant();
+        var dependency = $"{owned}dep";
+        var carol = $"user:carol-{Guid.NewGuid():N}";
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@owned), (@dependency)", new { owned, dependency });
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var tenant = new MemoryTenantContext();
+        using (tenant.Enter(carol))
+            await new MySqlMemoryGraphStore(options, tenant).UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity(owned, owned)]);
+
+        // The backfill on create fails (the memory host is down): the project misses its scopes.
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfill: new ThrowingBackfill(new InvalidOperationException("memory host unreachable")));
+        await CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Reconciled", repositories = new[] { new { repository = owned, role = "owned" }, new { repository = dependency, role = "dependency" } } },
+        });
+        await CallAsync(work, WorkTools.CreateWork, new { new_project = new { key = empty, name = "No repositories" } });
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBeEmpty();
+
+        var listed = await db.Store.ListProjectRepositoriesAsync();
+        listed.Single(project => project.ProjectKey == key).Repositories.ShouldBe([owned, dependency]);
+        listed.ShouldNotContain(project => project.ProjectKey == empty);
+
+        var result = await new CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob(db.Store, new MySqlMemoryProjectScopeBackfill(options),
+            NullLogger<CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob>.Instance).ExecuteAsync(new CodeGraph.Jobs.Jobs.EmptyJobRequest());
+        result.Success.ShouldBeTrue(result.Message);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBe([$"entity:{owned}@{key}:backfill"]);
+    }
+
     private sealed class ThrowingBackfill(Exception exception) : IMemoryProjectScopeBackfill
     {
         public int Calls { get; private set; }

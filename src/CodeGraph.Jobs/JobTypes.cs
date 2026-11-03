@@ -14,6 +14,7 @@ public static class JobTypes
     public const string PruneWorkSessions = "PruneWorkSessions";
     public const string PruneWorkMessages = "PruneWorkMessages";
     public const string IndexerRunRetention = "IndexerRunRetention";
+    public const string ReconcileMemoryProjectScopes = "ReconcileMemoryProjectScopes";
 
     public static readonly IReadOnlyList<string> All =
     [
@@ -28,6 +29,7 @@ public static class JobTypes
         IngestConventionEmbeddings,
         PruneWorkSessions,
         PruneWorkMessages,
-        IndexerRunRetention
+        IndexerRunRetention,
+        ReconcileMemoryProjectScopes
     ];
 }

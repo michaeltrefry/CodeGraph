@@ -192,6 +192,19 @@ public sealed partial class MySqlWorkStore
         return owners.Count == 1 ? owners[0] : null;
     }
 
+    public async Task<IReadOnlyList<ProjectRepositories>> ListProjectRepositoriesAsync(CancellationToken ct = default)
+    {
+        DreamPolicy.RefuseAmbient("list every project's repositories");
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<(string ProjectKey, string RepositoryName)>(new CommandDefinition(
+            "SELECT p.project_key AS ProjectKey, r.repository_name AS RepositoryName FROM work_project_repositories r JOIN work_projects p ON p.id = r.project_id " +
+            "ORDER BY p.project_key, r.position, r.repository_name",
+            cancellationToken: ct));
+        return rows.GroupBy(row => row.ProjectKey, StringComparer.Ordinal)
+            .Select(group => new ProjectRepositories(group.Key, group.Select(row => row.RepositoryName).ToList()))
+            .ToList();
+    }
+
     private Task<EndSessionResult> EndSessionCoreAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>
         RunAsync([], async connection =>
         {

@@ -149,6 +149,7 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(pruner, Microsoft.Extensions.Options.Options.Create(sessionOptions)),
             new PruneWorkMessagesJob(new RecordingWorkMessageRetentionService()),
             new IndexerRunRetentionJob(new RecordingIndexerRunRetentionService()),
+            new ReconcileMemoryProjectScopesJob(ProjectRepositoriesWorkStore.Create(), new RecordingMemoryProjectScopeBackfill(), NullLogger<ReconcileMemoryProjectScopesJob>.Instance),
             new DreamProjectsJob(indexerClient));
     }
 
@@ -174,6 +175,7 @@ public class JobCommandDispatcherTests
             new PruneWorkSessionsJob(new RecordingWorkSessionPruner(), Microsoft.Extensions.Options.Options.Create(new CodeGraph.Models.Work.WorkSessionOptions())),
             new PruneWorkMessagesJob(workMessageRetention ?? new RecordingWorkMessageRetentionService()),
             new IndexerRunRetentionJob(indexerRetention ?? new RecordingIndexerRunRetentionService()),
+            new ReconcileMemoryProjectScopesJob(ProjectRepositoriesWorkStore.Create(), new RecordingMemoryProjectScopeBackfill(), NullLogger<ReconcileMemoryProjectScopesJob>.Instance),
             new DreamProjectsJob(indexerClient));
     }
 

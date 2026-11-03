@@ -745,8 +745,8 @@ public sealed partial class WorkService(
     /// <summary>
     /// Scopes the memory naming one of the project's repositories to it (CG-167), once the project's
     /// write has committed. Best effort: the work write stands when memory cannot be reached or the
-    /// backfill times out (an HTTP timeout is an OperationCanceledException too), and the next create
-    /// or repository change of the project retries it (the backfill is idempotent).
+    /// backfill times out (an HTTP timeout is an OperationCanceledException too), and the daily
+    /// ReconcileMemoryProjectScopes job retries it for every project (the backfill is idempotent).
     /// </summary>
     private async Task BackfillMemoryScopesAsync(ProjectView project, CancellationToken ct)
     {

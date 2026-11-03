@@ -21,6 +21,7 @@ public static class CodeGraphJobSchedulingServiceCollectionExtensions
         services.AddTransient<PruneWorkMessagesJob>();
         services.AddTransient<IIndexerRunRetentionService, IndexerRunRetentionService>();
         services.AddTransient<IndexerRunRetentionJob>();
+        services.AddTransient<ReconcileMemoryProjectScopesJob>();
         services.AddTransient<IJobCommandDispatcher, JobCommandDispatcher>();
         services.AddSingleton<IJobScheduleClock, SystemJobScheduleClock>();
         services.AddTransient<IJobScheduleService, JobScheduleService>();

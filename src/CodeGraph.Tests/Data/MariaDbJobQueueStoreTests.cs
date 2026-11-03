@@ -269,6 +269,36 @@ public class MariaDbJobQueueStoreTests
             preserved.CronExpression.ShouldBe("0 2 * * 1");
         });
 
+    [Fact]
+    public async Task MemoryScopeReconciliationScheduleSeedIsRestartSafeAndPreservesOperatorSettings_WhenConnectionIsConfigured()
+        => await WithDatabaseAsync(async db =>
+        {
+            var script = await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,
+                "../../../../../sql/migrations/115_default_memory_project_scope_reconciliation_schedule.sql"));
+            async Task ApplySeed()
+            {
+                foreach (var statement in MariaDbMigrationRunner.SplitStatements(script))
+                    await db.Database.GetDbConnection().ExecuteAsync(statement);
+            }
+            await ApplySeed();
+            await ApplySeed();
+            var schedule = (await db.JobSchedules.AsNoTracking().ToListAsync()).Single();
+            schedule.Name.ShouldBe("memory-project-scope-reconciliation");
+            schedule.JobType.ShouldBe("ReconcileMemoryProjectScopes");
+            schedule.IsEnabled.ShouldBeTrue();
+            schedule.CronExpression.ShouldBe("30 3 * * *");
+            schedule.TimeZoneId.ShouldBe("UTC");
+            schedule.ArgsJson.ShouldBe("{}");
+            await db.Database.ExecuteSqlRawAsync("""
+                UPDATE job_schedules SET name = 'operator-reconciliation', is_enabled = FALSE, cron_expression = '0 1 * * *'
+                """);
+            await ApplySeed();
+            var preserved = (await db.JobSchedules.AsNoTracking().ToListAsync()).Single();
+            preserved.Name.ShouldBe("operator-reconciliation");
+            preserved.IsEnabled.ShouldBeFalse();
+            preserved.CronExpression.ShouldBe("0 1 * * *");
+        });
+
     private static Task<long> AddRunAsync(MySqlIndexerRunStore store, string status, string operation = "link",
         string? target = "all", DateTime? created = null, string? args = null)
         => store.CreateIndexerRunAsync(new IndexerRunEntity

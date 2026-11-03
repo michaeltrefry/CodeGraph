@@ -79,6 +79,12 @@ public interface IWorkStore : IWorkMessageStore
     /// </summary>
     Task<IReadOnlyList<string>> ListLiveProjectKeysOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default);
 
+    /// <summary>
+    /// Every project with at least one member repository (any role), by key, with its repositories in
+    /// membership order: the daily memory scope reconciliation (CG-167) re-runs each project's backfill.
+    /// </summary>
+    Task<IReadOnlyList<ProjectRepositories>> ListProjectRepositoriesAsync(CancellationToken ct = default);
+
     // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
 
     /// <summary>The sessions of a project, most recently seen first: the live ones, or with <paramref name="liveOnly"/> false the ended and silent ones too.</summary>
@@ -249,6 +255,9 @@ public sealed record HandoffSpec(
     string? Commit);
 
 public sealed record WorkTarget(WorkEntityKind Kind, Guid Id, Guid ProjectId);
+
+/// <summary>A project's key with its member repositories (any role).</summary>
+public sealed record ProjectRepositories(string ProjectKey, IReadOnlyList<string> Repositories);
 
 public sealed record WorkCreated<T>(bool Created, T Value);
 
