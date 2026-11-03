@@ -70,7 +70,9 @@ public sealed record FeatureView(
     // Set on a feature imported from another tracker (sc-27876).
     ImportedView? Imported = null,
     // true while an imported open feature's requirements still live only in its description.
-    bool? RequirementsUnreconciled = null)
+    bool? RequirementsUnreconciled = null,
+    // The feature's unfinished items that are blocked (an unfinished blocker or an open blocking question to the human); set with ItemCounts.
+    int? BlockedCount = null)
 {
     public string Kind => "feature";
 }
