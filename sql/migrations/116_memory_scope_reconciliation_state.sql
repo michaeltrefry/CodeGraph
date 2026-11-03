@@ -15,13 +15,14 @@ CREATE TABLE IF NOT EXISTS memory_scope_backfill_pending (
     last_error VARCHAR(2000) NULL
 ) ENGINE=InnoDB;
 
--- memory_scope_watermark: the single row (id 1) of the highest memory_entities_v2, memory_claims and
--- memory_evidence ids the last successful reconciliation scanned. Memory above it is scanned, for every
--- project, by the next run; absent until the first run, which records the current ids without a scan.
+-- memory_scope_watermark: the single row (id 1) of the highest memory_entities_v2.scope_seq,
+-- memory_claims.scope_seq (migration 117) and memory_evidence.id the last successful reconciliation
+-- scanned. Memory above it is scanned, for every project, by the next run; absent until the first run,
+-- which records the current marks without a scan.
 CREATE TABLE IF NOT EXISTS memory_scope_watermark (
     id TINYINT NOT NULL PRIMARY KEY,
-    entity_id BIGINT NOT NULL,
-    claim_id BIGINT NOT NULL,
+    entity_seq BIGINT NOT NULL,
+    claim_seq BIGINT NOT NULL,
     evidence_id BIGINT NOT NULL,
     updated_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB;

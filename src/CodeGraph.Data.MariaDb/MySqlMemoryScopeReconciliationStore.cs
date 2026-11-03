@@ -8,8 +8,8 @@ namespace CodeGraph.Data.MariaDb;
 
 /// <summary>
 /// The memory scope reconciliation's state (CG-172) in the work database (migration 116). The pending
-/// repositories of a project are written by the project's own write (<see cref="AddPendingAsync"/>, in
-/// its transaction) and read, completed or failed here, each under the pending row's lock.
+/// repositories of a project are written by the project's own write (<see cref="AddPendingAsync(MySqlConnection, MySqlTransaction, string, IReadOnlyCollection{string}, DateTime, CancellationToken)"/>,
+/// in its transaction) and read, completed or failed here, each under the pending row's lock.
 /// </summary>
 public sealed class MySqlMemoryScopeReconciliationStore(IOptions<MariaDbStorageOptions> options, TimeProvider? timeProvider = null)
     : IMemoryScopeReconciliationStore
@@ -26,6 +26,14 @@ public sealed class MySqlMemoryScopeReconciliationStore(IOptions<MariaDbStorageO
         return rows.Select(row => new PendingMemoryScopeBackfill(row.ProjectKey, Repositories(row.RepositoriesJson), row.EnqueuedAt, row.Attempts, row.LastError)).ToList();
     }
 
+    public async Task AddPendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await AddPendingAsync(connection, transaction, projectKey, repositories, clock.GetUtcNow().UtcDateTime, ct);
+        await transaction.CommitAsync(ct);
+    }
+
     public async Task CompletePendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -36,8 +44,19 @@ public sealed class MySqlMemoryScopeReconciliationStore(IOptions<MariaDbStorageO
         if (current is null)
             return;
 
+        // A repository the project no longer has (or a project since deleted) has nothing left to scope. Read
+        // after taking the pending row's lock, without locking: a project write that adds a repository
+        // commits its membership with its pending row, and waits for this lock to write that row, so a
+        // repository pending here is always a member by the time it can be read.
+        var members = (await connection.QueryAsync<string>(new CommandDefinition(
+            "SELECT r.repository_name FROM work_project_repositories r JOIN work_projects p ON p.id = r.project_id WHERE p.project_key = @projectKey",
+            new { projectKey }, transaction, cancellationToken: ct))).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var done = repositories.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var left = Repositories(current).Where(name => !done.Contains(name)).ToList();
+        var pending = Repositories(current);
+        var left = pending.Where(name => members.Contains(name) && !done.Contains(name)).ToList();
+        if (left.Count == pending.Count)
+            return;
+
         await connection.ExecuteAsync(new CommandDefinition(
             left.Count == 0
                 ? "DELETE FROM memory_scope_backfill_pending WHERE project_key = @projectKey"
@@ -58,18 +77,18 @@ public sealed class MySqlMemoryScopeReconciliationStore(IOptions<MariaDbStorageO
     public async Task<MemoryScopeWatermark?> GetWatermarkAsync(CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        var row = await connection.QuerySingleOrDefaultAsync<(long EntityId, long ClaimId, long EvidenceId)?>(new CommandDefinition(
-            "SELECT entity_id, claim_id, evidence_id FROM memory_scope_watermark WHERE id = 1", cancellationToken: ct));
-        return row is { } mark ? new MemoryScopeWatermark(mark.EntityId, mark.ClaimId, mark.EvidenceId) : null;
+        var row = await connection.QuerySingleOrDefaultAsync<(long EntitySeq, long ClaimSeq, long EvidenceId)?>(new CommandDefinition(
+            "SELECT entity_seq, claim_seq, evidence_id FROM memory_scope_watermark WHERE id = 1", cancellationToken: ct));
+        return row is { } mark ? new MemoryScopeWatermark(mark.EntitySeq, mark.ClaimSeq, mark.EvidenceId) : null;
     }
 
     public async Task SetWatermarkAsync(MemoryScopeWatermark watermark, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
         await connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO memory_scope_watermark (id, entity_id, claim_id, evidence_id, updated_at) VALUES (1, @EntityId, @ClaimId, @EvidenceId, @now) " +
-            "ON DUPLICATE KEY UPDATE entity_id = VALUES(entity_id), claim_id = VALUES(claim_id), evidence_id = VALUES(evidence_id), updated_at = VALUES(updated_at)",
-            new { watermark.EntityId, watermark.ClaimId, watermark.EvidenceId, now = clock.GetUtcNow().UtcDateTime }, cancellationToken: ct));
+            "INSERT INTO memory_scope_watermark (id, entity_seq, claim_seq, evidence_id, updated_at) VALUES (1, @EntitySeq, @ClaimSeq, @EvidenceId, @now) " +
+            "ON DUPLICATE KEY UPDATE entity_seq = VALUES(entity_seq), claim_seq = VALUES(claim_seq), evidence_id = VALUES(evidence_id), updated_at = VALUES(updated_at)",
+            new { watermark.EntitySeq, watermark.ClaimSeq, watermark.EvidenceId, now = clock.GetUtcNow().UtcDateTime }, cancellationToken: ct));
     }
 
     /// <summary>

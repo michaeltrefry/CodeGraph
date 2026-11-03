@@ -44,7 +44,7 @@ public class ReconcileMemoryProjectScopesJobTests
     {
         var backfill = new RecordingMemoryProjectScopeBackfill { Memory = Mark };
         // ALPHA added alpha-web, then dropped alpha-old; GONE was deleted.
-        var state = new InMemoryReconciliationStore { Watermark = Mark }
+        var state = new InMemoryReconciliationStore { Watermark = Mark, Members = MembersOf(Alpha, Beta) }
             .WithPending("ALPHA", "alpha-web", "alpha-old")
             .WithPending("GONE", "gone");
 
@@ -54,6 +54,72 @@ public class ReconcileMemoryProjectScopesJobTests
         backfill.Calls.ShouldHaveSingleItem().ProjectKey.ShouldBe("ALPHA");
         backfill.Calls[0].Repositories.ShouldBe(["alpha-web"]);
         backfill.RangeCalls.ShouldBeEmpty();
+        state.Pending.ShouldBeEmpty();
+    }
+
+    [Fact]
+    public async Task A_pending_project_or_repository_missing_from_the_listing_is_not_backfilled_and_stays_pending()
+    {
+        var backfill = new RecordingMemoryProjectScopeBackfill { Memory = Mark };
+        // NEW was created, and ALPHA gained alpha-new, after the listing the run works from.
+        var state = new InMemoryReconciliationStore
+            {
+                Watermark = Mark,
+                Members = MembersOf(new ProjectRepositories("ALPHA", ["alpha-api", "alpha-web", "alpha-new"]), Beta, new ProjectRepositories("NEW", ["new"])),
+            }
+            .WithPending("NEW", "new")
+            .WithPending("ALPHA", "alpha-api", "alpha-new");
+
+        var result = await CreateJob(backfill, state, Alpha, Beta).ExecuteAsync(new EmptyJobRequest());
+
+        result.Success.ShouldBeTrue(result.Message);
+        var call = backfill.Calls.ShouldHaveSingleItem();
+        call.ProjectKey.ShouldBe("ALPHA");
+        call.Repositories.ShouldBe(["alpha-api"]);
+        state.Pending["NEW"].ShouldBe(["new"]);
+        state.Pending["ALPHA"].ShouldBe(["alpha-new"]);
+    }
+
+    [Fact]
+    public async Task A_large_range_is_scanned_in_spans_and_a_failed_span_keeps_the_spans_before_it()
+    {
+        var newer = new MemoryScopeWatermark(35, 22, 30);
+        var backfill = new RecordingMemoryProjectScopeBackfill { Memory = newer, FailRangeCall = 3 };
+        var state = new InMemoryReconciliationStore { Watermark = Mark };
+
+        var result = await CreateJob(backfill, state, rangeSpan: 10, Alpha).ExecuteAsync(new EmptyJobRequest());
+
+        result.Success.ShouldBeFalse();
+        backfill.RangeCalls.Select(call => (call.After, call.UpTo)).ShouldBe(
+        [
+            (Mark, new MemoryScopeWatermark(20, 22, 30)),
+            (new MemoryScopeWatermark(20, 22, 30), new MemoryScopeWatermark(30, 22, 30)),
+            (new MemoryScopeWatermark(30, 22, 30), newer),
+        ]);
+        state.Watermark.ShouldBe(new MemoryScopeWatermark(30, 22, 30));
+
+        // The next run resumes from the last completed span.
+        backfill.FailRangeCall = null;
+        (await CreateJob(backfill, state, rangeSpan: 10, Alpha).ExecuteAsync(new EmptyJobRequest())).Success.ShouldBeTrue();
+        backfill.RangeCalls.Count.ShouldBe(4);
+        backfill.RangeCalls[3].After.ShouldBe(new MemoryScopeWatermark(30, 22, 30));
+        backfill.RangeCalls[3].UpTo.ShouldBe(newer);
+        state.Watermark.ShouldBe(newer);
+    }
+
+    [Fact]
+    public async Task A_watermark_ahead_of_memory_starts_again_as_a_first_run_with_every_project_pending()
+    {
+        var backfill = new RecordingMemoryProjectScopeBackfill { Memory = Mark };
+        var state = new InMemoryReconciliationStore { Watermark = new MemoryScopeWatermark(10, 500, 30) };
+
+        var result = await CreateJob(backfill, state, Alpha, Beta).ExecuteAsync(new EmptyJobRequest());
+
+        result.Success.ShouldBeTrue(result.Message);
+        result.Message.ShouldContain("reset");
+        backfill.Calls.Select(call => $"{call.ProjectKey}:{string.Join(",", call.Repositories)}").ShouldBe(["ALPHA:alpha-api,alpha-web", "BETA:beta"]);
+        backfill.RangeCalls.ShouldBeEmpty();
+        state.Watermark.ShouldBe(Mark);
         state.Pending.ShouldBeEmpty();
     }
 
@@ -134,5 +200,11 @@ public class ReconcileMemoryProjectScopesJobTests
     }
 
     private static ReconcileMemoryProjectScopesJob CreateJob(RecordingMemoryProjectScopeBackfill backfill, InMemoryReconciliationStore state, params ProjectRepositories[] projects) =>
-        new(ProjectRepositoriesWorkStore.Create(projects), state, backfill, NullLogger<ReconcileMemoryProjectScopesJob>.Instance);
+        CreateJob(backfill, state, ReconcileMemoryProjectScopesJob.DefaultRangeSpan, projects);
+
+    private static ReconcileMemoryProjectScopesJob CreateJob(RecordingMemoryProjectScopeBackfill backfill, InMemoryReconciliationStore state, long rangeSpan, params ProjectRepositories[] projects) =>
+        new(ProjectRepositoriesWorkStore.Create(projects), state, backfill, NullLogger<ReconcileMemoryProjectScopesJob>.Instance, rangeSpan);
+
+    private static Dictionary<string, string[]> MembersOf(params ProjectRepositories[] projects) =>
+        projects.ToDictionary(project => project.ProjectKey, project => project.Repositories.ToArray());
 }

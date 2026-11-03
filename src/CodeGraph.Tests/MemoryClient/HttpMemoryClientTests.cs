@@ -39,7 +39,7 @@ public class HttpMemoryClientTests
         request.RequestUri!.PathAndQuery.ShouldBe("/api/memory/project-scopes/watermark");
         request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("system");
         using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
-        body.RootElement.GetProperty("since").GetProperty("claimId").GetInt64().ShouldBe(2);
+        body.RootElement.GetProperty("since").GetProperty("claimSeq").GetInt64().ShouldBe(2);
     }
 
     [Fact]
@@ -47,7 +47,7 @@ public class HttpMemoryClientTests
     {
         var handler = new RecordingHandler(HttpStatusCode.NoContent, null);
 
-        await CreateClient(handler).BackfillProjectScopeRangeAsync("system",
+        await CreateClient(handler, out var httpClient).BackfillProjectScopeRangeAsync("system",
             [new MemoryProjectScopeBackfillRequest { ProjectKey = " CG ", Repositories = ["codegraph", " mlx-rs ", "codegraph"] }],
             new MemoryScopeWatermark(1, 2, 3), new MemoryScopeWatermark(4, 5, 6));
 
@@ -59,8 +59,10 @@ public class HttpMemoryClientTests
         var project = body.RootElement.GetProperty("projects").EnumerateArray().Single();
         project.GetProperty("projectKey").GetString().ShouldBe("CG");
         project.GetProperty("repositories").EnumerateArray().Select(name => name.GetString()).ShouldBe(["codegraph", "mlx-rs"]);
-        body.RootElement.GetProperty("after").GetProperty("entityId").GetInt64().ShouldBe(1);
+        body.RootElement.GetProperty("after").GetProperty("entitySeq").GetInt64().ShouldBe(1);
         body.RootElement.GetProperty("upTo").GetProperty("evidenceId").GetInt64().ShouldBe(6);
+        // One span's scan may outlast the HTTP client's default 100 seconds.
+        httpClient.Timeout.ShouldBe(TimeSpan.FromSeconds(new MemoryClientOptions().ProjectScopeScanTimeoutSeconds));
     }
 
     [Fact]
@@ -319,9 +321,14 @@ public class HttpMemoryClientTests
 
     private static HttpMemoryClient CreateClient(
         RecordingHandler handler,
+        bool internalAuthenticationEnabled = true) => CreateClient(handler, out _, internalAuthenticationEnabled);
+
+    private static HttpMemoryClient CreateClient(
+        RecordingHandler handler,
+        out HttpClient httpClient,
         bool internalAuthenticationEnabled = true)
     {
-        var httpClient = new HttpClient(handler)
+        httpClient = new HttpClient(handler)
         {
             BaseAddress = new Uri("http://memory.local/")
         };

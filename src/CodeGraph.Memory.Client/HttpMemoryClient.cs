@@ -311,9 +311,12 @@ public sealed class HttpMemoryClient(
             },
             ct,
             // A full scan; idempotent, but a proxy timeout must not run it again and again.
-            allowRetry: false);
+            allowRetry: false,
+            timeout: ProjectScopeScanTimeout);
         await EnsureSuccessAsync(response, ct);
     }
+
+    private TimeSpan ProjectScopeScanTimeout => TimeSpan.FromSeconds(Math.Max(1, Options.ProjectScopeScanTimeoutSeconds));
 
     public Task<MemoryScopeWatermark> GetProjectScopeWatermarkAsync(
         string username,
@@ -352,8 +355,9 @@ public sealed class HttpMemoryClient(
                 UpTo = upTo,
             },
             ct,
-            // A scan of the new memory for every project; idempotent, but not to be repeated by a proxy timeout.
-            allowRetry: false);
+            // One span of new memory for every project; idempotent, but not to be repeated by a proxy timeout.
+            allowRetry: false,
+            timeout: ProjectScopeScanTimeout);
         await EnsureSuccessAsync(response, ct);
     }
 
@@ -393,12 +397,16 @@ public sealed class HttpMemoryClient(
         string path,
         object? body,
         CancellationToken ct,
-        bool allowRetry = false)
+        bool allowRetry = false,
+        TimeSpan? timeout = null)
     {
         var maxAttempts = allowRetry ? Math.Clamp(Options.MaxTransientAttempts, 1, 5) : 1;
         for (var attempt = 1; ; attempt++)
         {
             var client = httpClientFactory.CreateClient(NormalizeHttpClientName(Options.HttpClientName));
+            // Each CreateClient is a new HttpClient, so this changes only this request's limit.
+            if (timeout is { } limit)
+                client.Timeout = limit;
             using var request = new HttpRequestMessage(method, path);
             AttachIdentityHeader(request, username);
 

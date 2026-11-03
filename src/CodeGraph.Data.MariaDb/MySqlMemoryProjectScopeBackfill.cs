@@ -16,10 +16,11 @@ namespace CodeGraph.Data.MariaDb;
 /// changes nothing.
 /// <para>
 /// The range backfill (CG-172) asks the same questions of the memory written between two watermarks
-/// only: a row id range of each table is a primary-key range, so its cost follows what was written,
-/// not the size of memory. It relies on what ingestion never changes in place: an entity's label (a
-/// merge keeps the existing one), an evidence row (each is new, with a fresh id) and a claim's subject
-/// and object (its claim_key is derived from them).
+/// only, so its cost follows what was written, not the size of memory. Entities and claims are ranged
+/// by their change mark (scope_seq, migration 117, indexed), which the memory store takes anew on
+/// insert and whenever an upsert replaces an entity's label or repoints a claim's subject or object:
+/// both happen in place, keyed on the caller-supplied external id, so a row id would miss them.
+/// Evidence is ranged by id: the store only ever inserts it, each row under a fresh generated id.
 /// </para>
 /// </summary>
 public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStorageOptions> options, TimeProvider? timeProvider = null)
@@ -30,10 +31,13 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
     private const int CommandTimeoutSeconds = 120;
 
     /// <summary>
-    /// How old a row must be before a watermark passes it. Ids are taken when a row is inserted, not when
-    /// it commits, so a write still in flight can hold a lower id than a committed one; a watermark that
-    /// passed it would never scan it. Only rows written this long ago count, and newer ones wait for the
-    /// next run.
+    /// How old a row must be before a watermark passes it. Marks and ids are taken when a row is written,
+    /// not when it commits, so a write still in flight can hold a lower mark than a committed one; a
+    /// watermark that passed it would never scan it. Only rows written this long ago count, and newer ones
+    /// wait for the next run. This relies on the memory store's writes: autocommit statements (or short
+    /// transactions) that commit well within this time, and timestamps the application sets at write time
+    /// (entities' updated_at, claims' recorded_at, evidence's created_at). A claim whose caller backdates
+    /// recorded_at while its write is still in flight could be passed; ingestion stamps the current time.
     /// </summary>
     public static readonly TimeSpan SettleTime = TimeSpan.FromMinutes(10);
 
@@ -96,16 +100,40 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
         """,
     ];
 
-    // The same four questions as Statements, of the rows above @*From and up to @*To only. Every row
-    // read is reached through one of the ranges, by primary key or by an index from a row in a range.
+    // The claims a range touches: changed (new or repointed) claims, claims with new evidence, and claims
+    // about a changed entity. Reached by the scope_seq indexes, the evidence primary key and the claims'
+    // (username, subject/object) indexes.
+    private const string ChangedClaims = """
+        SELECT claim.id AS claim_id
+        FROM memory_claims claim
+        WHERE claim.scope_seq > @claimFrom AND claim.scope_seq <= @claimTo
+        UNION
+        SELECT evidence.claim_id
+        FROM memory_evidence evidence
+        WHERE evidence.id > @evidenceFrom AND evidence.id <= @evidenceTo AND evidence.claim_id IS NOT NULL
+        UNION
+        SELECT claim.id
+        FROM memory_entities_v2 entity
+        JOIN memory_claims claim ON claim.username = entity.username AND claim.subject_entity_id = entity.id
+        WHERE entity.scope_seq > @entityFrom AND entity.scope_seq <= @entityTo
+        UNION
+        SELECT claim.id
+        FROM memory_entities_v2 entity
+        JOIN memory_claims claim ON claim.username = entity.username AND claim.object_entity_id = entity.id
+        WHERE entity.scope_seq > @entityFrom AND entity.scope_seq <= @entityTo
+        """;
+
+    // The same four questions as Statements, of the rows changed above @*From and up to @*To only.
+    // Every row read is reached through one of the ranges, by an index from a row in a range, or by
+    // primary key.
     private static readonly RangeStatement[] RangeStatements =
     [
-        // New entities whose label names a member repository.
+        // Changed entities whose label names a member repository.
         new(Ranges.Entities, """
             INSERT INTO memory_entity_projects (entity_id, project_key, origin, created_at)
             SELECT entity.id, @projectKey, 'backfill', UTC_TIMESTAMP(3)
             FROM memory_entities_v2 entity
-            WHERE entity.id > @entityFrom AND entity.id <= @entityTo AND LOWER(entity.label) REGEXP @pattern
+            WHERE entity.scope_seq > @entityFrom AND entity.scope_seq <= @entityTo AND LOWER(entity.label) REGEXP @pattern
             ON DUPLICATE KEY UPDATE memory_entity_projects.origin = memory_entity_projects.origin
             """),
         // Claims with new evidence whose source_ref names a member repository.
@@ -117,58 +145,48 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
             WHERE evidence.id > @evidenceFrom AND evidence.id <= @evidenceTo AND LOWER(evidence.source_ref) REGEXP @pattern
             ON DUPLICATE KEY UPDATE memory_claim_projects.origin = memory_claim_projects.origin
             """),
-        // Claims about an entity whose label names a member repository, where the claim or the entity is new.
+        // Claims about an entity whose label names a member repository, where the claim or the entity changed.
         new(Ranges.Claims | Ranges.Entities, """
             INSERT INTO memory_claim_projects (claim_id, project_key, origin, created_at)
             SELECT DISTINCT about.claim_id, @projectKey, 'backfill', UTC_TIMESTAMP(3)
             FROM (
                 SELECT claim.id AS claim_id
                 FROM memory_claims claim JOIN memory_entities_v2 entity ON entity.id = claim.subject_entity_id
-                WHERE claim.id > @claimFrom AND claim.id <= @claimTo AND LOWER(entity.label) REGEXP @pattern
+                WHERE claim.scope_seq > @claimFrom AND claim.scope_seq <= @claimTo AND LOWER(entity.label) REGEXP @pattern
                 UNION
                 SELECT claim.id
                 FROM memory_claims claim JOIN memory_entities_v2 entity ON entity.id = claim.object_entity_id
-                WHERE claim.id > @claimFrom AND claim.id <= @claimTo AND LOWER(entity.label) REGEXP @pattern
+                WHERE claim.scope_seq > @claimFrom AND claim.scope_seq <= @claimTo AND LOWER(entity.label) REGEXP @pattern
                 UNION
                 SELECT claim.id
                 FROM memory_entities_v2 entity
                 JOIN memory_claims claim ON claim.username = entity.username AND claim.subject_entity_id = entity.id
-                WHERE entity.id > @entityFrom AND entity.id <= @entityTo AND LOWER(entity.label) REGEXP @pattern
+                WHERE entity.scope_seq > @entityFrom AND entity.scope_seq <= @entityTo AND LOWER(entity.label) REGEXP @pattern
                 UNION
                 SELECT claim.id
                 FROM memory_entities_v2 entity
                 JOIN memory_claims claim ON claim.username = entity.username AND claim.object_entity_id = entity.id
-                WHERE entity.id > @entityFrom AND entity.id <= @entityTo AND LOWER(entity.label) REGEXP @pattern
+                WHERE entity.scope_seq > @entityFrom AND entity.scope_seq <= @entityTo AND LOWER(entity.label) REGEXP @pattern
             ) about
             ON DUPLICATE KEY UPDATE memory_claim_projects.origin = memory_claim_projects.origin
             """),
-        // The entities of the project's claims that are new, have new evidence or are about a new entity:
-        // every claim the statements above can have scoped, and every new claim a write scoped.
-        new(Ranges.Claims | Ranges.Evidence | Ranges.Entities, """
+        // The entities (subject and object) of the project's claims the range touches: every claim the
+        // statements above can have scoped, and every changed claim a write scoped.
+        new(Ranges.Claims | Ranges.Evidence | Ranges.Entities, $"""
             INSERT INTO memory_entity_projects (entity_id, project_key, origin, created_at)
             SELECT DISTINCT entity.id, @projectKey, 'backfill', UTC_TIMESTAMP(3)
             FROM (
-                SELECT claim.id AS claim_id
-                FROM memory_claims claim
-                WHERE claim.id > @claimFrom AND claim.id <= @claimTo
+                SELECT claim.subject_entity_id AS entity_id
+                FROM ({ChangedClaims}) changed
+                JOIN memory_claim_projects scope ON scope.claim_id = changed.claim_id AND scope.project_key = @projectKey
+                JOIN memory_claims claim ON claim.id = changed.claim_id
                 UNION
-                SELECT evidence.claim_id
-                FROM memory_evidence evidence
-                WHERE evidence.id > @evidenceFrom AND evidence.id <= @evidenceTo AND evidence.claim_id IS NOT NULL
-                UNION
-                SELECT claim.id
-                FROM memory_entities_v2 entity
-                JOIN memory_claims claim ON claim.username = entity.username AND claim.subject_entity_id = entity.id
-                WHERE entity.id > @entityFrom AND entity.id <= @entityTo
-                UNION
-                SELECT claim.id
-                FROM memory_entities_v2 entity
-                JOIN memory_claims claim ON claim.username = entity.username AND claim.object_entity_id = entity.id
-                WHERE entity.id > @entityFrom AND entity.id <= @entityTo
-            ) changed
-            JOIN memory_claim_projects scope ON scope.claim_id = changed.claim_id AND scope.project_key = @projectKey
-            JOIN memory_claims claim ON claim.id = changed.claim_id
-            JOIN memory_entities_v2 entity ON entity.id = claim.subject_entity_id OR entity.id = claim.object_entity_id
+                SELECT claim.object_entity_id
+                FROM ({ChangedClaims}) changed
+                JOIN memory_claim_projects scope ON scope.claim_id = changed.claim_id AND scope.project_key = @projectKey
+                JOIN memory_claims claim ON claim.id = changed.claim_id
+            ) about
+            JOIN memory_entities_v2 entity ON entity.id = about.entity_id
             ON DUPLICATE KEY UPDATE memory_entity_projects.origin = memory_entity_projects.origin
             """),
     ];
@@ -191,32 +209,32 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
         await connection.OpenAsync(ct);
         if (since is null)
         {
-            // Primary-key maxima: no scan.
+            // Index (scope_seq) and primary-key maxima: no scan.
             var current = await connection.QuerySingleAsync<(long, long, long)>(new CommandDefinition(
                 """
-                SELECT (SELECT COALESCE(MAX(id), 0) FROM memory_entities_v2),
-                       (SELECT COALESCE(MAX(id), 0) FROM memory_claims),
+                SELECT (SELECT COALESCE(MAX(scope_seq), 0) FROM memory_entities_v2),
+                       (SELECT COALESCE(MAX(scope_seq), 0) FROM memory_claims),
                        (SELECT COALESCE(MAX(id), 0) FROM memory_evidence)
                 """, cancellationToken: ct));
             return new MemoryScopeWatermark(current.Item1, current.Item2, current.Item3);
         }
 
-        // Reads the rows above the mark only (a primary-key range); a table keeps its mark when none of them has settled.
+        // Reads the rows above the mark only (an index range); a table keeps its mark when none of them has settled.
         var cutoff = clock.GetUtcNow().UtcDateTime - SettleTime;
         var settled = await connection.QuerySingleAsync<(long, long, long)>(new CommandDefinition(
             """
-            SELECT COALESCE((SELECT MAX(id) FROM memory_entities_v2 WHERE id > @EntityId AND created_at <= @cutoff), @EntityId),
-                   COALESCE((SELECT MAX(id) FROM memory_claims WHERE id > @ClaimId AND recorded_at <= @cutoff), @ClaimId),
+            SELECT COALESCE((SELECT MAX(scope_seq) FROM memory_entities_v2 WHERE scope_seq > @EntitySeq AND updated_at <= @cutoff), @EntitySeq),
+                   COALESCE((SELECT MAX(scope_seq) FROM memory_claims WHERE scope_seq > @ClaimSeq AND recorded_at <= @cutoff), @ClaimSeq),
                    COALESCE((SELECT MAX(id) FROM memory_evidence WHERE id > @EvidenceId AND created_at <= @cutoff), @EvidenceId)
             """,
-            new { since.EntityId, since.ClaimId, since.EvidenceId, cutoff }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
+            new { since.EntitySeq, since.ClaimSeq, since.EvidenceId, cutoff }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
         return new MemoryScopeWatermark(settled.Item1, settled.Item2, settled.Item3);
     }
 
     public async Task BackfillRangeAsync(IReadOnlyList<ProjectRepositories> projects, MemoryScopeWatermark after, MemoryScopeWatermark upTo, CancellationToken ct = default)
     {
-        var changed = (upTo.EntityId > after.EntityId ? Ranges.Entities : Ranges.None)
-            | (upTo.ClaimId > after.ClaimId ? Ranges.Claims : Ranges.None)
+        var changed = (upTo.EntitySeq > after.EntitySeq ? Ranges.Entities : Ranges.None)
+            | (upTo.ClaimSeq > after.ClaimSeq ? Ranges.Claims : Ranges.None)
             | (upTo.EvidenceId > after.EvidenceId ? Ranges.Evidence : Ranges.None);
         if (changed == Ranges.None)
             return;
@@ -233,10 +251,10 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
             {
                 projectKey = project.ProjectKey,
                 pattern,
-                entityFrom = after.EntityId,
-                entityTo = upTo.EntityId,
-                claimFrom = after.ClaimId,
-                claimTo = upTo.ClaimId,
+                entityFrom = after.EntitySeq,
+                entityTo = upTo.EntitySeq,
+                claimFrom = after.ClaimSeq,
+                claimTo = upTo.ClaimSeq,
                 evidenceFrom = after.EvidenceId,
                 evidenceTo = upTo.EvidenceId,
             };

@@ -924,14 +924,17 @@ public class MySqlMemoryGraphStore(
         if (entities.Count == 0)
             return;
 
+        // scope_seq (CG-172, migration 117) marks a new entity, and an existing one whose label changes, for
+        // the memory scope reconciliation; it is assigned before label, so it compares the old label.
         const string sql = """
             INSERT INTO memory_entities_v2 (
                 username, external_id, canonical_id, label, type, canonical_name,
-                summary, embedding_json, created_at, updated_at)
+                summary, embedding_json, created_at, updated_at, scope_seq)
             VALUES (
                 @Username, @Id, @CanonicalId, @Label, @Type, @CanonicalName,
-                @Summary, @EmbeddingJson, @CreatedAt, @UpdatedAt)
+                @Summary, @EmbeddingJson, @CreatedAt, @UpdatedAt, NEXT VALUE FOR memory_entity_scope_seq)
             ON DUPLICATE KEY UPDATE
+                scope_seq = IF(label <=> VALUES(label), scope_seq, NEXT VALUE FOR memory_entity_scope_seq),
                 label = VALUES(label),
                 type = VALUES(type),
                 canonical_name = COALESCE(VALUES(canonical_name), canonical_name),
@@ -978,19 +981,24 @@ public class MySqlMemoryGraphStore(
                 ? null
                 : await GetEntityRowIdAsync(connection, claim.ObjectEntityId);
 
+            // scope_seq (CG-172, migration 117) marks a new claim, and an existing one the upsert repoints at
+            // other entities, for the memory scope reconciliation; it is assigned before subject_entity_id and
+            // object_entity_id, so it compares their old values.
             await connection.ExecuteAsync(
                 """
                 INSERT INTO memory_claims (
                     username, external_id, claim_key, fact_group_key, subject_entity_id,
                     predicate, object_entity_id, value_text, value_json, normalized_text,
                     status, confidence, effective_at, recorded_at, supersedes_claim_id,
-                    source, embedding_json)
+                    source, embedding_json, scope_seq)
                 VALUES (
                     @Username, @Id, @ClaimKey, @FactGroupKey, @SubjectEntityId,
                     @Predicate, @ObjectEntityId, @ValueText, @ValueJson, @NormalizedText,
                     @Status, @Confidence, @EffectiveAt, @RecordedAt, @SupersedesClaimId,
-                    @Source, @EmbeddingJson)
+                    @Source, @EmbeddingJson, NEXT VALUE FOR memory_claim_scope_seq)
                 ON DUPLICATE KEY UPDATE
+                    scope_seq = IF(subject_entity_id <=> VALUES(subject_entity_id) AND object_entity_id <=> VALUES(object_entity_id),
+                        scope_seq, NEXT VALUE FOR memory_claim_scope_seq),
                     claim_key = VALUES(claim_key),
                     fact_group_key = VALUES(fact_group_key),
                     subject_entity_id = VALUES(subject_entity_id),

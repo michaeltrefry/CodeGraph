@@ -91,7 +91,7 @@ public class MemoryProjectScopesControllerTests
 
         public Task<MemoryScopeWatermark> GetWatermarkAsync(MemoryScopeWatermark? since, CancellationToken ct = default)
         {
-            Calls.Add(("watermark", since is null ? "" : $"{since.EntityId},{since.ClaimId},{since.EvidenceId}"));
+            Calls.Add(("watermark", since is null ? "" : $"{since.EntitySeq},{since.ClaimSeq},{since.EvidenceId}"));
             return Task.FromResult(Memory);
         }
 
@@ -99,7 +99,7 @@ public class MemoryProjectScopesControllerTests
         {
             foreach (var project in projects)
                 Calls.Add(($"range:{project.ProjectKey}",
-                    $"{string.Join(",", project.Repositories)} {after.EntityId},{after.ClaimId},{after.EvidenceId}-{upTo.EntityId},{upTo.ClaimId},{upTo.EvidenceId}"));
+                    $"{string.Join(",", project.Repositories)} {after.EntitySeq},{after.ClaimSeq},{after.EvidenceId}-{upTo.EntitySeq},{upTo.ClaimSeq},{upTo.EvidenceId}"));
             return Task.CompletedTask;
         }
     }

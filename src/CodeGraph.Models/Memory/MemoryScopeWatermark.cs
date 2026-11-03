@@ -1,13 +1,19 @@
 namespace CodeGraph.Models.Memory;
 
 /// <summary>
-/// How far the memory scope reconciliation (CG-172) has scanned memory: the highest row id of each
-/// table it matches repository names in. Row ids are auto-increment, so memory written later has
-/// higher ids and the next reconciliation scans only the rows above this mark.
+/// How far the memory scope reconciliation (CG-172) has scanned memory, per table it matches
+/// repository names in: the highest change mark (scope_seq, migration 117) of entities and claims, which
+/// is taken anew when a row is inserted or rewritten in a way that changes what it names, and the
+/// highest evidence id (evidence is only inserted). Memory written or rewritten later carries a higher
+/// mark, so the next reconciliation scans only the rows above this one.
 /// </summary>
-public sealed record MemoryScopeWatermark(long EntityId, long ClaimId, long EvidenceId)
+public sealed record MemoryScopeWatermark(long EntitySeq, long ClaimSeq, long EvidenceId)
 {
     public static MemoryScopeWatermark Zero { get; } = new(0, 0, 0);
+
+    /// <summary>True when any mark is above <paramref name="other"/>'s: this watermark is ahead of that memory.</summary>
+    public bool IsAheadOf(MemoryScopeWatermark other) =>
+        EntitySeq > other.EntitySeq || ClaimSeq > other.ClaimSeq || EvidenceId > other.EvidenceId;
 }
 
 /// <summary>Asks the memory host for its memory watermark (CG-172): the current one, or the settled rows above <see cref="Since"/>.</summary>

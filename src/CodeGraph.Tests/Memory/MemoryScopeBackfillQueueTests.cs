@@ -221,6 +221,7 @@ public sealed class MemoryScopeBackfillQueueTests
         }
 
         public Task<IReadOnlyList<PendingMemoryScopeBackfill>> ListPendingAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task AddPendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<MemoryScopeWatermark?> GetWatermarkAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public Task SetWatermarkAsync(MemoryScopeWatermark watermark, CancellationToken ct = default) => throw new NotSupportedException();
     }

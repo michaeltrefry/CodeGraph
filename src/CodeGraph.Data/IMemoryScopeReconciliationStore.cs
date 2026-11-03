@@ -14,9 +14,14 @@ public interface IMemoryScopeReconciliationStore
     /// <summary>Every project with repositories still to backfill, oldest first.</summary>
     Task<IReadOnlyList<PendingMemoryScopeBackfill>> ListPendingAsync(CancellationToken ct = default);
 
+    /// <summary>Records the repositories as pending for the project, adding them to any it already has.</summary>
+    Task AddPendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default);
+
     /// <summary>
-    /// The backfill of these repositories succeeded: they leave the project's pending set, repositories
-    /// added since stay, and the row goes when none is left.
+    /// The backfill of these repositories succeeded: they leave the project's pending set, as does any
+    /// pending repository the project no longer has (checked against its current members in this write),
+    /// and the row goes when none is left. Every other repository stays, so pass only those actually
+    /// backfilled (none, to only drop the ones that are no longer members).
     /// </summary>
     Task CompletePendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default);
 
