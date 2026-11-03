@@ -218,6 +218,6 @@ export class ProjectCodeReviewsComponent {
 
   act(row: ReviewRunRow): void {
     if (row.action === 'Retry') void this.run(row.repository);
-    else void this.router.navigate(['/repos', row.repository], { queryParams: { tab: 'reviews' } });
+    else void this.router.navigate(['/repos', row.repository], { queryParams: { tab: 'reviews', run: row.runId } });
   }
 }

@@ -134,7 +134,7 @@ describe('ProjectCodeReviewsComponent', () => {
     expect(text(row.querySelector('.prj-no-findings'))).toBe('In progress…');
     expect(text(row.querySelector('button.wrk-btn'))).toBe('Watch');
     row.querySelector<HTMLButtonElement>('button.wrk-btn')!.click();
-    expect(navigate).toHaveBeenCalledWith(['/repos', 'codegraph'], { queryParams: { tab: 'reviews' } });
+    expect(navigate).toHaveBeenCalledWith(['/repos', 'codegraph'], { queryParams: { tab: 'reviews', run: 12 } });
   });
 
   it('filters to the repository of ?repo= and changes it through the query parameter', async () => {
@@ -196,7 +196,7 @@ describe('ProjectCodeReviewsComponent', () => {
     const { root, start, navigate, fixture } = await render();
     const rows = [...root.querySelectorAll<HTMLElement>('tbody tr')];
     rows[0].querySelector<HTMLButtonElement>('button.wrk-btn')!.click();
-    expect(navigate).toHaveBeenCalledWith(['/repos', 'codegraph'], { queryParams: { tab: 'reviews' } });
+    expect(navigate).toHaveBeenCalledWith(['/repos', 'codegraph'], { queryParams: { tab: 'reviews', run: expect.any(Number) } });
     expect(start).not.toHaveBeenCalled();
 
     rows[1].querySelector<HTMLButtonElement>('button.wrk-btn')!.click();

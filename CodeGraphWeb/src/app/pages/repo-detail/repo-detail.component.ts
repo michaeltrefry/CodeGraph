@@ -456,7 +456,12 @@ export class RepoDetailComponent implements OnInit {
       streamError: null
     }));
 
-    this.api.getLatestRepositoryReview(repo).subscribe({
+    // A ?run= link (the project Code reviews page) opens that run instead of the latest one.
+    const requestedRunId = Number.parseInt(this.route.snapshot?.queryParamMap.get('run') ?? '', 10);
+    const review$ = requestedRunId > 0
+      ? this.api.getRepositoryReview(repo, requestedRunId)
+      : this.api.getLatestRepositoryReview(repo);
+    review$.subscribe({
       next: review => {
         if (this.name() !== repo) return;
 
