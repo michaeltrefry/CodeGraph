@@ -10,7 +10,6 @@ import { WorkItemComponent } from './work-item.component';
 import { KnowledgeComponent } from './work-knowledge-ui';
 import { WorkLiveService } from './work-live.service';
 import { WorkMessagesComponent } from './work-messages.component';
-import { WorkProjectComponent } from './work-project.component';
 import { FeatureView, KnowledgeEntry, MessageView, ProjectView, WorkApiError } from './work.models';
 
 async function settle(fixture: { detectChanges(): void }): Promise<void> {
@@ -48,40 +47,6 @@ const project: ProjectView = {
 };
 
 describe('route parameter reuse (B1)', () => {
-  it('shows the created project after /work/projects/new navigates to it, and a retried create repeats its key', async () => {
-    const create = vi.fn().mockRejectedValueOnce(new WorkApiError(0, 'network', 'offline')).mockResolvedValue({ created: true, project });
-    const api = {
-      create,
-      projects: vi.fn().mockResolvedValue([project]),
-      get: vi.fn().mockResolvedValue(project),
-      features: vi.fn().mockResolvedValue([]),
-      messages: vi.fn().mockResolvedValue({ items: [] }),
-      recentChanges: vi.fn().mockResolvedValue([]),
-      recall: vi.fn().mockResolvedValue({ items: [] })
-    };
-    const params = new BehaviorSubject(convertToParamMap({ key: 'new' }));
-    await TestBed.configureTestingModule({ imports: [WorkProjectComponent], providers: providers(api, 'new', params) }).compileComponents();
-    const fixture = TestBed.createComponent(WorkProjectComponent);
-    fixture.detectChanges();
-    await settle(fixture);
-    const root = fixture.nativeElement as HTMLElement;
-    expect(root.textContent).toContain('New project');
-
-    await fixture.componentInstance.createProject({ key: 'W', name: 'Workbench' });
-    await fixture.componentInstance.createProject({ key: 'W', name: 'Workbench' });
-    expect(create).toHaveBeenCalledTimes(2);
-    expect(create.mock.calls[0][0].idempotency_key).toBeTruthy();
-    expect(create.mock.calls[1][0].idempotency_key).toBe(create.mock.calls[0][0].idempotency_key);
-
-    // The router reuses the component and only the parameter changes.
-    params.next(convertToParamMap({ key: 'W' }));
-    await settle(fixture);
-    expect(fixture.componentInstance.creating()).toBe(false);
-    expect(root.textContent).not.toContain('New project');
-    expect(root.textContent).toContain('Workbench');
-    expect(api.get).toHaveBeenCalledWith('W');
-  });
-
   it('shows the linked item when the route key changes, and its live filter follows the new key', async () => {
     const items = fiftyItemFeature();
     const api = {

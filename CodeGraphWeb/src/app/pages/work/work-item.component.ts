@@ -21,7 +21,7 @@ import { GitHubEvidence, ItemView, MessageView, WORK_STATUSES, WorkApiError, Wor
         <div class="wrk-head">
           <div class="wrk-grow">
             <div class="wrk-key">
-              <a [routerLink]="['/work/projects', it.project_key]">{{ it.project_key }}</a>
+              <a [routerLink]="['/projects', it.project_key, 'work']">{{ it.project_key }}</a>
               @if (it.feature) { · <a [routerLink]="['/work/features', it.feature.key]">{{ it.feature.key }} {{ it.feature.title }}</a> }
               · {{ it.key }}@if (it.ref) { ({{ it.ref }}) } · v{{ it.version }}
             </div>

@@ -26,7 +26,7 @@ import { ItemView, MessageView, ResourceView, SessionView, WorkChange } from './
         <span class="wrk-live" [attr.data-state]="feedError() ? 'off' : 'on'" [title]="feedError() || 'Following the change feed'">{{ feedError() ? 'reconnecting' : 'live' }}</span>
         <span class="wrk-grow"></span>
         @if (ctx.selected()) {
-          <a class="wrk-btn" [routerLink]="['/work/projects', ctx.selected()]">Project</a>
+          <a class="wrk-btn" [routerLink]="['/projects', ctx.selected(), 'overview']">Project</a>
           <a class="wrk-btn" routerLink="/work/messages">Message board</a>
         }
       </div>
@@ -34,7 +34,7 @@ import { ItemView, MessageView, ResourceView, SessionView, WorkChange } from './
       <wrk-error [error]="error()" (reload)="reload()" />
       @if (ctx.error()) { <div class="wrk-error">{{ ctx.error() }}</div> }
       @if (ctx.loaded() && ctx.projects().length === 0) {
-        <div class="wrk-card"><div class="wrk-empty">There are no work projects yet. Create one from the <a routerLink="/work/projects/new">Project page</a>, or have an agent call create_work.</div></div>
+        <div class="wrk-card"><div class="wrk-empty">There are no work projects yet. Create one from the <a routerLink="/projects" [queryParams]="{ new: 1 }">Projects page</a>, or have an agent call create_work.</div></div>
       }
 
       @if (ctx.selected()) {
