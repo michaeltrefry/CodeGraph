@@ -43,133 +43,139 @@ const COLUMNS: Column[] = [
       <wrk-error [error]="error()" (reload)="reload()" />
       @if (notice()) { <div class="wrk-ok">{{ notice() }}</div> }
 
-      <div class="wrk-grid">
-        <section class="wrk-card" [class.wrk-attention]="blockedOnYou().length > 0" aria-labelledby="prj-h-you">
-          <h2 id="prj-h-you">Blocked on you <span class="wrk-count">{{ blockedOnYou().length }}</span></h2>
-          <wrk-message-list [messages]="blockedOnYou()" [project]="p.key" [acknowledgeable]="true" empty="Nothing is waiting on you." (changed)="reload()" />
-        </section>
+      <!-- Live sessions is a sidebar, so however many there are the main column is not pushed down. -->
+      <div class="wrk-grid-2 prj-work-layout">
+        <div class="prj-work-main">
+          <section class="wrk-card" [class.wrk-attention]="blockedOnYou().length > 0" aria-labelledby="prj-h-you">
+            <h2 id="prj-h-you">Blocked on you <span class="wrk-count">{{ blockedOnYou().length }}</span></h2>
+            <wrk-message-list [messages]="blockedOnYou()" [project]="p.key" [acknowledgeable]="true" empty="Nothing is waiting on you." (changed)="reload()" />
+          </section>
 
-        <section class="wrk-card" aria-labelledby="prj-h-sessions">
-          <h2 id="prj-h-sessions">Live sessions <span class="wrk-count">{{ sessions().length }}</span></h2>
-          <wrk-session-list [sessions]="sessions()" [claimed]="claimed()" [feed]="feed()" />
-        </section>
-      </div>
+          <!-- Above Features, which can run long; the activity shows only the latest few. -->
+          <div class="wrk-grid">
+            <section class="wrk-card" aria-labelledby="prj-h-holds">
+              <h2 id="prj-h-holds">Holds and waiters</h2>
+              <wrk-resources [project]="p.key" [resources]="resources()" (changed)="reload()" />
+            </section>
 
-      <section class="wrk-card prj-features" aria-labelledby="prj-h-features">
-        <div class="prj-features-head">
-          <h2 id="prj-h-features">Features</h2>
-          <span class="prj-shown">{{ shown() }}</span>
-          <span class="wrk-grow"></span>
-          <button type="button" class="wrk-btn" (click)="creating.set(true)">New feature</button>
-        </div>
-
-        <div class="prj-filters">
-          <label class="wrk-input prj-search">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
-            <span class="wrk-sr">Filter features</span>
-            <input type="search" placeholder="Filter by key or title" [value]="filter().q" (input)="change({ q: $any($event.target).value })" />
-          </label>
-
-          <div class="cg-segmented" role="group" aria-label="Status">
-            @for (option of statuses; track option.value) {
-              <button type="button" [class.active]="filter().status === option.value" [attr.aria-pressed]="filter().status === option.value" [attr.data-status]="option.value"
-                (click)="change({ status: option.value })">{{ option.label }} <span class="prj-seg-count">{{ table().statusCounts[option.value] }}</span></button>
-            }
+            <section class="wrk-card" aria-labelledby="prj-h-activity">
+              <h2 id="prj-h-activity">Recent activity</h2>
+              <wrk-activity [entries]="feed()" [limit]="3" />
+            </section>
           </div>
 
-          <button type="button" class="prj-pill" data-dot="blue" [attr.aria-pressed]="filter().inProg" (click)="change({ inProg: !filter().inProg })"><span class="prj-pill-dot"></span>Has items in progress</button>
-          <button type="button" class="prj-pill" data-dot="amber" [attr.aria-pressed]="filter().uncovered" (click)="change({ uncovered: !filter().uncovered })"><span class="prj-pill-dot"></span>Uncovered requirements</button>
+          <section class="wrk-card prj-features" aria-labelledby="prj-h-features">
+            <div class="prj-features-head">
+              <h2 id="prj-h-features">Features</h2>
+              <span class="prj-shown">{{ shown() }}</span>
+              <span class="wrk-grow"></span>
+              <button type="button" class="wrk-btn" (click)="creating.set(true)">New feature</button>
+            </div>
 
-          <label class="prj-select">Created by
-            <select class="wrk-input" [value]="filter().by" (change)="change({ by: $any($event.target).value })">
-              <option value="">Anyone</option>
-              @for (creator of creators(); track creator) { <option [value]="creator" [selected]="creator === filter().by">{{ creator }}</option> }
-            </select>
-          </label>
+            <div class="prj-filters">
+              <label class="wrk-input prj-search">
+                <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/></svg>
+                <span class="wrk-sr">Filter features</span>
+                <input type="search" placeholder="Filter by key or title" [value]="filter().q" (input)="change({ q: $any($event.target).value })" />
+              </label>
 
-          <span class="wrk-grow"></span>
+              <div class="cg-segmented" role="group" aria-label="Status">
+                @for (option of statuses; track option.value) {
+                  <button type="button" [class.active]="filter().status === option.value" [attr.aria-pressed]="filter().status === option.value" [attr.data-status]="option.value"
+                    (click)="change({ status: option.value })">{{ option.label }} <span class="prj-seg-count">{{ table().statusCounts[option.value] }}</span></button>
+                }
+              </div>
 
-          <label class="prj-select">Sort
-            <select class="wrk-input" [value]="filter().sort" (change)="change({ sort: $any($event.target).value })">
-              @for (option of sorts; track option.value) { <option [value]="option.value" [selected]="option.value === filter().sort">{{ option.label }}</option> }
-            </select>
-          </label>
-          <button type="button" class="wrk-btn prj-dir" title="Reverse order" (click)="change({ dir: filter().dir === 'asc' ? 'desc' : 'asc' })">{{ filter().dir === 'asc' ? '↑ asc' : '↓ desc' }}</button>
-          @if (filtered()) { <button type="button" class="wrk-btn wrk-btn-quiet prj-clear" (click)="clear()">Clear filters</button> }
+              <button type="button" class="prj-pill" data-dot="blue" [attr.aria-pressed]="filter().inProg" (click)="change({ inProg: !filter().inProg })"><span class="prj-pill-dot"></span>Has items in progress</button>
+              <button type="button" class="prj-pill" data-dot="amber" [attr.aria-pressed]="filter().uncovered" (click)="change({ uncovered: !filter().uncovered })"><span class="prj-pill-dot"></span>Uncovered requirements</button>
+
+              <label class="prj-select">Created by
+                <select class="wrk-input" [value]="filter().by" (change)="change({ by: $any($event.target).value })">
+                  <option value="">Anyone</option>
+                  @for (creator of creators(); track creator) { <option [value]="creator" [selected]="creator === filter().by">{{ creator }}</option> }
+                </select>
+              </label>
+
+              <span class="wrk-grow"></span>
+
+              <label class="prj-select">Sort
+                <select class="wrk-input" [value]="filter().sort" (change)="change({ sort: $any($event.target).value })">
+                  @for (option of sorts; track option.value) { <option [value]="option.value" [selected]="option.value === filter().sort">{{ option.label }}</option> }
+                </select>
+              </label>
+              <button type="button" class="wrk-btn prj-dir" title="Reverse order" (click)="change({ dir: filter().dir === 'asc' ? 'desc' : 'asc' })">{{ filter().dir === 'asc' ? '↑ asc' : '↓ desc' }}</button>
+              @if (filtered()) { <button type="button" class="wrk-btn wrk-btn-quiet prj-clear" (click)="clear()">Clear filters</button> }
+            </div>
+
+            @if (featuresError()) { <div class="wrk-error prj-features-note" role="alert">{{ featuresError() }}</div> }
+            <div class="prj-scroll">
+              <table class="wrk-table prj-ftable">
+                <thead><tr>
+                  @for (column of columns; track column.label) {
+                    <th [class]="column.cls" [attr.aria-sort]="column.sort && filter().sort === column.sort ? (filter().dir === 'asc' ? 'ascending' : 'descending') : null"
+                      [attr.data-active]="!!column.sort && filter().sort === column.sort">
+                      @if (column.sort) {
+                        <button type="button" class="prj-sort" [attr.data-sort]="column.sort" (click)="sortBy(column.sort)">{{ column.label }}@if (filter().sort === column.sort) {<span class="prj-arrow">{{ filter().dir === 'asc' ? '↑' : '↓' }}</span>}</button>
+                      } @else { {{ column.label }} }
+                    </th>
+                  }
+                </tr></thead>
+                <tbody>
+                  @for (row of table().rows; track row.key) {
+                    <tr [attr.data-key]="row.key">
+                      <td class="prj-col-feature">
+                        <div class="prj-feature-line">
+                          <span class="wrk-key">{{ row.key }}</span>
+                          <a class="prj-feature-title" [routerLink]="['/work/features', row.key]">{{ row.title }}</a>
+                        </div>
+                        @if (row.uncovered > 0 || row.blocked > 0) {
+                          <div class="prj-flags">
+                            @if (row.uncovered > 0) { <span class="cg-chip cg-chip-warn" data-flag="uncovered">{{ uncovered(row.uncovered) }}</span> }
+                            @if (row.blocked > 0) { <span class="wrk-chip wrk-chip-blocked" data-flag="blocked">{{ row.blocked }} blocked</span> }
+                          </div>
+                        }
+                      </td>
+                      <td><span class="wrk-chip" [attr.data-status]="row.status === 'complete' ? 'complete' : 'in_progress'">{{ row.status }}</span></td>
+                      <td class="prj-progress-cell">
+                        <div class="prj-progress">
+                          <div class="wrk-progress" role="img" [attr.aria-label]="row.pct + '% finished'">
+                            <span class="wrk-p-complete" [style.width.%]="row.bar.complete"></span>
+                            <span class="wrk-p-closed" [style.width.%]="row.bar.closed"></span>
+                            <span class="wrk-p-flight" [style.width.%]="row.bar.flight"></span>
+                          </div>
+                          <span class="prj-pct">{{ row.pct }}%</span>
+                        </div>
+                      </td>
+                      <td class="prj-num prj-remaining">{{ row.remaining }} <span class="prj-faint">/ {{ row.total }}</span></td>
+                      <td class="prj-by">{{ row.createdBy }}</td>
+                      <td class="prj-when" [title]="full(row.createdAt)">{{ row.createdAt | ago }}</td>
+                      <td class="prj-when prj-num" [title]="full(row.updatedAt)">{{ row.updatedAt | ago }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            </div>
+            @if (!featuresLoaded()) {
+              <div class="prj-features-empty">Loading…</div>
+            } @else if (table().total === 0) {
+              <div class="prj-features-empty">No features yet. Create one, or import a plan.</div>
+            } @else if (table().rows.length === 0) {
+              <div class="prj-features-empty">No features match these filters. <button type="button" class="wrk-btn wrk-btn-quiet" (click)="clear()">Clear filters</button></div>
+            }
+            <div class="prj-legend" aria-label="Progress legend">
+              <span><i data-k="complete"></i>complete</span>
+              <span><i data-k="closed"></i>closed</span>
+              <span><i data-k="flight"></i>in progress / in review</span>
+            </div>
+          </section>
         </div>
 
-        @if (featuresError()) { <div class="wrk-error prj-features-note" role="alert">{{ featuresError() }}</div> }
-        <div class="prj-scroll">
-          <table class="wrk-table prj-ftable">
-            <thead><tr>
-              @for (column of columns; track column.label) {
-                <th [class]="column.cls" [attr.aria-sort]="column.sort && filter().sort === column.sort ? (filter().dir === 'asc' ? 'ascending' : 'descending') : null"
-                  [attr.data-active]="!!column.sort && filter().sort === column.sort">
-                  @if (column.sort) {
-                    <button type="button" class="prj-sort" [attr.data-sort]="column.sort" (click)="sortBy(column.sort)">{{ column.label }}@if (filter().sort === column.sort) {<span class="prj-arrow">{{ filter().dir === 'asc' ? '↑' : '↓' }}</span>}</button>
-                  } @else { {{ column.label }} }
-                </th>
-              }
-            </tr></thead>
-            <tbody>
-              @for (row of table().rows; track row.key) {
-                <tr [attr.data-key]="row.key">
-                  <td class="prj-col-feature">
-                    <div class="prj-feature-line">
-                      <span class="wrk-key">{{ row.key }}</span>
-                      <a class="prj-feature-title" [routerLink]="['/work/features', row.key]">{{ row.title }}</a>
-                    </div>
-                    @if (row.uncovered > 0 || row.blocked > 0) {
-                      <div class="prj-flags">
-                        @if (row.uncovered > 0) { <span class="cg-chip cg-chip-warn" data-flag="uncovered">{{ uncovered(row.uncovered) }}</span> }
-                        @if (row.blocked > 0) { <span class="wrk-chip wrk-chip-blocked" data-flag="blocked">{{ row.blocked }} blocked</span> }
-                      </div>
-                    }
-                  </td>
-                  <td><span class="wrk-chip" [attr.data-status]="row.status === 'complete' ? 'complete' : 'in_progress'">{{ row.status }}</span></td>
-                  <td class="prj-progress-cell">
-                    <div class="prj-progress">
-                      <div class="wrk-progress" role="img" [attr.aria-label]="row.pct + '% finished'">
-                        <span class="wrk-p-complete" [style.width.%]="row.bar.complete"></span>
-                        <span class="wrk-p-closed" [style.width.%]="row.bar.closed"></span>
-                        <span class="wrk-p-flight" [style.width.%]="row.bar.flight"></span>
-                      </div>
-                      <span class="prj-pct">{{ row.pct }}%</span>
-                    </div>
-                  </td>
-                  <td class="prj-num prj-remaining">{{ row.remaining }} <span class="prj-faint">/ {{ row.total }}</span></td>
-                  <td class="prj-by">{{ row.createdBy }}</td>
-                  <td class="prj-when" [title]="full(row.createdAt)">{{ row.createdAt | ago }}</td>
-                  <td class="prj-when prj-num" [title]="full(row.updatedAt)">{{ row.updatedAt | ago }}</td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </div>
-        @if (!featuresLoaded()) {
-          <div class="prj-features-empty">Loading…</div>
-        } @else if (table().total === 0) {
-          <div class="prj-features-empty">No features yet. Create one, or import a plan.</div>
-        } @else if (table().rows.length === 0) {
-          <div class="prj-features-empty">No features match these filters. <button type="button" class="wrk-btn wrk-btn-quiet" (click)="clear()">Clear filters</button></div>
-        }
-        <div class="prj-legend" aria-label="Progress legend">
-          <span><i data-k="complete"></i>complete</span>
-          <span><i data-k="closed"></i>closed</span>
-          <span><i data-k="flight"></i>in progress / in review</span>
-        </div>
-      </section>
-
-      <div class="wrk-grid">
-        <section class="wrk-card" aria-labelledby="prj-h-holds">
-          <h2 id="prj-h-holds">Holds and waiters</h2>
-          <wrk-resources [project]="p.key" [resources]="resources()" (changed)="reload()" />
-        </section>
-
-        <section class="wrk-card" aria-labelledby="prj-h-activity">
-          <h2 id="prj-h-activity">Recent activity</h2>
-          <wrk-activity [entries]="feed()" [limit]="15" />
-        </section>
+        <aside class="prj-work-side">
+          <section class="wrk-card" aria-labelledby="prj-h-sessions">
+            <h2 id="prj-h-sessions">Live sessions <span class="wrk-count">{{ sessions().length }}</span></h2>
+            <wrk-session-list [sessions]="sessions()" [claimed]="claimed()" [feed]="feed()" />
+          </section>
+        </aside>
       </div>
     </div>
 
