@@ -44,10 +44,8 @@ public sealed class WorkMemoryProjectResolver(IWorkStore? store = null) : IMemor
                 return null;
             try
             {
-                var projects = (await store.ListLiveSessionsOfIdentityAsync(caller, limit: 1000, ct))
-                    .Select(session => session.ProjectKey)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
+                // Two distinct projects are enough to know the sessions do not share one.
+                var projects = await store.ListLiveProjectKeysOfIdentityAsync(caller, limit: 2, ct);
                 return projects.Count == 1 ? projects[0] : null;
             }
             catch (Exception) when (!ct.IsCancellationRequested)

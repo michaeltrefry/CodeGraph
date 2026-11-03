@@ -168,18 +168,18 @@ public sealed partial class MySqlWorkStore
         return rows.Select(row => ToView(row, now)).ToList();
     }
 
-    public async Task<IReadOnlyList<SessionView>> ListLiveSessionsOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> ListLiveProjectKeysOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
-        var now = Now();
-        var rows = (await connection.QueryAsync<SessionRow>(new CommandDefinition(
-            $"SELECT {SessionColumns} FROM work_sessions s JOIN work_projects p ON p.id = s.project_id " +
+        // Distinct projects, not sessions: however many live sessions an identity holds, every project is counted.
+        var rows = (await connection.QueryAsync<(Guid ProjectId, string ProjectKey)>(new CommandDefinition(
+            "SELECT DISTINCT s.project_id AS ProjectId, p.project_key AS ProjectKey FROM work_sessions s JOIN work_projects p ON p.id = s.project_id " +
             "WHERE s.identity = @identity AND s.identity_kind = @identityKind AND s.ended_at IS NULL AND s.last_seen_at > @staleBefore " +
-            "ORDER BY s.last_seen_at DESC LIMIT @limit",
-            new { identity = identity.Name, identityKind = IdentityKindOf(identity), staleBefore = StaleBefore(now), limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) },
+            "LIMIT @limit",
+            new { identity = identity.Name, identityKind = IdentityKindOf(identity), staleBefore = StaleBefore(Now()), limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) },
             cancellationToken: ct))).ToList();
         foreach (var row in rows) DreamPolicy.RequireCurrentProject(row.ProjectId);
-        return rows.Select(row => ToView(row, now)).ToList();
+        return rows.Select(row => row.ProjectKey).ToList();
     }
 
     public async Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default)

@@ -74,10 +74,10 @@ public interface IWorkStore : IWorkMessageStore
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 
     /// <summary>
-    /// The live sessions (not ended, heard from within the idle threshold) of <paramref name="identity"/>
-    /// (its name and kind: a person's or an agent's), in every project, most recently seen first, at most <paramref name="limit"/>.
+    /// The distinct keys of the projects in which <paramref name="identity"/> (its name and kind: a person's
+    /// or an agent's) has a live session (not ended, heard from within the idle threshold), at most <paramref name="limit"/>.
     /// </summary>
-    Task<IReadOnlyList<SessionView>> ListLiveSessionsOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default);
+    Task<IReadOnlyList<string>> ListLiveProjectKeysOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default);
 
     // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
 
