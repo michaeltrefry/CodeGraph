@@ -122,5 +122,6 @@ public interface IMemoryGraphStore
         int maxReturnedEntities = 20,
         int maxReturnedClaims = 40,
         bool includeSuperseded = false,
-        bool includeConflicts = true);
+        bool includeConflicts = true,
+        string? projectKey = null);
 }

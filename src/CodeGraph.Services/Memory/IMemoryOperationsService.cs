@@ -74,7 +74,13 @@ public interface IMemoryOperationsService
         MemorySummaryRenderRequest request,
         CancellationToken ct = default);
 
-    Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20, CancellationToken ct = default);
+    // Subgraph, frontier expansion and summary requests carry their project as ProjectKey.
+    Task<MemoryQueryResult> QueryAsync(
+        string topic,
+        int hops = 2,
+        int maxNodes = 20,
+        string? projectKey = null,
+        CancellationToken ct = default);
 
     Task<MemoryGraphSnapshot> GetFullGraphAsync(
         int limit = 200,

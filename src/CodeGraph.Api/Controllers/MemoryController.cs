@@ -117,6 +117,7 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
     [HttpPost("subgraph")]
     public async Task<ActionResult<MemorySubgraphResult>> Subgraph([FromBody] MemorySubgraphRequest request)
     {
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryOperations.GetMemorySubgraphAsync(request, HttpContext.RequestAborted);
         return Ok(result);
     }
@@ -184,6 +185,7 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         if ((request.FrontierEntityIds?.Count ?? 0) == 0 && (request.FrontierClaimIds?.Count ?? 0) == 0)
             return BadRequest(new { error = "At least one frontier entity or claim id is required" });
 
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryOperations.ExpandMemoryFrontierAsync(request, HttpContext.RequestAborted);
         return Ok(result);
     }
@@ -195,18 +197,20 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         if ((request.EntityIds?.Count ?? 0) == 0 && (request.ClaimIds?.Count ?? 0) == 0)
             return BadRequest(new { error = "At least one entity or claim id is required" });
 
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryOperations.RenderMemorySummaryAsync(request, HttpContext.RequestAborted);
         return Ok(result);
     }
 
     [HttpGet("query")]
     public async Task<ActionResult<MemoryQueryResult>> Query([FromQuery] string topic,
-        [FromQuery] int? hops, [FromQuery] int? maxNodes)
+        [FromQuery] int? hops, [FromQuery] int? maxNodes, [FromQuery] string? project)
     {
         var clampedHops = Math.Clamp(hops ?? 2, 1, 5);
         var clampedMaxNodes = Math.Clamp(maxNodes ?? 5, 1, 50);
 
-        var result = await memoryOperations.QueryAsync(topic, clampedHops, clampedMaxNodes, HttpContext.RequestAborted);
+        var result = await memoryOperations.QueryAsync(
+            topic, clampedHops, clampedMaxNodes, ProjectKey(project), HttpContext.RequestAborted);
         return Ok(result);
     }
 
@@ -231,7 +235,8 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         return entity == null ? NotFound() : Ok(new { entity.Entity, entity.Relationships });
     }
 
-    // project (CG-156): the key of a work project; only its entities and claims are answered.
+    // project (CG-156): the key of a work project; only its entities and claims are answered. The POST
+    // bodies (subgraph, frontier/expand, render-summary) carry it as projectKey (CG-165).
     private static string? ProjectKey(string? project) =>
         string.IsNullOrWhiteSpace(project) ? null : project.Trim();
 }

@@ -16,8 +16,8 @@ namespace CodeGraph.Tests.Memory;
 /// <summary>
 /// Project scoping for memory (CG-156) against a real MariaDB: a write is scoped to its session's
 /// project (or an explicit one), migration 114 backfills memory that names a member repository as a
-/// whole token, and graph, search and entity reads filtered by project answer only that project's
-/// entities and claims, per user.
+/// whole token, and graph, search, entity, subgraph, query, frontier and summary reads filtered by
+/// project answer only that project's entities and claims, per user.
 /// </summary>
 public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
 {
@@ -179,6 +179,122 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         (await store.GetClaimBundleAsync("claim_elsewhere", projectKey: project)).ShouldBeNull();
         (await store.GetClaimBundleAsync("claim_inside", projectKey: "ZZNOPE")).ShouldBeNull();
         (await store.GetClaimBundleAsync("missing", projectKey: project)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task Subgraph_query_frontier_and_summary_honour_project_per_user_and_are_unchanged_without_one()
+    {
+        var project = await db.NewProjectAsync("MS");
+        var user = $"user:subgraph-{Guid.NewGuid():N}";
+        var other = $"user:subgraph-other-{Guid.NewGuid():N}";
+        var tenant = new MemoryTenantContext();
+        var store = new MySqlMemoryGraphStore(StorageOptions(), tenant);
+        var retrieval = new MemoryRetrievalService(store, new NoEmbeddings(), NullLogger<MemoryRetrievalService>.Instance);
+
+        using (tenant.Enter(user))
+        {
+            await store.UpsertEntitiesBatchAsync([Entity("repo", "Repo"), Entity("db", "Db"), Entity("other", "Other")]);
+            await store.UpsertClaimsBatchAsync(
+            [
+                Claim("claim_repo_db", "repo", "db"),
+                Claim("claim_repo_other", "repo", "other"),
+                Claim("claim_other_db", "other", "db"),
+            ]);
+            await store.UpsertEntityEdgesBatchAsync(
+            [
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "db", EdgeType = "relates_to" },
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "other", EdgeType = "relates_to" },
+            ]);
+            // Scopes repo, db (the claim's subject and object) and claim_repo_db; other and its claims stay outside.
+            await store.AddProjectScopeAsync(project, [], ["claim_repo_db"]);
+            await store.CreateObservationAsync(Observation("obs_inside", ["claim_repo_db"]));
+            await store.CreateObservationAsync(Observation("obs_mixed", ["claim_repo_db", "claim_repo_other"]));
+        }
+
+        using (tenant.Enter(other))
+        {
+            // Another user's memory in the same project, under the same entity ids.
+            await store.UpsertEntitiesBatchAsync([Entity("repo", "Repo"), Entity("db", "Db")]);
+            await store.UpsertClaimsBatchAsync([Claim("claim_theirs", "repo", "db")]);
+            await store.AddProjectScopeAsync(project, [], ["claim_theirs"]);
+        }
+
+        using (tenant.Enter(user))
+        {
+            // Subgraph: without a project nothing is filtered.
+            var unscoped = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                SeedClaimIds = ["claim_other_db"],
+            });
+            unscoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db", "other"], ignoreOrder: true);
+            unscoped.Claims.Select(claim => claim.Claim.Id)
+                .ShouldBe(["claim_repo_db", "claim_repo_other", "claim_other_db"], ignoreOrder: true);
+            unscoped.EntityEdges.Select(edge => edge.ToEntityId).ShouldBe(["db", "other"], ignoreOrder: true);
+            unscoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside", "obs_mixed"], ignoreOrder: true);
+
+            // In the project: seeds outside it are dropped, as are claims, edges and observations reaching outside it.
+            var scoped = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                SeedClaimIds = ["claim_other_db"],
+                ProjectKey = project,
+            });
+            scoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db"], ignoreOrder: true);
+            scoped.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            scoped.EntityEdges.ShouldHaveSingleItem().ToEntityId.ShouldBe("db");
+            scoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
+            (await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest { SeedEntityIds = ["repo"], ProjectKey = "ZZNOPE" }))
+                .Entities.ShouldBeEmpty();
+
+            // Query (topic search then subgraph).
+            var queried = await retrieval.QueryAsync("Repo", maxNodes: 10);
+            queried.Subgraph!.Claims.Select(claim => claim.Claim.Id).ShouldContain("claim_repo_other");
+            var scopedQuery = await retrieval.QueryAsync("Repo", maxNodes: 10, projectKey: project);
+            scopedQuery.Subgraph!.Entities.Select(entity => entity.Entity.Id).ShouldContain("repo");
+            scopedQuery.Subgraph.Entities.Select(entity => entity.Entity.Id).ShouldBeSubsetOf(["repo", "db"]);
+            scopedQuery.Subgraph.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            scopedQuery.Conflicts.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
+            (await retrieval.QueryAsync("Other", projectKey: project)).FormattedText.ShouldBe("No relevant memories found.");
+            (await retrieval.QueryAsync("Other")).Subgraph!.Entities.Select(entity => entity.Entity.Id).ShouldContain("other");
+
+            // Frontier expansion.
+            (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"] }))
+                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db", "claim_repo_other"], ignoreOrder: true);
+            (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"], ProjectKey = project }))
+                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            var outside = await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest
+            {
+                FrontierClaimIds = ["claim_repo_other"],
+                ProjectKey = project,
+            });
+            outside.AddedEntities.ShouldBeEmpty();
+            outside.AddedClaims.ShouldBeEmpty();
+
+            // Render summary.
+            var summary = await retrieval.RenderMemorySummaryAsync(new MemorySummaryRenderRequest { EntityIds = ["repo"], Style = "plain" });
+            summary.Text.ShouldContain("repo relates_to other");
+            var scopedSummary = await retrieval.RenderMemorySummaryAsync(new MemorySummaryRenderRequest
+            {
+                EntityIds = ["repo"],
+                Style = "plain",
+                ProjectKey = project,
+            });
+            scopedSummary.Text.ShouldContain("repo relates_to db");
+            scopedSummary.Text.ShouldNotContain("repo relates_to other");
+        }
+
+        using (tenant.Enter(other))
+        {
+            var theirs = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                ProjectKey = project,
+            });
+            theirs.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db"], ignoreOrder: true);
+            theirs.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_theirs"]);
+            theirs.Observations.ShouldBeEmpty();
+        }
     }
 
     [Fact]

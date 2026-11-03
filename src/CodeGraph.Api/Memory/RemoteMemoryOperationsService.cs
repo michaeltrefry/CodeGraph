@@ -116,8 +116,9 @@ public sealed class RemoteMemoryOperationsService(
         string topic,
         int hops = 2,
         int maxNodes = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryClient.QueryAsync(ResolveUsername(), topic, hops, maxNodes, ct);
+        => memoryClient.QueryAsync(ResolveUsername(), topic, hops, maxNodes, projectKey, ct);
 
     public Task<MemoryGraphSnapshot> GetFullGraphAsync(
         int limit = 200,

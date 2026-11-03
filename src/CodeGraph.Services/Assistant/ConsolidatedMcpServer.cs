@@ -241,7 +241,9 @@ public sealed class ConsolidatedMcpServer
         [Description("Include conflicted claims (subgraph, entity_bundle, claim_bundle).")] bool includeConflicts = true,
         [Description("Include supersession chain (claim_bundle).")] bool includeSupersessionChain = true,
         [Description("Include evidence (claim_bundle).")] bool includeEvidence = true,
-        [Description("Rendering style for render_summary: markdown | plain.")] string style = "markdown")
+        [Description("Rendering style for render_summary: markdown | plain.")] string style = "markdown",
+        [Description(MemoryMcpServer.ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
         const string tool = "memory_read";
         var op = Normalize(operation);
@@ -250,30 +252,33 @@ public sealed class ConsolidatedMcpServer
             case "query":
                 if (string.IsNullOrWhiteSpace(query))
                     return Error(tool, op, "missing_argument", "operation=query requires 'query'.");
-                return Wrap(tool, op, await MemoryMcpServer.QueryMemory(query, memoryOperations, hops, entityLimit ?? 20));
+                return Wrap(tool, op, await MemoryMcpServer.QueryMemory(
+                    query, memoryOperations, hops, entityLimit ?? 20, project, projectResolver));
             case "search":
                 if (string.IsNullOrWhiteSpace(query))
                     return Error(tool, op, "missing_argument", "operation=search requires 'query'.");
-                return Wrap(tool, op, await MemoryMcpServer.SearchMemory(query, memoryOperations, entityLimit ?? 5, claimLimit ?? 5));
+                return Wrap(tool, op, await MemoryMcpServer.SearchMemory(
+                    query, memoryOperations, entityLimit ?? 5, claimLimit ?? 5, project, projectResolver));
             case "subgraph":
                 return Wrap(tool, op, await MemoryMcpServer.GetMemorySubgraph(
                     query, entityIds, claimIds, memoryOperations,
-                    hops, entityLimit ?? 20, claimLimit ?? 40, includeSuperseded, includeConflicts));
+                    hops, entityLimit ?? 20, claimLimit ?? 40, includeSuperseded, includeConflicts, project, projectResolver));
             case "entity_bundle":
                 if (string.IsNullOrWhiteSpace(entityId))
                     return Error(tool, op, "missing_argument", "operation=entity_bundle requires 'entityId'.");
                 return Wrap(tool, op, await MemoryMcpServer.GetEntityBundle(
-                    entityId, memoryOperations, includeSuperseded, includeConflicts, entityLimit ?? 20));
+                    entityId, memoryOperations, includeSuperseded, includeConflicts, entityLimit ?? 20, project, projectResolver));
             case "claim_bundle":
                 if (string.IsNullOrWhiteSpace(claimId))
                     return Error(tool, op, "missing_argument", "operation=claim_bundle requires 'claimId'.");
                 return Wrap(tool, op, await MemoryMcpServer.GetClaimBundle(
-                    claimId, memoryOperations, includeSupersessionChain, includeConflicts, includeEvidence));
+                    claimId, memoryOperations, includeSupersessionChain, includeConflicts, includeEvidence, project, projectResolver));
             case "expand_frontier":
                 return Wrap(tool, op, await MemoryMcpServer.ExpandMemoryFrontier(
-                    entityIds, claimIds, memoryOperations, hops, entityLimit ?? 20, minScore));
+                    entityIds, claimIds, memoryOperations, hops, entityLimit ?? 20, minScore, project, projectResolver));
             case "render_summary":
-                return Wrap(tool, op, await MemoryMcpServer.RenderMemorySummary(entityIds, claimIds, memoryOperations, style));
+                return Wrap(tool, op, await MemoryMcpServer.RenderMemorySummary(
+                    entityIds, claimIds, memoryOperations, style, project, projectResolver));
             default:
                 return InvalidOperation(tool, operation,
                     "query", "search", "subgraph", "entity_bundle", "claim_bundle", "expand_frontier", "render_summary");

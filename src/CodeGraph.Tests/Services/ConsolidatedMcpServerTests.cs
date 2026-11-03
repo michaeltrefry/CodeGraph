@@ -282,7 +282,7 @@ public class ConsolidatedMcpServerTests
             return Task.FromResult<MemoryWriteReceipt?>(new MemoryWriteReceipt { Id = receiptId });
         }
 
-        public Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20, CancellationToken ct = default)
+        public Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20, string? projectKey = null, CancellationToken ct = default)
         {
             Calls.Add(nameof(QueryAsync));
             LastEntityLimit = maxNodes;
