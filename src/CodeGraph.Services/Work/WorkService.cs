@@ -754,8 +754,8 @@ public sealed partial class WorkService(
     /// added) to the project (CG-167), once the project's write has committed. The backfill scans every
     /// user's memory, so it never runs on the request path: the queue coalesces pending work per project
     /// and a background worker runs one project at a time. Best effort: the work write stands when the
-    /// queue is full or the backfill fails, and the daily ReconcileMemoryProjectScopes job re-runs it
-    /// for every project (the backfill is idempotent).
+    /// queue is full or the backfill fails; the write recorded the repositories as pending in its own
+    /// transaction (CG-172), and the daily ReconcileMemoryProjectScopes job backfills what is still pending.
     /// </summary>
     private void BackfillMemoryScopes(string projectKey, IReadOnlyCollection<string> repositories)
     {

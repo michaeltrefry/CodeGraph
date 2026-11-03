@@ -27,6 +27,56 @@ public class HttpMemoryClientTests
     }
 
     [Fact]
+    public async Task GetProjectScopeWatermarkAsync_PostsTheMarkAndReadsTheMemoryHostsWatermark()
+    {
+        var handler = new RecordingHandler(new MemoryScopeWatermark(4, 5, 6));
+
+        var watermark = await CreateClient(handler).GetProjectScopeWatermarkAsync("system", new MemoryScopeWatermark(1, 2, 3));
+
+        watermark.ShouldBe(new MemoryScopeWatermark(4, 5, 6));
+        var request = handler.Requests.Single();
+        request.Method.ShouldBe(HttpMethod.Post);
+        request.RequestUri!.PathAndQuery.ShouldBe("/api/memory/project-scopes/watermark");
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("system");
+        using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+        body.RootElement.GetProperty("since").GetProperty("claimId").GetInt64().ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task BackfillProjectScopeRangeAsync_PostsTheProjectsAndTheRange()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.NoContent, null);
+
+        await CreateClient(handler).BackfillProjectScopeRangeAsync("system",
+            [new MemoryProjectScopeBackfillRequest { ProjectKey = " CG ", Repositories = ["codegraph", " mlx-rs ", "codegraph"] }],
+            new MemoryScopeWatermark(1, 2, 3), new MemoryScopeWatermark(4, 5, 6));
+
+        var request = handler.Requests.Single();
+        request.Method.ShouldBe(HttpMethod.Post);
+        request.RequestUri!.PathAndQuery.ShouldBe("/api/memory/project-scopes/backfill-range");
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe("system");
+        using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync());
+        var project = body.RootElement.GetProperty("projects").EnumerateArray().Single();
+        project.GetProperty("projectKey").GetString().ShouldBe("CG");
+        project.GetProperty("repositories").EnumerateArray().Select(name => name.GetString()).ShouldBe(["codegraph", "mlx-rs"]);
+        body.RootElement.GetProperty("after").GetProperty("entityId").GetInt64().ShouldBe(1);
+        body.RootElement.GetProperty("upTo").GetProperty("evidenceId").GetInt64().ShouldBe(6);
+    }
+
+    [Fact]
+    public async Task RemoteBackfill_ForwardsTheRangeBackfillAsTheSystemIdentity()
+    {
+        var handler = new RecordingHandler(HttpStatusCode.NoContent, null);
+
+        await new RemoteMemoryProjectScopeBackfill(CreateClient(handler)).BackfillRangeAsync(
+            [new CodeGraph.Data.ProjectRepositories("CG", ["codegraph"])], new MemoryScopeWatermark(1, 2, 3), new MemoryScopeWatermark(4, 5, 6));
+
+        var request = handler.Requests.Single();
+        request.RequestUri!.PathAndQuery.ShouldBe("/api/memory/project-scopes/backfill-range");
+        request.Headers.GetValues(MemoryClientIdentityDefaults.UsernameHeaderName).Single().ShouldBe(CodeGraph.Data.MemoryTenantContext.SystemUsername);
+    }
+
+    [Fact]
     public async Task QueueClaimsAsync_PostsRequestWithInternalIdentityHeader()
     {
         var handler = new RecordingHandler(new MemoryStoreAcceptedResult

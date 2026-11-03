@@ -9,12 +9,16 @@ namespace CodeGraph.Services.Memory;
 /// Hands a project's memory scope backfill (CG-167) to a background worker, off the request path.
 /// The backfill scans every user's memory, so a burst of project creates or repository changes must
 /// not run one scan per request: pending work is coalesced per project and run one project at a time.
+/// The queue only makes the backfill prompt: the project write already recorded the repositories as
+/// pending in the work database (CG-172), so one dropped here, lost to a restart or failed is run by
+/// the daily ReconcileMemoryProjectScopes job.
 /// </summary>
 public interface IMemoryScopeBackfillQueue
 {
     /// <summary>
     /// Queues a backfill of the given repositories for the project, or unions them into the one already
-    /// pending for it. False when the queue is full: the daily ReconcileMemoryProjectScopes job covers it.
+    /// pending for it. False when the queue is full: the repositories stay pending in the work database
+    /// and the daily ReconcileMemoryProjectScopes job backfills them.
     /// </summary>
     bool Enqueue(string projectKey, IReadOnlyCollection<string> repositories);
 }
@@ -76,8 +80,9 @@ public sealed class MemoryScopeBackfillQueue(ILogger<MemoryScopeBackfillQueue> l
 }
 
 /// <summary>
-/// Runs the queued memory scope backfills one project at a time, each in its own DI scope. A failed
-/// backfill is logged and the worker moves on; the daily ReconcileMemoryProjectScopes job retries it.
+/// Runs the queued memory scope backfills one project at a time, each in its own DI scope. A backfill
+/// that succeeds takes its repositories off the project's pending set; one that fails records its
+/// error there and the worker moves on; the daily ReconcileMemoryProjectScopes job retries it.
 /// </summary>
 public sealed class MemoryScopeBackfillWorker(
     MemoryScopeBackfillQueue queue,
@@ -111,15 +116,44 @@ public sealed class MemoryScopeBackfillWorker(
                 logger.LogWarning("No memory scope backfill is configured; project {Project} is not scoped.", projectKey);
                 return;
             }
-            await backfill.BackfillAsync(projectKey, repositories, stoppingToken);
+            // The project write recorded these repositories as pending (CG-172); without that store (no MariaDB) nothing is recorded.
+            var pending = scope.ServiceProvider.GetService<IMemoryScopeReconciliationStore>();
+            try
+            {
+                await backfill.BackfillAsync(projectKey, repositories, stoppingToken);
+            }
+            catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+            {
+                // An HTTP client timeout surfaces as an OperationCanceledException too.
+                logger.LogWarning(exception, "Memory naming the repositories of project {Project} could not be scoped to it; the daily reconciliation retries it.", projectKey);
+                await RecordFailureAsync(pending, projectKey, exception, stoppingToken);
+                return;
+            }
+            if (pending is not null)
+                await pending.CompletePendingAsync(projectKey, repositories, stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
         {
         }
         catch (Exception exception)
         {
-            // An HTTP client timeout surfaces as an OperationCanceledException too.
-            logger.LogWarning(exception, "Memory naming the repositories of project {Project} could not be scoped to it.", projectKey);
+            // The repositories stay pending, so the daily reconciliation runs their backfill again.
+            logger.LogWarning(exception, "The memory scope backfill of project {Project} could not be completed.", projectKey);
+        }
+    }
+
+    private async Task RecordFailureAsync(IMemoryScopeReconciliationStore? pending, string projectKey, Exception failure, CancellationToken stoppingToken)
+    {
+        if (pending is null)
+            return;
+        try
+        {
+            await pending.FailPendingAsync(projectKey, failure.Message, stoppingToken);
+        }
+        catch (Exception exception) when (!stoppingToken.IsCancellationRequested)
+        {
+            // The repositories stay pending either way; only the error is not kept.
+            logger.LogWarning(exception, "The failed memory scope backfill of project {Project} could not be recorded.", projectKey);
         }
     }
 }

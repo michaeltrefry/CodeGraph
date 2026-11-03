@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using CodeGraph.Data;
+using CodeGraph.Models.Memory;
 using CodeGraph.Services.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -115,6 +116,31 @@ public sealed class MemoryScopeBackfillQueueTests
         worker.Worker.ExecuteTask!.IsCompletedSuccessfully.ShouldBeTrue();
     }
 
+    [Fact]
+    public async Task A_backfill_that_succeeds_completes_its_pending_repositories_and_one_that_fails_records_its_error()
+    {
+        var queue = NewQueue();
+        queue.Enqueue("FAILS", ["one"]);
+        queue.Enqueue("WORKS", ["two", "three"]);
+        var backfill = new ScriptedBackfill
+        {
+            Before = (project, _) => project == "FAILS"
+                ? Task.FromException(new InvalidOperationException("memory host unreachable"))
+                : Task.CompletedTask,
+        };
+        var pending = new RecordingReconciliationStore();
+
+        await using (await RunningWorker.StartAsync(queue, backfill, pending))
+        {
+            await backfill.NextCallAsync();
+            await backfill.NextCallAsync();
+            await pending.Completed.Reader.ReadAsync().AsTask().WaitAsync(Wait);
+        }
+
+        pending.Failed.ShouldBe([("FAILS", "memory host unreachable")]);
+        pending.CompletedCalls.ShouldBe([("WORKS", "three,two")]);
+    }
+
     private static MemoryScopeBackfillQueue NewQueue(int capacity = MemoryScopeBackfillQueue.DefaultCapacity) =>
         new(NullLogger<MemoryScopeBackfillQueue>.Instance, capacity);
 
@@ -130,9 +156,13 @@ public sealed class MemoryScopeBackfillQueueTests
 
         public MemoryScopeBackfillWorker Worker { get; }
 
-        public static async Task<RunningWorker> StartAsync(MemoryScopeBackfillQueue queue, IMemoryProjectScopeBackfill backfill)
+        public static async Task<RunningWorker> StartAsync(MemoryScopeBackfillQueue queue, IMemoryProjectScopeBackfill backfill,
+            IMemoryScopeReconciliationStore? pending = null)
         {
-            var provider = new ServiceCollection().AddScoped(_ => backfill).BuildServiceProvider();
+            var services = new ServiceCollection().AddScoped(_ => backfill);
+            if (pending is not null)
+                services.AddSingleton(pending);
+            var provider = services.BuildServiceProvider();
             var worker = new MemoryScopeBackfillWorker(queue, provider.GetRequiredService<IServiceScopeFactory>(),
                 NullLogger<MemoryScopeBackfillWorker>.Instance);
             await worker.StartAsync(CancellationToken.None);
@@ -162,5 +192,36 @@ public sealed class MemoryScopeBackfillQueueTests
 
         public async Task<(string Project, string Repositories)> NextCallAsync() =>
             await Calls.Reader.ReadAsync().AsTask().WaitAsync(Wait);
+
+        public Task<MemoryScopeWatermark> GetWatermarkAsync(MemoryScopeWatermark? since, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+
+        public Task BackfillRangeAsync(IReadOnlyList<ProjectRepositories> projects, MemoryScopeWatermark after, MemoryScopeWatermark upTo, CancellationToken ct = default) =>
+            throw new NotSupportedException();
+    }
+
+    /// <summary>Records what the worker completes and fails of the pending backfills.</summary>
+    private sealed class RecordingReconciliationStore : IMemoryScopeReconciliationStore
+    {
+        public Channel<string> Completed { get; } = Channel.CreateUnbounded<string>();
+        public List<(string, string)> CompletedCalls { get; } = [];
+        public List<(string, string)> Failed { get; } = [];
+
+        public Task CompletePendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        {
+            CompletedCalls.Add((projectKey, string.Join(",", repositories.Order(StringComparer.Ordinal))));
+            Completed.Writer.TryWrite(projectKey);
+            return Task.CompletedTask;
+        }
+
+        public Task FailPendingAsync(string projectKey, string error, CancellationToken ct = default)
+        {
+            Failed.Add((projectKey, error));
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<PendingMemoryScopeBackfill>> ListPendingAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<MemoryScopeWatermark?> GetWatermarkAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task SetWatermarkAsync(MemoryScopeWatermark watermark, CancellationToken ct = default) => throw new NotSupportedException();
     }
 }

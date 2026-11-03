@@ -315,6 +315,48 @@ public sealed class HttpMemoryClient(
         await EnsureSuccessAsync(response, ct);
     }
 
+    public Task<MemoryScopeWatermark> GetProjectScopeWatermarkAsync(
+        string username,
+        MemoryScopeWatermark? since,
+        CancellationToken ct = default)
+        // Reads primary-key maxima only, so a retry is cheap.
+        => SendJsonAsync<MemoryScopeWatermark>(
+            username,
+            HttpMethod.Post,
+            "api/memory/project-scopes/watermark",
+            new MemoryProjectScopeWatermarkRequest { Since = since },
+            ct,
+            allowRetry: true);
+
+    public async Task BackfillProjectScopeRangeAsync(
+        string username,
+        IReadOnlyList<MemoryProjectScopeBackfillRequest> projects,
+        MemoryScopeWatermark after,
+        MemoryScopeWatermark upTo,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(
+            username,
+            HttpMethod.Post,
+            "api/memory/project-scopes/backfill-range",
+            new MemoryProjectScopeRangeBackfillRequest
+            {
+                Projects = projects
+                    .Select(project => new MemoryProjectScopeBackfillRequest
+                    {
+                        ProjectKey = NormalizeRequired(project.ProjectKey, nameof(projects)),
+                        Repositories = NormalizeIds(project.Repositories),
+                    })
+                    .ToList(),
+                After = after,
+                UpTo = upTo,
+            },
+            ct,
+            // A scan of the new memory for every project; idempotent, but not to be repeated by a proxy timeout.
+            allowRetry: false);
+        await EnsureSuccessAsync(response, ct);
+    }
+
     private async Task<T> SendJsonAsync<T>(
         string username,
         HttpMethod method,

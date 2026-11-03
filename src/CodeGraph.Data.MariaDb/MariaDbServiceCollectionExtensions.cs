@@ -47,6 +47,7 @@ public static class MariaDbServiceCollectionExtensions
         services.AddTransient<IVectorStore, MySqlVectorStore>();
         services.AddTransient<IMemoryGraphStore, MySqlMemoryGraphStore>();
         services.AddTransient<IMemoryProjectScopeBackfill, MySqlMemoryProjectScopeBackfill>();
+        services.AddTransient<IMemoryScopeReconciliationStore, MySqlMemoryScopeReconciliationStore>();
         services.AddTransient<IMemoryAdminAuditStore, MySqlMemoryAdminAuditStore>();
         services.AddTransient<IAssistantRunStore, MySqlAssistantRunStore>();
         services.AddTransient<IMcpPersonalAccessTokenStore, MySqlMcpPersonalAccessTokenStore>();
