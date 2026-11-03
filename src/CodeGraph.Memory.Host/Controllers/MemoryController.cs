@@ -106,6 +106,7 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
     [HttpPost("subgraph")]
     public async Task<ActionResult<MemorySubgraphResult>> Subgraph([FromBody] MemorySubgraphRequest request)
     {
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryService.GetMemorySubgraphAsync(request);
         return Ok(result);
     }
@@ -164,6 +165,7 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         if ((request.FrontierEntityIds?.Count ?? 0) == 0 && (request.FrontierClaimIds?.Count ?? 0) == 0)
             return BadRequest(new { error = "At least one frontier entity or claim id is required" });
 
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryService.ExpandMemoryFrontierAsync(request);
         return Ok(result);
     }
@@ -175,6 +177,7 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         if ((request.EntityIds?.Count ?? 0) == 0 && (request.ClaimIds?.Count ?? 0) == 0)
             return BadRequest(new { error = "At least one entity or claim id is required" });
 
+        request.ProjectKey = ProjectKey(request.ProjectKey);
         var result = await memoryService.RenderMemorySummaryAsync(request);
         return Ok(result);
     }
@@ -183,12 +186,13 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
     public async Task<ActionResult<MemoryQueryResult>> Query(
         [FromQuery] string topic,
         [FromQuery] int? hops,
-        [FromQuery] int? maxNodes)
+        [FromQuery] int? maxNodes,
+        [FromQuery] string? project)
     {
         var clampedHops = Math.Clamp(hops ?? 2, 1, 5);
         var clampedMaxNodes = Math.Clamp(maxNodes ?? 5, 1, 50);
 
-        var result = await memoryService.QueryAsync(topic, clampedHops, clampedMaxNodes);
+        var result = await memoryService.QueryAsync(topic, clampedHops, clampedMaxNodes, ProjectKey(project));
         return Ok(result);
     }
 

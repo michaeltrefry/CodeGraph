@@ -99,6 +99,8 @@ services:
       DOTNET_ENVIRONMENT: ${DOTNET_ENVIRONMENT:-Production}
       CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
       CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
+      CodeGraph__Memory__BaseUrl: ${CodeGraph__Memory__BaseUrl:-http://codegraph-memory:5039}
+      CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
       CodeGraph__InternalServiceAuth__Enabled: ${CodeGraph__InternalServiceAuth__Enabled:-true}
       CodeGraph__InternalServiceAuth__HmacKey: ${CodeGraph__InternalServiceAuth__HmacKey:-}
 

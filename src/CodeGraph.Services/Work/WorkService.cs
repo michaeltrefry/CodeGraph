@@ -36,7 +36,9 @@ public sealed partial class WorkService(
     // Lesson similarity (S9): the embedding provider (local ONNX in the hosts) and the lesson settings.
     CodeGraph.Services.Embeddings.IEmbeddingService? embeddingService = null,
     IOptions<WorkLessonOptions>? lessonOptions = null,
-    IServiceProvider? serviceProvider = null) : IWorkService
+    IServiceProvider? serviceProvider = null,
+    // Queues the scoping of existing memory to a project when it is created or gains a repository (CG-167).
+    CodeGraph.Services.Memory.IMemoryScopeBackfillQueue? memoryScopeBackfillQueue = null) : IWorkService
 {
     private const string FindCursorKind = "fw";
     private const string ChangeCursorKind = "ch";
@@ -408,6 +410,9 @@ public sealed partial class WorkService(
             if (request.Project is not null)
                 throw WorkException.Invalid("create_work with new_project takes no project argument: the new project is the scope. Nothing was created.");
             var created = await Store.CreateProjectAsync(ReadNewProject(newProject), actor, keyHash, ct);
+            // An idempotent replay creates nothing, so it scans nothing.
+            if (created.Created)
+                BackfillMemoryScopes(created.Value.Key, created.Value.Repositories.Select(member => member.Repository).ToList());
             return new CreateWorkResult(created.Created, Project: created.Value);
         }
 
@@ -702,6 +707,9 @@ public sealed partial class WorkService(
         switch (target.Kind)
         {
             case WorkEntityKind.Project:
+                var repositoriesBefore = request.Repositories is null
+                    ? []
+                    : (await Store.GetProjectAsync(target.Id, ct))?.Repositories.Select(member => member.Repository).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
                 result = new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
                     request.Name is { } name ? Text(name, "name", WorkLimits.MaxProjectNameLength) : null,
                     OptionalText(request.Description, "description"),
@@ -709,6 +717,10 @@ public sealed partial class WorkService(
                     request.Goals is { } goals ? ReadGoals(goals, "goals") : null,
                     request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null,
                     knowledge), actor, ct));
+                // Only repositories the update added can name memory not yet scoped to the project.
+                if (request.Repositories is not null)
+                    BackfillMemoryScopes(result.Project!.Key,
+                        result.Project.Repositories.Select(member => member.Repository).Where(name => !repositoriesBefore.Contains(name)).ToList());
                 break;
 
             case WorkEntityKind.Feature:
@@ -735,6 +747,21 @@ public sealed partial class WorkService(
 
         var recorded = await RecordedAsync(knowledge, ct);
         return result with { Recorded = recorded, Similar = await SimilarAsync(target.ProjectId, recorded, ct), Hints = LessonHints(knowledge, recorded) };
+    }
+
+    /// <summary>
+    /// Queues the scoping of the memory naming one of the given repositories (those a create or update
+    /// added) to the project (CG-167), once the project's write has committed. The backfill scans every
+    /// user's memory, so it never runs on the request path: the queue coalesces pending work per project
+    /// and a background worker runs one project at a time. Best effort: the work write stands when the
+    /// queue is full or the backfill fails, and the daily ReconcileMemoryProjectScopes job re-runs it
+    /// for every project (the backfill is idempotent).
+    /// </summary>
+    private void BackfillMemoryScopes(string projectKey, IReadOnlyCollection<string> repositories)
+    {
+        if (memoryScopeBackfillQueue is null || repositories.Count == 0)
+            return;
+        memoryScopeBackfillQueue.Enqueue(projectKey, repositories);
     }
 
     private static DocumentPatchSpec ReadDocumentPatch(DocumentPatchInput input, string where)

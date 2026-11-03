@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -26,7 +27,7 @@ public class MemoryMcpServer
         Entity format: { "id": "michael", "label": "Michael", "type": "person", "canonicalName": "Michael", "aliases": ["mike"] }
         Claim format: { "subject": "michael", "predicate": "prefers", "valueText": "clean slate design", "confidence": 0.9 }
         Evidence format: { "claimId": "optional-claim-id", "evidenceType": "conversation", "sourceRef": "thread-123", "snippet": "..." }
-        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project.
+        Pass sessionId (your CodeGraph session) or project so the memory is scoped to its work project. With neither, the memory is scoped to the project all your live CodeGraph sessions share; with no live session, or live sessions in several projects, it is stored unscoped.
         """)]
     public static async Task<string> StoreMemoryV2(
         IMemoryOperationsService memoryOperations,
@@ -37,8 +38,9 @@ public class MemoryMcpServer
         [Description("Typed atomic memory claims to store")] List<MemoryMcpClaimInput>? claims = null,
         [Description("Typed evidence rows to store")] List<MemoryMcpEvidenceInput>? evidence = null,
         [Description("Optional key (such as SW) or id of the work project this memory belongs to; its entities and claims are listed under that project.")] string? project = null,
-        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins.")] string? sessionId = null,
-        IMemoryProjectResolver? projectResolver = null)
+        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins. With neither, the project your live sessions share is used; with no live session, or live sessions in several projects, the memory is unscoped.")] string? sessionId = null,
+        IMemoryProjectResolver? projectResolver = null,
+        ClaimsPrincipal? user = null)
     {
         var hasData = !string.IsNullOrWhiteSpace(data);
         var hasTypedInput = (entities?.Count ?? 0) > 0 || (claims?.Count ?? 0) > 0 || (evidence?.Count ?? 0) > 0;
@@ -63,7 +65,7 @@ public class MemoryMcpServer
         string? projectKey;
         try
         {
-            projectKey = await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId);
+            projectKey = await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId, MemoryWriteCaller.Of(user));
         }
         catch (MemoryProjectResolutionException ex)
         {
@@ -97,12 +99,18 @@ public class MemoryMcpServer
         [Description("The topic to search for")] string topic,
         IMemoryOperationsService memoryOperations,
         [Description("How many relationship hops to traverse (default 2)")] int hops = 2,
-        [Description("Maximum number of entities to return (default 20)")] int maxNodes = 20)
+        [Description("Maximum number of entities to return (default 20)")] int maxNodes = 20,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
         hops = Math.Clamp(hops, 1, 5);
         maxNodes = Math.Clamp(maxNodes, 1, 50);
 
-        var result = await memoryOperations.QueryAsync(topic, hops, maxNodes);
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
+        var result = await memoryOperations.QueryAsync(topic, hops, maxNodes, projectKey);
         return JsonSerializer.Serialize(result, JsonOptions);
     }
 
@@ -112,12 +120,19 @@ public class MemoryMcpServer
         [Description("The memory query text")] string query,
         IMemoryOperationsService memoryOperations,
         [Description("Maximum entity seeds to return")] int entityLimit = 5,
-        [Description("Maximum claim seeds to return")] int claimLimit = 5)
+        [Description("Maximum claim seeds to return")] int claimLimit = 5,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var result = await memoryOperations.SearchMemoryAsync(
             query,
             Math.Clamp(entityLimit, 1, 25),
-            Math.Clamp(claimLimit, 1, 25));
+            Math.Clamp(claimLimit, 1, 25),
+            projectKey);
 
         return JsonSerializer.Serialize(result, JsonOptions);
     }
@@ -133,8 +148,14 @@ public class MemoryMcpServer
         [Description("Maximum entities to return")] int maxReturnedEntities = 20,
         [Description("Maximum claims to return")] int maxReturnedClaims = 40,
         [Description("Include superseded claims")] bool includeSuperseded = false,
-        [Description("Include conflicted claims")] bool includeConflicts = true)
+        [Description("Include conflicted claims")] bool includeConflicts = true,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var request = new MemorySubgraphRequest
         {
             Query = query,
@@ -145,6 +166,7 @@ public class MemoryMcpServer
             MaxReturnedClaims = Math.Clamp(maxReturnedClaims, 1, 200),
             IncludeSuperseded = includeSuperseded,
             IncludeConflicts = includeConflicts,
+            ProjectKey = projectKey,
         };
 
         var result = await memoryOperations.GetMemorySubgraphAsync(request);
@@ -158,13 +180,20 @@ public class MemoryMcpServer
         IMemoryOperationsService memoryOperations,
         [Description("Include superseded claims")] bool includeSuperseded = false,
         [Description("Include conflicted claims")] bool includeConflicts = true,
-        [Description("Maximum neighbor edges to return")] int neighborLimit = 20)
+        [Description("Maximum neighbor edges to return")] int neighborLimit = 20,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var bundle = await memoryOperations.GetEntityBundleAsync(
             entityId,
             includeSuperseded,
             includeConflicts,
-            Math.Clamp(neighborLimit, 1, 100));
+            Math.Clamp(neighborLimit, 1, 100),
+            projectKey);
 
         return bundle == null
             ? SerializeError("not_found", $"Memory entity '{entityId}' was not found.")
@@ -178,13 +207,20 @@ public class MemoryMcpServer
         IMemoryOperationsService memoryOperations,
         [Description("Include supersession chain")] bool includeSupersessionChain = true,
         [Description("Include conflicts")] bool includeConflicts = true,
-        [Description("Include evidence")] bool includeEvidence = true)
+        [Description("Include evidence")] bool includeEvidence = true,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var bundle = await memoryOperations.GetClaimBundleAsync(
             claimId,
             includeSupersessionChain,
             includeConflicts,
-            includeEvidence);
+            includeEvidence,
+            projectKey);
 
         return bundle == null
             ? SerializeError("not_found", $"Memory claim '{claimId}' was not found.")
@@ -199,8 +235,14 @@ public class MemoryMcpServer
         IMemoryOperationsService memoryOperations,
         [Description("Maximum additional hops to explore")] int maxAdditionalHops = 2,
         [Description("Maximum number of newly discovered nodes to return")] int frontierLimit = 20,
-        [Description("Minimum score threshold for newly discovered nodes")] double minScore = 0)
+        [Description("Minimum score threshold for newly discovered nodes")] double minScore = 0,
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var result = await memoryOperations.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest
         {
             FrontierEntityIds = ParseCsv(frontierEntityIds),
@@ -208,6 +250,7 @@ public class MemoryMcpServer
             MaxAdditionalHops = Math.Clamp(maxAdditionalHops, 1, 5),
             FrontierLimit = Math.Clamp(frontierLimit, 1, 100),
             MinScore = Math.Clamp(minScore, 0, 100),
+            ProjectKey = projectKey,
         });
 
         return JsonSerializer.Serialize(result, JsonOptions);
@@ -219,16 +262,44 @@ public class MemoryMcpServer
         [Description("Comma-separated entity ids")] string? entityIds,
         [Description("Comma-separated claim ids")] string? claimIds,
         IMemoryOperationsService memoryOperations,
-        [Description("Rendering style: markdown or plain")] string style = "markdown")
+        [Description("Rendering style: markdown or plain")] string style = "markdown",
+        [Description(ReadProjectDescription)] string? project = null,
+        IMemoryProjectResolver? projectResolver = null)
     {
+        var (projectKey, projectError) = await ResolveReadProjectAsync(project, projectResolver);
+        if (projectError != null)
+            return projectError;
+
         var result = await memoryOperations.RenderMemorySummaryAsync(new MemorySummaryRenderRequest
         {
             EntityIds = ParseCsv(entityIds),
             ClaimIds = ParseCsv(claimIds),
             Style = style,
+            ProjectKey = projectKey,
         });
 
         return result.Text;
+    }
+
+    internal const string ReadProjectDescription =
+        "Optional key (such as SW) or id of a work project: only that project's entities, claims and observations are answered.";
+
+    // project on a read (CG-165) resolves like memory_store's: a key or id names the project, anything else is invalid_project.
+    private static async Task<(string? ProjectKey, string? Error)> ResolveReadProjectAsync(
+        string? project,
+        IMemoryProjectResolver? projectResolver)
+    {
+        if (string.IsNullOrWhiteSpace(project))
+            return (null, null);
+
+        try
+        {
+            return (await (projectResolver ?? new WorkMemoryProjectResolver()).ResolveAsync(project, sessionId: null), null);
+        }
+        catch (MemoryProjectResolutionException ex)
+        {
+            return (null, SerializeError("invalid_project", ex.Message));
+        }
     }
 
     private static List<string> ParseCsv(string? csv) =>

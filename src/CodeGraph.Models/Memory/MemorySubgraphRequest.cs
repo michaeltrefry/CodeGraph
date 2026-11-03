@@ -10,4 +10,6 @@ public class MemorySubgraphRequest
     public int MaxReturnedClaims { get; set; } = 40;
     public bool IncludeSuperseded { get; set; }
     public bool IncludeConflicts { get; set; } = true;
+    // The key of a work project (CG-165): only its entities, claims and observations are answered. Null: unscoped.
+    public string? ProjectKey { get; set; }
 }

@@ -194,17 +194,10 @@ export class ProjectSignalsService {
   private readonly api = inject(ApiService);
   private readonly knowledge = inject(KnowledgeApiService);
 
-  /** The open approval items of a project (the review queue, every page of it). */
+  /** The open approval items of a project: the review queue's own total, from one request for a single item. */
   async openApprovals(project: string): Promise<number> {
-    let count = 0;
-    let cursor: string | undefined;
-    for (let page = 0; page < 40; page++) {
-      const result = await firstValueFrom(this.knowledge.reviewQueue(project, 50, cursor));
-      count += result.items.length;
-      cursor = result.next_cursor;
-      if (!cursor) break;
-    }
-    return count;
+    const result = await firstValueFrom(this.knowledge.reviewQueue(project, 1));
+    return result.total ?? result.items.length;
   }
 
   /** The latest code review of a repository; null when it was never reviewed (404) or cannot be read. */

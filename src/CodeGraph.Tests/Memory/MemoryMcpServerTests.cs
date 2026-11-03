@@ -1,13 +1,20 @@
+using System.Net.Http.Headers;
+using System.Security.Claims;
 using System.Text.Json;
 using CodeGraph.Data;
 using CodeGraph.Models.Memory;
 using CodeGraph.Models.Messages;
+using CodeGraph.Models.Work;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Messaging;
 using CodeGraph.Services.Memory;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Server;
 using Shouldly;
@@ -171,6 +178,82 @@ public class MemoryMcpServerTests
         bus.Published.ShouldHaveSingleItem().ProjectKey.ShouldBe("CG");
     }
 
+    [Fact]
+    public async Task StoreMemoryV2_WithoutProjectOrSessionPassesTheCallerToTheResolver()
+    {
+        var bus = new FakeMessageBus();
+        var resolver = new FakeProjectResolver(liveSessions: new() { ["alice"] = "CG" });
+        var alice = new ClaimsPrincipal(new ClaimsIdentity([new Claim("preferred_username", "alice")], "McpPat"));
+
+        var response = await MemoryMcpServer.StoreMemoryV2(
+            CreateMemoryOperations(bus),
+            NullLogger<MemoryMcpServer>.Instance,
+            claims: [new MemoryMcpClaimInput { Subject = "codegraph", Predicate = "uses", Object = "mariadb" }],
+            projectResolver: resolver,
+            user: alice);
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("project").GetString().ShouldBe("CG");
+        bus.Published.ShouldHaveSingleItem().ProjectKey.ShouldBe("CG");
+        resolver.Callers.ShouldHaveSingleItem()!.Name.ShouldBe("alice");
+    }
+
+    [Fact]
+    public async Task StoreTools_OverMcp_ResolveTheProjectForTheRequestsUser()
+    {
+        var bus = new FakeMessageBus();
+        var resolver = new FakeProjectResolver(liveSessions: new() { ["alice"] = "CG" });
+        using var host = await new HostBuilder()
+            .ConfigureWebHost(webHost => webHost
+                .UseTestServer()
+                .ConfigureServices(services =>
+                {
+                    services.AddRouting();
+                    services.AddLogging();
+                    services.AddSingleton(CreateMemoryOperations(bus));
+                    services.AddSingleton<IMemoryProjectResolver>(resolver);
+                    services.AddMcpServer().WithHttpTransport().WithTools<MemoryMcpServer>().WithTools<ConsolidatedMcpServer>();
+                })
+                .Configure(app =>
+                {
+                    app.Use(async (context, next) =>
+                    {
+                        context.User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("preferred_username", "alice")], "McpPat"));
+                        await next(context);
+                    });
+                    app.UseRouting();
+                    app.UseEndpoints(endpoints => endpoints.MapMcp("/mcp"));
+                }))
+            .StartAsync();
+        var http = host.GetTestClient();
+        string? session = null;
+
+        async Task<string> PostAsync(string json)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/mcp") { Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            if (session is not null)
+                request.Headers.Add("Mcp-Session-Id", session);
+            using var response = await http.SendAsync(request);
+            session ??= response.Headers.TryGetValues("Mcp-Session-Id", out var values) ? values.First() : null;
+            return await response.Content.ReadAsStringAsync();
+        }
+
+        await PostAsync("""{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}""");
+        await PostAsync("""{"jsonrpc":"2.0","method":"notifications/initialized"}""");
+        var id = 1;
+        foreach (var tool in new[] { "store_memory_v2", "memory_store" })
+        {
+            var body = await PostAsync("{\"jsonrpc\":\"2.0\",\"id\":" + id++ + ",\"method\":\"tools/call\",\"params\":{\"name\":\"" + tool +
+                "\",\"arguments\":{\"claims\":[{\"subject\":\"codegraph\",\"predicate\":\"uses\",\"object\":\"mariadb\"}]}}}");
+            body.ShouldNotContain("\"isError\":true");
+        }
+
+        resolver.Callers.Select(caller => caller?.Name).ShouldBe(["alice", "alice"]);
+        bus.Published.Select(message => message.ProjectKey).ShouldBe(["CG", "CG"]);
+    }
+
     [Theory]
     [InlineData(typeof(MemoryMcpServer), nameof(MemoryMcpServer.StoreMemoryV2))]
     [InlineData(typeof(ConsolidatedMcpServer), nameof(ConsolidatedMcpServer.MemoryStore))]
@@ -188,6 +271,7 @@ public class MemoryMcpServerTests
         properties.TryGetProperty("project", out _).ShouldBeTrue();
         properties.TryGetProperty("sessionId", out _).ShouldBeTrue();
         properties.TryGetProperty("projectResolver", out _).ShouldBeFalse();
+        properties.TryGetProperty("user", out _).ShouldBeFalse();
     }
 
     [Fact]
@@ -250,6 +334,71 @@ public class MemoryMcpServerTests
         store.ProjectScopes.ShouldHaveSingleItem();
     }
 
+    [Theory]
+    [InlineData("query")]
+    [InlineData("search")]
+    [InlineData("subgraph")]
+    [InlineData("entity_bundle")]
+    [InlineData("claim_bundle")]
+    [InlineData("expand_frontier")]
+    [InlineData("render_summary")]
+    public async Task MemoryRead_ForwardsTheResolvedProjectToEveryStoreReadAndOmitsItWithoutOne(string operation)
+    {
+        var store = new FakeMemoryGraphStore();
+        // A project id resolves to its key, as on the write path.
+        var resolver = new FakeProjectResolver(projects: new() { ["project-id-1"] = "CG" });
+
+        await ConsolidatedMcpServer.MemoryRead(
+            CreateMemoryOperations(new FakeMessageBus(), store), operation,
+            query: "topic", entityId: "entity-1", claimId: "claim-1", entityIds: "e1", claimIds: "c1",
+            project: "project-id-1", projectResolver: resolver);
+
+        store.ReadProjectKeys.ShouldNotBeEmpty();
+        store.ReadProjectKeys.ShouldAllBe(projectKey => projectKey == "CG");
+
+        store.ReadProjectKeys.Clear();
+        await ConsolidatedMcpServer.MemoryRead(
+            CreateMemoryOperations(new FakeMessageBus(), store), operation,
+            query: "topic", entityId: "entity-1", claimId: "claim-1", entityIds: "e1", claimIds: "c1",
+            projectResolver: resolver);
+
+        store.ReadProjectKeys.ShouldNotBeEmpty();
+        store.ReadProjectKeys.ShouldAllBe(projectKey => projectKey == null);
+    }
+
+    [Fact]
+    public async Task MemoryRead_RefusesAnUnknownProjectWithoutReading()
+    {
+        var store = new FakeMemoryGraphStore();
+
+        var response = await ConsolidatedMcpServer.MemoryRead(
+            CreateMemoryOperations(new FakeMessageBus(), store), "search",
+            query: "topic", project: "NOPE", projectResolver: new FakeProjectResolver());
+
+        using var document = JsonDocument.Parse(response);
+        document.RootElement.GetProperty("result").GetProperty("error").GetProperty("code").GetString().ShouldBe("invalid_project");
+        store.ReadProjectKeys.ShouldBeEmpty();
+    }
+
+    [Theory]
+    [InlineData(typeof(ConsolidatedMcpServer), nameof(ConsolidatedMcpServer.MemoryRead))]
+    [InlineData(typeof(MemoryMcpServer), nameof(MemoryMcpServer.SearchMemory))]
+    [InlineData(typeof(MemoryMcpServer), nameof(MemoryMcpServer.GetMemorySubgraph))]
+    public void ReadTools_AdvertiseProjectAndTakeTheResolverFromServices(Type type, string method)
+    {
+        var services = new ServiceCollection()
+            .AddLogging()
+            .AddSingleton<IMemoryOperationsService>(CreateMemoryOperations(new FakeMessageBus()))
+            .AddSingleton<IMemoryProjectResolver>(new FakeProjectResolver())
+            .BuildServiceProvider();
+
+        var tool = McpServerTool.Create(type.GetMethod(method)!, target: null, new McpServerToolCreateOptions { Services = services });
+
+        var properties = tool.ProtocolTool.InputSchema.GetProperty("properties");
+        properties.TryGetProperty("project", out _).ShouldBeTrue();
+        properties.TryGetProperty("projectResolver", out _).ShouldBeFalse();
+    }
+
     [Fact]
     public async Task GetMemoryWriteStatus_ReturnsStructuredReceipt()
     {
@@ -309,14 +458,24 @@ public class MemoryMcpServerTests
         }
     }
 
-    private sealed class FakeProjectResolver(Dictionary<string, string>? sessions = null) : IMemoryProjectResolver
+    private sealed class FakeProjectResolver(
+        Dictionary<string, string>? sessions = null,
+        Dictionary<string, string>? projects = null,
+        Dictionary<string, string>? liveSessions = null) : IMemoryProjectResolver
     {
-        public Task<string?> ResolveAsync(string? project, string? sessionId, CancellationToken ct = default)
+        public List<WorkActor?> Callers { get; } = [];
+
+        public Task<string?> ResolveAsync(string? project, string? sessionId, WorkActor? caller = null, CancellationToken ct = default)
         {
+            Callers.Add(caller);
             if (project is not null)
-                throw new MemoryProjectResolutionException($"project '{project}' is not a project.");
+            {
+                return projects is not null && projects.TryGetValue(project, out var projectKey)
+                    ? Task.FromResult<string?>(projectKey)
+                    : throw new MemoryProjectResolutionException($"project '{project}' is not a project.");
+            }
             if (sessionId is null)
-                return Task.FromResult<string?>(null);
+                return Task.FromResult(caller is not null && liveSessions is not null && liveSessions.TryGetValue(caller.Name, out var live) ? live : null);
             return sessions is not null && sessions.TryGetValue(sessionId, out var key)
                 ? Task.FromResult<string?>(key)
                 : throw new MemoryProjectResolutionException($"sessionId '{sessionId}' is not a session.");
@@ -376,7 +535,13 @@ public class MemoryMcpServerTests
         public Task ResolveObservationAsync(string observationId, string resolution, string? resolvedByMemoryId) => Task.CompletedTask;
         public Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null) =>
             Task.FromResult(new List<(MemoryEntity Entity, double Score)>());
-        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null) => Task.FromResult(new List<MemoryEntity>());
+        // Every project a read asked the store for (CG-165).
+        public List<string?> ReadProjectKeys { get; } = [];
+        public Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null)
+        {
+            ReadProjectKeys.Add(projectKey);
+            return Task.FromResult(new List<MemoryEntity>());
+        }
         public Task<List<MemoryRelationshipDetail>> GetRelationshipsAsync(string entityId) => Task.FromResult(new List<MemoryRelationshipDetail>());
         public Task<List<MemoryObservation>> GetUnresolvedObservationsAsync(IEnumerable<string> entityIds, IEnumerable<string> claimIds) =>
             Task.FromResult(new List<MemoryObservation>());
@@ -393,11 +558,20 @@ public class MemoryMcpServerTests
         public Task<List<MemoryClaim>> GetClaimsByFactGroupAsync(string factGroupKey) => Task.FromResult(new List<MemoryClaim>());
         public Task<List<MemoryClaim>> GetClaimsBySubjectPredicateAsync(string subjectEntityId, string predicate) => Task.FromResult(new List<MemoryClaim>());
         public Task<MemoryEntityBundle?> GetEntityBundleAsync(string entityId, bool includeSuperseded = false, bool includeConflicts = true, int neighborLimit = 20, string? projectKey = null)
-            => Task.FromResult<MemoryEntityBundle?>(null);
+        {
+            ReadProjectKeys.Add(projectKey);
+            return Task.FromResult<MemoryEntityBundle?>(null);
+        }
         public Task<MemoryClaimBundle?> GetClaimBundleAsync(string claimId, bool includeSupersessionChain = true, bool includeConflicts = true, bool includeEvidence = true, string? projectKey = null)
-            => Task.FromResult<MemoryClaimBundle?>(null);
+        {
+            ReadProjectKeys.Add(projectKey);
+            return Task.FromResult<MemoryClaimBundle?>(null);
+        }
         public Task<List<(MemoryClaim Claim, double Score, string MatchKind)>> SearchClaimsAsync(string query, float[]? queryEmbedding, int limit = 5, bool includeSuperseded = false, string? projectKey = null)
-            => Task.FromResult(new List<(MemoryClaim Claim, double Score, string MatchKind)>());
+        {
+            ReadProjectKeys.Add(projectKey);
+            return Task.FromResult(new List<(MemoryClaim Claim, double Score, string MatchKind)>());
+        }
         public List<(string ProjectKey, IReadOnlyCollection<string> EntityIds, IReadOnlyCollection<string> ClaimIds)> ProjectScopes { get; } = [];
         public Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds)
         {
@@ -406,7 +580,10 @@ public class MemoryMcpServerTests
         }
         public Task<bool> IsEntityInProjectAsync(string entityId, string projectKey) => Task.FromResult(false);
         public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20,
-            int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true)
-            => Task.FromResult(new MemorySubgraphResult());
+            int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true, string? projectKey = null)
+        {
+            ReadProjectKeys.Add(projectKey);
+            return Task.FromResult(new MemorySubgraphResult());
+        }
     }
 }

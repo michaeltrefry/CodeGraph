@@ -294,6 +294,8 @@ services:
       CodeGraph__InternalServiceAuth__Issuer: ${CodeGraph__InternalServiceAuth__Issuer:-codegraph}
       CodeGraph__Indexer__BaseUrl: ${CodeGraph__Indexer__BaseUrl:-http://codegraph-indexer:5042}
       CodeGraph__Indexer__Audience: ${CodeGraph__Indexer__Audience:-codegraph-indexer}
+      CodeGraph__Memory__BaseUrl: ${CodeGraph__Memory__BaseUrl:-http://codegraph-memory:5039}
+      CodeGraph__Memory__Audience: ${CodeGraph__Memory__Audience:-codegraph-memory}
       CodeGraph__RepositorySource__Provider: ${CodeGraph__RepositorySource__Provider:-Folder}
       CodeGraph__RepositorySource__ReposCachePath: /repos/workspace
       CodeGraph__RepositorySource__Folder__RootPath: ${CODEGRAPH_CONTAINER_REPOS_ROOT:-/repos/workspace}

@@ -18,6 +18,7 @@ using CodeGraph.Host.Shared.Hosting;
 using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Indexer.Host.Services;
 using CodeGraph.Services;
+using CodeGraph.Services.Memory;
 using CodeGraph.Services.Analyzers;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Embeddings;
@@ -162,6 +163,9 @@ public static class Startup
         services.AddScoped<IAssistantDebugCapture, AssistantDebugCapture>();
         services.AddSingleton<IEmbeddingService, OnnxEmbeddingService>();
         services.AddTransient<IWorkService, WorkService>();
+        // The work service queues a project's memory scope backfill (CG-167); the worker runs it with
+        // the MariaDB backfill registered with the persistence.
+        services.AddMemoryScopeBackfillQueue();
         services.AddTransient<IDreamingService, DreamingService>();
         services.AddTransient<IDreamBatchModel>(sp => sp.GetRequiredService<GraphAssistant>());
         services.AddTransient<IDreamSourceReader, DreamSourceReader>();

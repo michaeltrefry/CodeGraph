@@ -308,12 +308,18 @@ public static class Startup
         // A memory write's project (CG-156) is resolved here, where the work store is, before the
         // write is queued locally or forwarded to the memory host.
         services.AddTransient<IMemoryProjectResolver, WorkMemoryProjectResolver>();
+        // A project's create or repository change queues its memory scope backfill (CG-167), run off
+        // the request path one project at a time by the local MariaDB or remote memory-host backfill.
+        services.AddMemoryScopeBackfillQueue();
 
         if (!string.IsNullOrWhiteSpace(memoryOptions.BaseUrl))
         {
             services.AddCodeGraphMemoryClient(configuration);
             services.AddTransient<IMemoryOperationsService, RemoteMemoryOperationsService>();
             services.AddTransient<IMemoryAdministrationService, RemoteMemoryAdministrationService>();
+            // Memory is on the memory host's database: a project's scope backfill (CG-167) runs there,
+            // replacing the local MariaDB one registered with the persistence.
+            services.AddTransient<IMemoryProjectScopeBackfill, RemoteMemoryProjectScopeBackfill>();
             return;
         }
 

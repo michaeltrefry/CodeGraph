@@ -1,11 +1,15 @@
+using System.Text.Json;
+using System.Threading.Channels;
 using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Memory;
+using CodeGraph.Models.Work;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Work;
 using CodeGraph.Tests.Work;
 using Dapper;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
@@ -16,8 +20,8 @@ namespace CodeGraph.Tests.Memory;
 /// <summary>
 /// Project scoping for memory (CG-156) against a real MariaDB: a write is scoped to its session's
 /// project (or an explicit one), migration 114 backfills memory that names a member repository as a
-/// whole token, and graph, search and entity reads filtered by project answer only that project's
-/// entities and claims, per user.
+/// whole token, and graph, search, entity, subgraph, query, frontier and summary reads filtered by
+/// project answer only that project's entities and claims, per user.
 /// </summary>
 public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
 {
@@ -37,6 +41,54 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         await Should.ThrowAsync<MemoryProjectResolutionException>(() => resolver.ResolveAsync(null, Guid.NewGuid().ToString()));
         await Should.ThrowAsync<MemoryProjectResolutionException>(() => resolver.ResolveAsync(null, "not-a-session"));
     }
+
+    [Fact]
+    public async Task A_write_naming_neither_project_nor_session_takes_the_project_all_the_callers_live_sessions_share()
+    {
+        var first = await db.NewProjectAsync("ML");
+        var second = await db.NewProjectAsync("MN");
+        var user = $"mem-{Guid.NewGuid():N}";
+        var caller = new WorkActor(user);
+        var resolver = new WorkMemoryProjectResolver(db.Store);
+
+        // No live session: unscoped, and an unknown caller is never looked up.
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+        (await resolver.ResolveAsync(null, null, null)).ShouldBeNull();
+
+        var firstSession = await StartSessionAsync(first, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(first);
+        // Another identity's session (a person's, or an agent's of the same name) is not the caller's.
+        (await resolver.ResolveAsync(null, null, new WorkActor($"other-{user}"))).ShouldBeNull();
+        await StartSessionAsync(second, $"other-{user}");
+        var agent = await db.AgentAsync(user);
+        await db.CallAsAsync(WorkTools.StartSession, new { project = second, harness = "codex" }, agent);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(first);
+        (await resolver.ResolveAsync(null, null, agent)).ShouldBe(second);
+
+        // A second live session in the same project still names it; one in another project makes it ambiguous: unscoped.
+        var sameProjectSession = await StartSessionAsync(first, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(first);
+        await db.CallAsync(WorkTools.EndSession, new { session_id = sameProjectSession }, user);
+        var secondSession = await StartSessionAsync(second, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+
+        // An explicit project or session wins over the inference, as before.
+        (await resolver.ResolveAsync(second, null, caller)).ShouldBe(second);
+        (await resolver.ResolveAsync(null, firstSession, caller)).ShouldBe(first);
+
+        // A session gone silent past the idle threshold is not live; nor is an ended one.
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("UPDATE work_sessions SET last_seen_at = @at WHERE id = @id",
+                new { at = DateTime.UtcNow.AddSeconds(-WorkDatabase.IdleSeconds - 60), id = firstSession });
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(second);
+        await db.CallAsync(WorkTools.EndSession, new { session_id = secondSession }, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+        (await resolver.ResolveAsync(null, secondSession, caller)).ShouldBe(second);
+    }
+
+    private async Task<string> StartSessionAsync(string project, string user) =>
+        (await db.CallAsync(WorkTools.StartSession, new { project, harness = "claude-code" }, user))
+            .GetProperty("session").GetProperty("id").GetString()!;
 
     [Fact]
     public async Task A_scoped_write_tags_its_entities_and_claims_and_project_reads_answer_only_that_projects_memory()
@@ -182,6 +234,129 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
     }
 
     [Fact]
+    public async Task Subgraph_query_frontier_and_summary_honour_project_per_user_and_are_unchanged_without_one()
+    {
+        var project = await db.NewProjectAsync("MS");
+        var user = $"user:subgraph-{Guid.NewGuid():N}";
+        var other = $"user:subgraph-other-{Guid.NewGuid():N}";
+        var tenant = new MemoryTenantContext();
+        var store = new MySqlMemoryGraphStore(StorageOptions(), tenant);
+        var retrieval = new MemoryRetrievalService(store, new NoEmbeddings(), NullLogger<MemoryRetrievalService>.Instance);
+
+        using (tenant.Enter(user))
+        {
+            await store.UpsertEntitiesBatchAsync([Entity("repo", "Repo"), Entity("db", "Db"), Entity("other", "Other")]);
+            await store.UpsertClaimsBatchAsync(
+            [
+                Claim("claim_repo_db", "repo", "db"),
+                Claim("claim_repo_other", "repo", "other"),
+                Claim("claim_other_db", "other", "db"),
+            ]);
+            // repo and db are both in the project, but this relationship was asserted only outside it.
+            var elsewhere = Claim("claim_repo_db_elsewhere", "repo", "db");
+            elsewhere.Predicate = "deployed_with";
+            await store.UpsertClaimsBatchAsync([elsewhere]);
+            await store.UpsertEntityEdgesBatchAsync(
+            [
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "db", EdgeType = "relates_to" },
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "other", EdgeType = "relates_to" },
+                new MemoryEntityEdge { FromEntityId = "repo", ToEntityId = "db", EdgeType = "deployed_with", BestActiveClaimId = "claim_repo_db_elsewhere" },
+            ]);
+            // Scopes repo, db (the claim's subject and object) and claim_repo_db; other and its claims stay outside.
+            await store.AddProjectScopeAsync(project, [], ["claim_repo_db"]);
+            await store.CreateObservationAsync(Observation("obs_inside", ["claim_repo_db"]));
+            await store.CreateObservationAsync(Observation("obs_mixed", ["claim_repo_db", "claim_repo_other"]));
+        }
+
+        using (tenant.Enter(other))
+        {
+            // Another user's memory in the same project, under the same entity ids.
+            await store.UpsertEntitiesBatchAsync([Entity("repo", "Repo"), Entity("db", "Db")]);
+            await store.UpsertClaimsBatchAsync([Claim("claim_theirs", "repo", "db")]);
+            await store.AddProjectScopeAsync(project, [], ["claim_theirs"]);
+        }
+
+        using (tenant.Enter(user))
+        {
+            // Subgraph: without a project nothing is filtered.
+            var unscoped = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                SeedClaimIds = ["claim_other_db"],
+            });
+            unscoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db", "other"], ignoreOrder: true);
+            unscoped.Claims.Select(claim => claim.Claim.Id)
+                .ShouldBe(["claim_repo_db", "claim_repo_db_elsewhere", "claim_repo_other", "claim_other_db"], ignoreOrder: true);
+            unscoped.EntityEdges.Select(edge => $"{edge.ToEntityId}:{edge.EdgeType}").ShouldBe(["db:relates_to", "other:relates_to", "db:deployed_with"], ignoreOrder: true);
+            unscoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside", "obs_mixed"], ignoreOrder: true);
+
+            // In the project: seeds outside it are dropped, as are claims, edges and observations reaching outside it.
+            var scoped = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                SeedClaimIds = ["claim_other_db"],
+                ProjectKey = project,
+            });
+            scoped.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db"], ignoreOrder: true);
+            scoped.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            // Only the edge the project's own claim supports, with that claim as its best one.
+            var edge = scoped.EntityEdges.ShouldHaveSingleItem();
+            (edge.ToEntityId, edge.EdgeType, edge.BestActiveClaimId).ShouldBe(("db", "relates_to", "claim_repo_db"));
+            scoped.Observations.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
+            (await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest { SeedEntityIds = ["repo"], ProjectKey = "ZZNOPE" }))
+                .Entities.ShouldBeEmpty();
+
+            // Query (topic search then subgraph).
+            var queried = await retrieval.QueryAsync("Repo", maxNodes: 10);
+            queried.Subgraph!.Claims.Select(claim => claim.Claim.Id).ShouldContain("claim_repo_other");
+            var scopedQuery = await retrieval.QueryAsync("Repo", maxNodes: 10, projectKey: project);
+            scopedQuery.Subgraph!.Entities.Select(entity => entity.Entity.Id).ShouldContain("repo");
+            scopedQuery.Subgraph.Entities.Select(entity => entity.Entity.Id).ShouldBeSubsetOf(["repo", "db"]);
+            scopedQuery.Subgraph.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            scopedQuery.Conflicts.Select(observation => observation.Id).ShouldBe(["obs_inside"]);
+            (await retrieval.QueryAsync("Other", projectKey: project)).FormattedText.ShouldBe("No relevant memories found.");
+            (await retrieval.QueryAsync("Other")).Subgraph!.Entities.Select(entity => entity.Entity.Id).ShouldContain("other");
+
+            // Frontier expansion.
+            (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"] }))
+                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db", "claim_repo_db_elsewhere", "claim_repo_other"], ignoreOrder: true);
+            (await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest { FrontierEntityIds = ["repo"], ProjectKey = project }))
+                .AddedClaims.Select(claim => claim.Claim.Id).ShouldBe(["claim_repo_db"]);
+            var outside = await retrieval.ExpandMemoryFrontierAsync(new MemoryFrontierExpansionRequest
+            {
+                FrontierClaimIds = ["claim_repo_other"],
+                ProjectKey = project,
+            });
+            outside.AddedEntities.ShouldBeEmpty();
+            outside.AddedClaims.ShouldBeEmpty();
+
+            // Render summary.
+            var summary = await retrieval.RenderMemorySummaryAsync(new MemorySummaryRenderRequest { EntityIds = ["repo"], Style = "plain" });
+            summary.Text.ShouldContain("repo relates_to other");
+            var scopedSummary = await retrieval.RenderMemorySummaryAsync(new MemorySummaryRenderRequest
+            {
+                EntityIds = ["repo"],
+                Style = "plain",
+                ProjectKey = project,
+            });
+            scopedSummary.Text.ShouldContain("repo relates_to db");
+            scopedSummary.Text.ShouldNotContain("repo relates_to other");
+        }
+
+        using (tenant.Enter(other))
+        {
+            var theirs = await retrieval.GetMemorySubgraphAsync(new MemorySubgraphRequest
+            {
+                SeedEntityIds = ["repo", "db", "other"],
+                ProjectKey = project,
+            });
+            theirs.Entities.Select(entity => entity.Entity.Id).ShouldBe(["repo", "db"], ignoreOrder: true);
+            theirs.Claims.Select(claim => claim.Claim.Id).ShouldBe(["claim_theirs"]);
+            theirs.Observations.ShouldBeEmpty();
+        }
+    }
+
+    [Fact]
     public async Task The_backfill_scopes_memory_naming_a_member_repository_as_a_whole_token_and_is_safe_to_replay()
     {
         var project = $"MB{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
@@ -256,9 +431,12 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
             await connection.ExecuteAsync(statement);
     }
 
-    private async Task<string[]> ScopesAsync(string username)
+    private Task<string[]> ScopesAsync(string username) => ScopesAsync(db.ConnectionString, username);
+
+    /// <summary>Every project scope of <paramref name="username"/>'s memory, as kind:id@project:origin, sorted.</summary>
+    internal static async Task<string[]> ScopesAsync(string connectionString, string username)
     {
-        await using var connection = new MySqlConnection(db.ConnectionString);
+        await using var connection = new MySqlConnection(connectionString);
         var rows = await connection.QueryAsync<string>(
             """
             SELECT CONCAT('entity:', entity.external_id, '@', scope.project_key, ':', scope.origin)
@@ -273,9 +451,9 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         return rows.Order(StringComparer.Ordinal).ToArray();
     }
 
-    private static MemoryEntity Entity(string id, string label) => new() { Id = id, Label = label, Type = "concept", Summary = "", Source = "test" };
+    internal static MemoryEntity Entity(string id, string label) => new() { Id = id, Label = label, Type = "concept", Summary = "", Source = "test" };
 
-    private static MemoryClaim Claim(string id, string subject, string obj) => new()
+    internal static MemoryClaim Claim(string id, string subject, string obj) => new()
     {
         Id = id,
         ClaimKey = id,
@@ -296,7 +474,7 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         Source = "test",
     };
 
-    private static MemoryEvidence Evidence(string id, string claimId, string sourceRef) => new()
+    internal static MemoryEvidence Evidence(string id, string claimId, string sourceRef) => new()
     {
         Id = id,
         ClaimId = claimId,
@@ -322,4 +500,236 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         AboutEntityIds = ["repo"],
         AboutClaimIds = claimIds,
     };
+}
+
+/// <summary>
+/// The project-scope backfill run by the work service (CG-167), against its own database: the
+/// migration-114 replays of <see cref="MemoryProjectScopeMariaDbTests"/> scope every user's memory to
+/// every project, so a project naming codegraph there would leak into these expectations and back.
+/// </summary>
+public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    [Fact]
+    public async Task Creating_a_project_or_adding_a_repository_scopes_every_users_memory_naming_it_and_a_replay_changes_nothing()
+    {
+        var key = $"BF{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var alice = $"user:alice-{Guid.NewGuid():N}";
+        var bob = $"user:bob-{Guid.NewGuid():N}";
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var tenant = new MemoryTenantContext();
+        var store = new MySqlMemoryGraphStore(options, tenant);
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES ('ab')");
+
+        using (tenant.Enter(alice))
+        {
+            await store.UpsertEntitiesBatchAsync(
+            [
+                MemoryProjectScopeMariaDbTests.Entity("codegraph", "CodeGraph"),
+                MemoryProjectScopeMariaDbTests.Entity("mariadb", "MariaDB"),
+                MemoryProjectScopeMariaDbTests.Entity("codegraph_api", "CodeGraph.Api"),
+                MemoryProjectScopeMariaDbTests.Entity("unrelated", "Unrelated"),
+                MemoryProjectScopeMariaDbTests.Entity("kanban", "Kanban"),
+                MemoryProjectScopeMariaDbTests.Entity("board", "Board"),
+                MemoryProjectScopeMariaDbTests.Entity("ab", "AB"),
+                MemoryProjectScopeMariaDbTests.Entity("notes", "Notes"),
+            ]);
+            await store.UpsertClaimsBatchAsync(
+            [
+                MemoryProjectScopeMariaDbTests.Claim("claim_codegraph_uses_mariadb", "codegraph", "mariadb"),
+                MemoryProjectScopeMariaDbTests.Claim("claim_unrelated_wraps_api", "unrelated", "codegraph_api"),
+                MemoryProjectScopeMariaDbTests.Claim("claim_kanban_tracks_board", "kanban", "board"),
+                MemoryProjectScopeMariaDbTests.Claim("claim_ab_has_notes", "ab", "notes"),
+            ]);
+            await store.AddEvidenceBatchAsync(
+            [
+                // Neither names codegraph: "CodeGraph.Api" and "codegraph-web" are other tokens.
+                MemoryProjectScopeMariaDbTests.Evidence("evidence_api", "claim_unrelated_wraps_api", "src/CodeGraph.Api/Startup.cs"),
+                MemoryProjectScopeMariaDbTests.Evidence("evidence_web", "claim_unrelated_wraps_api", "codegraph-web/src/app.ts"),
+                MemoryProjectScopeMariaDbTests.Evidence("evidence_kanban", "claim_kanban_tracks_board", "https://github.com/michaeltrefry/mlx-rs/pull/7"),
+                // A repository name shorter than three characters is never matched.
+                MemoryProjectScopeMariaDbTests.Evidence("evidence_ab", "claim_ab_has_notes", "ab/README.md"),
+            ]);
+            // Scoped by a write before the project's repositories were known: it stays a write.
+            await store.AddProjectScopeAsync(key, ["mariadb"], []);
+        }
+
+        using (tenant.Enter(bob))
+            await store.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("codegraph", "CodeGraph")]);
+
+        // The real queue and worker, draining into the MariaDB backfill; the test awaits each run.
+        var queue = new MemoryScopeBackfillQueue(NullLogger<MemoryScopeBackfillQueue>.Instance);
+        var backfill = new SignallingBackfill(new MySqlMemoryProjectScopeBackfill(options));
+        await using var provider = new ServiceCollection().AddSingleton<IMemoryProjectScopeBackfill>(backfill).BuildServiceProvider();
+        using var worker = new MemoryScopeBackfillWorker(queue, provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<MemoryScopeBackfillWorker>.Instance);
+        await worker.StartAsync(CancellationToken.None);
+
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfillQueue: queue);
+        await CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Backfill on create", repositories = new[] { new { repository = "codegraph", role = "dependency" } } },
+        });
+        (await backfill.NextRunAsync()).ShouldBe((key, "codegraph"));
+
+        string[] afterCreate =
+        [
+            $"claim:claim_codegraph_uses_mariadb@{key}:backfill",
+            $"entity:codegraph@{key}:backfill",
+            $"entity:mariadb@{key}:write",
+        ];
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, alice)).ShouldBe(afterCreate);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, bob)).ShouldBe([$"entity:codegraph@{key}:backfill"]);
+
+        await new MySqlMemoryProjectScopeBackfill(options).BackfillAsync(key, ["codegraph"]);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, alice)).ShouldBe(afterCreate);
+
+        var version = (await CallAsync(work, WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        await CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = key,
+            expected_version = version,
+            repositories = new[]
+            {
+                new { repository = "codegraph", role = "dependency" },
+                new { repository = "mlx-rs", role = "dependency" },
+                new { repository = "ab", role = "dependency" },
+            },
+        });
+        // Only the repositories the update added are backfilled.
+        (await backfill.NextRunAsync()).ShouldBe((key, "ab,mlx-rs"));
+
+        string[] afterAdd =
+        [
+            $"claim:claim_codegraph_uses_mariadb@{key}:backfill",
+            $"claim:claim_kanban_tracks_board@{key}:backfill",
+            $"entity:board@{key}:backfill",
+            $"entity:codegraph@{key}:backfill",
+            $"entity:kanban@{key}:backfill",
+            $"entity:mariadb@{key}:write",
+        ];
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, alice)).ShouldBe(afterAdd);
+        await new MySqlMemoryProjectScopeBackfill(options).BackfillAsync(key, ["codegraph", "mlx-rs", "ab"]);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, alice)).ShouldBe(afterAdd);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, bob)).ShouldBe([$"entity:codegraph@{key}:backfill"]);
+        await worker.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Only_a_created_project_or_the_repositories_an_update_added_are_queued_for_a_backfill_and_the_write_never_waits_for_it()
+    {
+        var key = $"BX{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var repository = $"repo-{key.ToLowerInvariant()}";
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repository), ('mlx-rs')", new { repository });
+        // A queue that never runs a backfill: every project write still stands without one.
+        var queue = new RecordingQueue();
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfillQueue: queue);
+
+        var create = new
+        {
+            new_project = new { key, name = "Backfill fails", repositories = new[] { new { repository, role = "owned" } } },
+            idempotency_key = $"create-{key}",
+        };
+        var created = await CallAsync(work, WorkTools.CreateWork, create);
+        created.GetProperty("created").GetBoolean().ShouldBeTrue();
+        // An idempotent replay creates nothing and queues nothing.
+        (await CallAsync(work, WorkTools.CreateWork, create)).GetProperty("created").GetBoolean().ShouldBeFalse();
+        queue.Enqueued.ShouldBe([$"{key}:{repository}"]);
+
+        var version = (await CallAsync(work, WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
+        var updated = await CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = key,
+            expected_version = version,
+            repositories = new[] { new { repository, role = "owned" }, new { repository = "mlx-rs", role = "dependency" } },
+        });
+        updated.GetProperty("project").GetProperty("repositories").GetArrayLength().ShouldBe(2);
+        queue.Enqueued.ShouldBe([$"{key}:{repository}", $"{key}:mlx-rs"]);
+
+        // An update that adds no repository queues nothing.
+        version = updated.GetProperty("project").GetProperty("version").GetInt64();
+        await CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = key,
+            expected_version = version,
+            repositories = new[] { new { repository = "mlx-rs", role = "dependency" }, new { repository, role = "owned" } },
+        });
+        queue.Enqueued.Count.ShouldBe(2);
+    }
+
+    [Fact]
+    public async Task The_daily_reconciliation_lists_every_project_with_repositories_and_scopes_one_whose_backfill_failed()
+    {
+        var key = $"RC{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var empty = $"RE{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var owned = key.ToLowerInvariant();
+        var dependency = $"{owned}dep";
+        var carol = $"user:carol-{Guid.NewGuid():N}";
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@owned), (@dependency)", new { owned, dependency });
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var tenant = new MemoryTenantContext();
+        using (tenant.Enter(carol))
+            await new MySqlMemoryGraphStore(options, tenant).UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity(owned, owned)]);
+
+        // The backfill queued on create never runs (the queue was full, or it failed): the project misses its scopes.
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfillQueue: new RecordingQueue());
+        await CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Reconciled", repositories = new[] { new { repository = owned, role = "owned" }, new { repository = dependency, role = "dependency" } } },
+        });
+        await CallAsync(work, WorkTools.CreateWork, new { new_project = new { key = empty, name = "No repositories" } });
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBeEmpty();
+
+        var listed = await db.Store.ListProjectRepositoriesAsync();
+        listed.Single(project => project.ProjectKey == key).Repositories.ShouldBe([owned, dependency]);
+        listed.ShouldNotContain(project => project.ProjectKey == empty);
+
+        var result = await new CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob(db.Store, new MySqlMemoryProjectScopeBackfill(options),
+            NullLogger<CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob>.Instance).ExecuteAsync(new CodeGraph.Jobs.Jobs.EmptyJobRequest());
+        result.Success.ShouldBeTrue(result.Message);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBe([$"entity:{owned}@{key}:backfill"]);
+    }
+
+    /// <summary>A queue that accepts and keeps every backfill, as "project:repository,…", and never runs one.</summary>
+    private sealed class RecordingQueue : IMemoryScopeBackfillQueue
+    {
+        public List<string> Enqueued { get; } = [];
+
+        public bool Enqueue(string projectKey, IReadOnlyCollection<string> repositories)
+        {
+            Enqueued.Add($"{projectKey}:{string.Join(",", repositories)}");
+            return true;
+        }
+    }
+
+    /// <summary>Runs the backfill and then reports the run, as (project, sorted repositories).</summary>
+    private sealed class SignallingBackfill(IMemoryProjectScopeBackfill inner) : IMemoryProjectScopeBackfill
+    {
+        private readonly Channel<(string, string)> runs = Channel.CreateUnbounded<(string, string)>();
+
+        public async Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        {
+            try
+            {
+                await inner.BackfillAsync(projectKey, repositories, ct);
+            }
+            finally
+            {
+                runs.Writer.TryWrite((projectKey, string.Join(",", repositories.Order(StringComparer.Ordinal))));
+            }
+        }
+
+        public async Task<(string, string)> NextRunAsync() => await runs.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60));
+    }
+
+    private static async Task<JsonElement> CallAsync(WorkService work, string tool, object arguments)
+    {
+        var result = await work.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), new WorkActor("alice"));
+        return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+    }
 }

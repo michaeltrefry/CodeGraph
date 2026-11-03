@@ -96,8 +96,9 @@ public sealed class LocalMemoryOperationsService(
         string topic,
         int hops = 2,
         int maxNodes = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
-        => memoryService.QueryAsync(topic, hops, maxNodes);
+        => memoryService.QueryAsync(topic, hops, maxNodes, projectKey);
 
     public Task<MemoryGraphSnapshot> GetFullGraphAsync(
         int limit = 200,

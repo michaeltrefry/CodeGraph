@@ -478,3 +478,34 @@ internal sealed class RecordingIndexerRunRetentionService : CodeGraph.Services.I
         return Task.FromResult(Deleted);
     }
 }
+
+/// <summary>A work store answering only the project listing of the memory scope reconciliation (CG-167).</summary>
+public class ProjectRepositoriesWorkStore : System.Reflection.DispatchProxy
+{
+    public IReadOnlyList<ProjectRepositories> Projects { get; set; } = [];
+
+    public static IWorkStore Create(params ProjectRepositories[] projects)
+    {
+        var store = Create<IWorkStore, ProjectRepositoriesWorkStore>();
+        ((ProjectRepositoriesWorkStore)(object)store).Projects = projects;
+        return store;
+    }
+
+    protected override object? Invoke(System.Reflection.MethodInfo? method, object?[]? args) =>
+        method!.Name == nameof(IWorkStore.ListProjectRepositoriesAsync)
+            ? Task.FromResult(Projects)
+            : throw new NotSupportedException(method.Name);
+}
+
+internal sealed class RecordingMemoryProjectScopeBackfill(params string[] failingProjects) : IMemoryProjectScopeBackfill
+{
+    public List<(string ProjectKey, IReadOnlyCollection<string> Repositories)> Calls { get; } = [];
+
+    public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+    {
+        Calls.Add((projectKey, repositories));
+        return failingProjects.Contains(projectKey)
+            ? Task.FromException(new HttpRequestException("memory host unreachable"))
+            : Task.CompletedTask;
+    }
+}

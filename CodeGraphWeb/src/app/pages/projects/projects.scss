@@ -196,9 +196,6 @@ a.wrk-tab {
 // ---- work tab ----
 .prj-work { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 
-// The cards keep the work pages' 340px column, but never wider than a phone.
-.prj-work .wrk-grid { grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); }
-
 .wrk-card.prj-features { padding: 0; overflow: hidden; }
 
 .prj-features-head {

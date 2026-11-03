@@ -4,6 +4,7 @@ using CodeGraph.Data.Neo4j;
 using CodeGraph.Indexer.Client;
 using CodeGraph.Host.Shared.Logging;
 using CodeGraph.Jobs.Jobs;
+using CodeGraph.Memory.Client;
 using CodeGraph.Services;
 using CodeGraph.Services.Assistant;
 using CodeGraph.Services.Configuration;
@@ -23,6 +24,7 @@ public static class Startup
         services.AddCodeGraphIndexerClient(configuration);
 
         RegisterPersistence(services, configuration);
+        RegisterMemoryProjectScopeBackfill(services, configuration);
         services.AddSingleton<IFileSystem, LocalFileSystem>();
         services.AddTransient<IMcpDocService, McpDocService>();
         services.AddTransient<IAssistantRetentionCleanupService, AssistantRetentionCleanupService>();
@@ -78,6 +80,23 @@ public static class Startup
             ?? throw new InvalidOperationException("IGraphStore does not implement IDbHealthStore"));
         services.AddTransient<IExclusionStore>(sp => sp.GetRequiredService<IGraphStore>() as IExclusionStore
             ?? throw new InvalidOperationException("IGraphStore does not implement IExclusionStore"));
+    }
+
+    /// <summary>
+    /// Where the daily memory scope reconciliation (CG-167) backfills: with a memory host configured,
+    /// memory is on its database, so the backfill runs there (as the API's does), replacing the local
+    /// MariaDB one registered with the persistence.
+    /// </summary>
+    private static void RegisterMemoryProjectScopeBackfill(IServiceCollection services, IConfiguration configuration)
+    {
+        var memoryOptions = configuration
+            .GetSection(MemoryClientOptions.SectionPath)
+            .Get<MemoryClientOptions>() ?? new MemoryClientOptions();
+        if (string.IsNullOrWhiteSpace(memoryOptions.BaseUrl))
+            return;
+
+        services.AddCodeGraphMemoryClient(configuration);
+        services.AddTransient<IMemoryProjectScopeBackfill, RemoteMemoryProjectScopeBackfill>();
     }
 
     private static bool IsMariaDbProvider(CodeGraphStorageOptions storageOptions) =>

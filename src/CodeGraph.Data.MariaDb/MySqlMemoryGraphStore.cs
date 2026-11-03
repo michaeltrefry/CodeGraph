@@ -1834,6 +1834,18 @@ public class MySqlMemoryGraphStore(
         return kept;
     }
 
+    private static async Task<List<string>> WhereAsync(IEnumerable<string> ids, Func<string, Task<bool>> predicate)
+    {
+        var kept = new List<string>();
+        foreach (var id in ids)
+        {
+            if (await predicate(id))
+                kept.Add(id);
+        }
+
+        return kept;
+    }
+
     private async Task<bool> IsClaimInProjectAsync(MySqlConnection connection, string claimId, string projectKey) =>
         await connection.ExecuteScalarAsync<bool>(
             """
@@ -1851,7 +1863,8 @@ public class MySqlMemoryGraphStore(
         int maxReturnedEntities = 20,
         int maxReturnedClaims = 40,
         bool includeSuperseded = false,
-        bool includeConflicts = true)
+        bool includeConflicts = true,
+        string? projectKey = null)
     {
         var result = new MemorySubgraphResult
         {
@@ -1865,6 +1878,13 @@ public class MySqlMemoryGraphStore(
             return result;
 
         await using var connection = CreateConnection();
+        if (projectKey is not null)
+        {
+            // CG-165: within a project, seeds outside it are dropped, and so is everything reached through them.
+            seedEntityIds = await WhereAsync(seedEntityIds, id => IsEntityInProjectAsync(id, projectKey));
+            seedClaimIds = await WhereAsync(seedClaimIds, id => IsClaimInProjectAsync(connection, id, projectKey));
+        }
+
         var entityIds = seedEntityIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var seedClaimId in seedClaimIds)
         {
@@ -1876,6 +1896,9 @@ public class MySqlMemoryGraphStore(
             if (!string.IsNullOrWhiteSpace(claim.ObjectEntityId))
                 entityIds.Add(claim.ObjectEntityId);
         }
+
+        if (projectKey is not null)
+            entityIds = (await WhereAsync(entityIds, id => IsEntityInProjectAsync(id, projectKey))).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var entities = new List<MemoryEntity>();
         foreach (var entityId in entityIds.Take(maxReturnedEntities))
@@ -1903,6 +1926,8 @@ public class MySqlMemoryGraphStore(
                   AND (@includeSuperseded OR memory_claim.status <> 'superseded')
                   AND (@includeConflicts OR memory_claim.status <> 'conflicted')
                   AND (subject.external_id = @entityId OR object_entity.external_id = @entityId)
+                """ + ClaimInProjectSql + """
+
                 ORDER BY memory_claim.recorded_at DESC
                 LIMIT @limit;
                 """,
@@ -1913,6 +1938,7 @@ public class MySqlMemoryGraphStore(
                     includeConflicts,
                     entityId,
                     limit = maxReturnedClaims,
+                    projectKey,
                 });
             claims.AddRange(entityClaims.Select(row => row.ToModel()));
         }
@@ -1945,7 +1971,7 @@ public class MySqlMemoryGraphStore(
             if (rowId.HasValue)
                 rowIds.Add(rowId.Value);
         }
-        result.EntityEdges = (await QueryEntityEdgesAsync(connection, rowIds, rowIds)).Select(ToEntityEdge).ToList();
+        result.EntityEdges = (await QueryEntityEdgesAsync(connection, rowIds, rowIds, projectKey)).Select(ToEntityEdge).ToList();
 
         var claimIds = claims.Select(claim => claim.Id).ToList();
         result.ClaimEdges = (await connection.QueryAsync<MemoryClaimEdgeRow>(
@@ -1964,7 +1990,8 @@ public class MySqlMemoryGraphStore(
             .Select(row => row.ToModel())
             .ToList();
 
-        result.Observations = await GetUnresolvedObservationsAsync(entitySet, claimIds);
+        result.Observations = await FilterObservationsInProjectAsync(
+            connection, await GetUnresolvedObservationsAsync(entitySet, claimIds), projectKey);
         result.Meta.FrontierExpanded = result.Entities.Count + result.Claims.Count;
         result.Meta.ResponseTruncated = result.Entities.Count >= maxReturnedEntities || result.Claims.Count >= maxReturnedClaims;
         return result;
@@ -2334,9 +2361,24 @@ public class MySqlMemoryGraphStore(
         if (sourceOrTargetRowIds.Count == 0)
             return [];
 
-        var sql = """
+        // An entity edge is a convenience derived from active claims (subject -> object, the predicate as its
+        // type). Within a project it stands only on the project's own claims: shared endpoints are not enough,
+        // and its best claim is the project's most recent one, never another project's.
+        const string projectSupportingClaim = """
+            FROM memory_claims supporting
+            JOIN memory_claim_projects supporting_scope ON supporting_scope.claim_id = supporting.id AND supporting_scope.project_key = @projectKey
+            WHERE supporting.username = edge.username
+              AND supporting.subject_entity_id = edge.from_entity_id
+              AND supporting.object_entity_id = edge.to_entity_id
+              AND supporting.predicate = edge.edge_type
+              AND LOWER(supporting.status) = 'active'
+            """;
+        var bestActiveClaimId = projectKey is null
+            ? "claim.external_id"
+            : $"(SELECT supporting.external_id {projectSupportingClaim} ORDER BY supporting.recorded_at DESC LIMIT 1)";
+        var sql = $"""
             SELECT source.external_id AS FromEntityId, target.external_id AS ToEntityId,
-                   edge.edge_type AS EdgeType, claim.external_id AS BestActiveClaimId,
+                   edge.edge_type AS EdgeType, {bestActiveClaimId} AS BestActiveClaimId,
                    edge.weight AS Weight, edge.created_at AS CreatedAt, edge.updated_at AS UpdatedAt
             FROM memory_entity_edges edge
             JOIN memory_entities_v2 source ON source.id = edge.from_entity_id
@@ -2360,6 +2402,7 @@ public class MySqlMemoryGraphStore(
                AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.from_entity_id AND scope.project_key = @projectKey)
                AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.to_entity_id AND scope.project_key = @projectKey)
             """;
+            sql += $"\n   AND EXISTS (SELECT 1 {projectSupportingClaim})";
         }
 
         sql += " ORDER BY edge.updated_at DESC;";

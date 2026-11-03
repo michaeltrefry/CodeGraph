@@ -294,6 +294,8 @@ export interface ReviewItem {
 export interface ReviewQueueResult {
   items: ReviewItem[];
   next_cursor?: string;
+  /** Every item in the queue across all pages. */
+  total?: number;
 }
 
 // ---- request bodies -----------------------------------------------------------------------

@@ -284,6 +284,17 @@
   justify-content: space-between;
   gap: 16px;
 
+  // On a phone the title block takes the whole line and the actions (a project select, buttons) go below it.
+  @media (max-width: 640px) {
+    flex-wrap: wrap;
+    > div:first-child { flex: 1 1 100%; min-width: 0; }
+
+    // A long option (a project's name) must not widen the page.
+    .cg-page-header-actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; max-width: 100%; }
+    .cg-page-header-actions .cg-field,
+    .cg-page-header-actions .cg-select { min-width: 0; max-width: 100%; }
+  }
+
   h1 {
     font-size: var(--fs-h1);
     font-weight: 600;

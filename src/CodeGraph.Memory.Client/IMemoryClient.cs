@@ -89,6 +89,7 @@ public interface IMemoryClient
         string topic,
         int hops = 2,
         int maxNodes = 20,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryGraphSnapshot> GetGraphAsync(
@@ -108,6 +109,13 @@ public interface IMemoryClient
     Task<MemoryEntityWithRelationshipsResponse?> GetEntityWithRelationshipsAsync(
         string username,
         string entityId,
+        CancellationToken ct = default);
+
+    /// <summary>Scopes existing memory of every user to a project by the repositories it names (CG-167); the system identity only.</summary>
+    Task BackfillProjectScopesAsync(
+        string username,
+        string projectKey,
+        IReadOnlyCollection<string> repositories,
         CancellationToken ct = default);
 
 }

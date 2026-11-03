@@ -268,7 +268,7 @@ public static class WorkTools
             "Read the project's review queue: open challenges of rules (one item per rule), lessons proposed for rule status, contradicting lessons (one item per " +
             "pair) and decisions agents made autonomously not yet acknowledged (record acknowledge), ranked by priority, then recurrence, then age. Informational: " +
             "nothing in it blocks work, and every item can be settled by anyone (promote, challenge resolve, record retract/supersede/acknowledge). Each item carries the author " +
-            "of its entry (and other_author, the other lesson's, for a contradiction)." + Sessions + Errors,
+            "of its entry (and other_author, the other lesson's, for a contradiction). total is the number of items in the whole queue, so a count needs one call with limit 1." + Sessions + Errors,
             ReadOnly: true, Idempotent: true)
     ];
 

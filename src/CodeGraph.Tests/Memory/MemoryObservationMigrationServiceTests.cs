@@ -181,7 +181,7 @@ public class MemoryObservationMigrationServiceTests
             => Task.FromResult(SearchResults.GetValueOrDefault(query, []).Take(limit).ToList());
         public Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds) => Task.CompletedTask;
         public Task<bool> IsEntityInProjectAsync(string entityId, string projectKey) => Task.FromResult(false);
-        public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20, int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true)
+        public Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphQuery query, int maxHops = 2, int maxReturnedEntities = 20, int maxReturnedClaims = 40, bool includeSuperseded = false, bool includeConflicts = true, string? projectKey = null)
             => Task.FromResult(new MemorySubgraphResult());
     }
 }

@@ -168,6 +168,20 @@ public sealed partial class MySqlWorkStore
         return rows.Select(row => ToView(row, now)).ToList();
     }
 
+    public async Task<IReadOnlyList<string>> ListLiveProjectKeysOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default)
+    {
+        await using var connection = await OpenAsync(ct);
+        // Distinct projects, not sessions: however many live sessions an identity holds, every project is counted.
+        var rows = (await connection.QueryAsync<(Guid ProjectId, string ProjectKey)>(new CommandDefinition(
+            "SELECT DISTINCT s.project_id AS ProjectId, p.project_key AS ProjectKey FROM work_sessions s JOIN work_projects p ON p.id = s.project_id " +
+            "WHERE s.identity = @identity AND s.identity_kind = @identityKind AND s.ended_at IS NULL AND s.last_seen_at > @staleBefore " +
+            "LIMIT @limit",
+            new { identity = identity.Name, identityKind = IdentityKindOf(identity), staleBefore = StaleBefore(Now()), limit = Math.Clamp(limit, 1, WorkLimits.MaxPageSize) },
+            cancellationToken: ct))).ToList();
+        foreach (var row in rows) DreamPolicy.RequireCurrentProject(row.ProjectId);
+        return rows.Select(row => row.ProjectKey).ToList();
+    }
+
     public async Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default)
     {
         await using var connection = await OpenAsync(ct);
@@ -176,6 +190,19 @@ public sealed partial class MySqlWorkStore
             new { repository }, cancellationToken: ct))).ToList();
         foreach(var owner in owners)DreamPolicy.RequireCurrentProject(owner);
         return owners.Count == 1 ? owners[0] : null;
+    }
+
+    public async Task<IReadOnlyList<ProjectRepositories>> ListProjectRepositoriesAsync(CancellationToken ct = default)
+    {
+        DreamPolicy.RefuseAmbient("list every project's repositories");
+        await using var connection = await OpenAsync(ct);
+        var rows = await connection.QueryAsync<(string ProjectKey, string RepositoryName)>(new CommandDefinition(
+            "SELECT p.project_key AS ProjectKey, r.repository_name AS RepositoryName FROM work_project_repositories r JOIN work_projects p ON p.id = r.project_id " +
+            "ORDER BY p.project_key, r.position, r.repository_name",
+            cancellationToken: ct));
+        return rows.GroupBy(row => row.ProjectKey, StringComparer.Ordinal)
+            .Select(group => new ProjectRepositories(group.Key, group.Select(row => row.RepositoryName).ToList()))
+            .ToList();
     }
 
     private Task<EndSessionResult> EndSessionCoreAsync(Guid sessionId, Guid? itemId, HandoffSpec? handoff, IReadOnlyList<KnowledgeSpec>? knowledge, WorkActor actor, CancellationToken ct = default) =>

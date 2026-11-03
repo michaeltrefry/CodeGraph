@@ -226,13 +226,15 @@ public sealed class HttpMemoryClient(
         string topic,
         int hops = 2,
         int maxNodes = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = "api/memory/query" + BuildQueryString(
         [
             ("topic", NormalizeRequired(topic, nameof(topic))),
             ("hops", Math.Clamp(hops, 1, 5).ToString()),
-            ("maxNodes", Math.Clamp(maxNodes, 1, 50).ToString())
+            ("maxNodes", Math.Clamp(maxNodes, 1, 50).ToString()),
+            ("project", projectKey)
         ]);
 
         return SendJsonAsync<MemoryQueryResult>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
@@ -290,6 +292,27 @@ public sealed class HttpMemoryClient(
 
         await EnsureSuccessAsync(response, ct);
         return await response.Content.ReadFromJsonAsync<MemoryEntityWithRelationshipsResponse>(JsonOptions, ct);
+    }
+
+    public async Task BackfillProjectScopesAsync(
+        string username,
+        string projectKey,
+        IReadOnlyCollection<string> repositories,
+        CancellationToken ct = default)
+    {
+        using var response = await SendAsync(
+            username,
+            HttpMethod.Post,
+            "api/memory/project-scopes/backfill",
+            new MemoryProjectScopeBackfillRequest
+            {
+                ProjectKey = NormalizeRequired(projectKey, nameof(projectKey)),
+                Repositories = NormalizeIds(repositories),
+            },
+            ct,
+            // A full scan; idempotent, but a proxy timeout must not run it again and again.
+            allowRetry: false);
+        await EnsureSuccessAsync(response, ct);
     }
 
     private async Task<T> SendJsonAsync<T>(
