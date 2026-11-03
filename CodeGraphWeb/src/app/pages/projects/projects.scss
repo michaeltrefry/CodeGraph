@@ -4,7 +4,8 @@
 // ---- list ----
 .cg-page-header { flex-wrap: wrap; }
 
-.prj-scroll { overflow-x: auto; }
+// Positioned, so an absolutely positioned (screen-reader-only) cell label is clipped with the table instead of widening the page.
+.prj-scroll { overflow-x: auto; position: relative; }
 
 .prj-table {
   th.prj-num, td.prj-num { text-align: right; }
