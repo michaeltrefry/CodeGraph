@@ -410,7 +410,9 @@ public sealed partial class WorkService(
             if (request.Project is not null)
                 throw WorkException.Invalid("create_work with new_project takes no project argument: the new project is the scope. Nothing was created.");
             var created = await Store.CreateProjectAsync(ReadNewProject(newProject), actor, keyHash, ct);
-            await BackfillMemoryScopesAsync(created.Value, ct);
+            // An idempotent replay creates nothing, so it scans nothing.
+            if (created.Created)
+                await BackfillMemoryScopesAsync(created.Value.Key, created.Value.Repositories.Select(member => member.Repository).ToList(), ct);
             return new CreateWorkResult(created.Created, Project: created.Value);
         }
 
@@ -705,6 +707,9 @@ public sealed partial class WorkService(
         switch (target.Kind)
         {
             case WorkEntityKind.Project:
+                var repositoriesBefore = request.Repositories is null
+                    ? []
+                    : (await Store.GetProjectAsync(target.Id, ct))?.Repositories.Select(member => member.Repository).ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
                 result = new UpdateWorkResult(Project: await Store.UpdateProjectAsync(target.Id, request.ExpectedVersion, new ProjectPatchSpec(
                     request.Name is { } name ? Text(name, "name", WorkLimits.MaxProjectNameLength) : null,
                     OptionalText(request.Description, "description"),
@@ -712,8 +717,10 @@ public sealed partial class WorkService(
                     request.Goals is { } goals ? ReadGoals(goals, "goals") : null,
                     request.Repositories is { } repositories ? ReadRepositories(repositories, "repositories") : null,
                     knowledge), actor, ct));
+                // Only repositories the update added can name memory not yet scoped to the project.
                 if (request.Repositories is not null)
-                    await BackfillMemoryScopesAsync(result.Project!, ct);
+                    await BackfillMemoryScopesAsync(result.Project!.Key,
+                        result.Project.Repositories.Select(member => member.Repository).Where(name => !repositoriesBefore.Contains(name)).ToList(), ct);
                 break;
 
             case WorkEntityKind.Feature:
@@ -743,22 +750,22 @@ public sealed partial class WorkService(
     }
 
     /// <summary>
-    /// Scopes the memory naming one of the project's repositories to it (CG-167), once the project's
-    /// write has committed. Best effort: the work write stands when memory cannot be reached or the
+    /// Scopes the memory naming one of the given repositories (those a create or update added) to the
+    /// project (CG-167), once the project's write has committed. Best effort: the work write stands when memory cannot be reached or the
     /// backfill times out (an HTTP timeout is an OperationCanceledException too), and the daily
     /// ReconcileMemoryProjectScopes job retries it for every project (the backfill is idempotent).
     /// </summary>
-    private async Task BackfillMemoryScopesAsync(ProjectView project, CancellationToken ct)
+    private async Task BackfillMemoryScopesAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct)
     {
-        if (memoryScopeBackfill is null || project.Repositories.Count == 0)
+        if (memoryScopeBackfill is null || repositories.Count == 0)
             return;
         try
         {
-            await memoryScopeBackfill.BackfillAsync(project.Key, project.Repositories.Select(member => member.Repository).ToList(), ct);
+            await memoryScopeBackfill.BackfillAsync(projectKey, repositories, ct);
         }
         catch (Exception exception) when (!ct.IsCancellationRequested)
         {
-            logger?.LogWarning(exception, "Memory naming the repositories of project {Project} could not be scoped to it.", project.Key);
+            logger?.LogWarning(exception, "Memory naming the repositories of project {Project} could not be scoped to it.", projectKey);
         }
     }
 

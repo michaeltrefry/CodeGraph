@@ -611,11 +611,16 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
             memoryScopeBackfill: backfill);
 
-        var created = await CallAsync(work, WorkTools.CreateWork, new
+        var create = new
         {
             new_project = new { key, name = "Backfill fails", repositories = new[] { new { repository, role = "owned" } } },
-        });
+            idempotency_key = $"create-{key}",
+        };
+        var created = await CallAsync(work, WorkTools.CreateWork, create);
         created.GetProperty("created").GetBoolean().ShouldBeTrue();
+        // An idempotent replay creates nothing and scans nothing.
+        (await CallAsync(work, WorkTools.CreateWork, create)).GetProperty("created").GetBoolean().ShouldBeFalse();
+        backfill.Calls.ShouldBe(1);
 
         var version = (await CallAsync(work, WorkTools.GetWork, new { id = key })).GetProperty("version").GetInt64();
         var updated = await CallAsync(work, WorkTools.UpdateWork, new
@@ -625,6 +630,17 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
             repositories = new[] { new { repository, role = "owned" }, new { repository = "mlx-rs", role = "dependency" } },
         });
         updated.GetProperty("project").GetProperty("repositories").GetArrayLength().ShouldBe(2);
+        backfill.Calls.ShouldBe(2);
+        backfill.LastRepositories.ShouldBe(["mlx-rs"]);
+
+        // An update that adds no repository scans nothing.
+        version = updated.GetProperty("project").GetProperty("version").GetInt64();
+        await CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = key,
+            expected_version = version,
+            repositories = new[] { new { repository = "mlx-rs", role = "dependency" }, new { repository, role = "owned" } },
+        });
         backfill.Calls.ShouldBe(2);
     }
 
@@ -666,10 +682,12 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
     private sealed class ThrowingBackfill(Exception exception) : IMemoryProjectScopeBackfill
     {
         public int Calls { get; private set; }
+        public IReadOnlyCollection<string> LastRepositories { get; private set; } = [];
 
         public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
         {
             Calls++;
+            LastRepositories = repositories;
             return Task.FromException(exception);
         }
     }
