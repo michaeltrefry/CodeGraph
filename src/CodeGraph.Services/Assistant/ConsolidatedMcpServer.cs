@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Logging;
@@ -281,7 +282,7 @@ public sealed class ConsolidatedMcpServer
     }
 
     [McpServerTool(Name = "memory_store", Title = "Store Memory", ReadOnly = false, Destructive = false)]
-    [Description("Store claim-centric memory. operation=store queues entities, claims, and evidence into the memory graph.")]
+    [Description("Store claim-centric memory. operation=store queues entities, claims, and evidence into the memory graph. Pass sessionId or project to scope it to a work project; with neither, it is scoped to the project of your only live CodeGraph session, and with no live session, or several, it is stored unscoped.")]
     public static async Task<string> MemoryStore(
         IMemoryOperationsService memoryOperations,
         ILogger<MemoryMcpServer> logger,
@@ -292,15 +293,16 @@ public sealed class ConsolidatedMcpServer
         [Description("Typed atomic memory claims to store.")] List<MemoryMcpClaimInput>? claims = null,
         [Description("Typed evidence rows to store.")] List<MemoryMcpEvidenceInput>? evidence = null,
         [Description("Optional key (such as SW) or id of the work project this memory belongs to; its entities and claims are listed under that project.")] string? project = null,
-        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins.")] string? sessionId = null,
-        IMemoryProjectResolver? projectResolver = null)
+        [Description("Optional id of your CodeGraph session (start_session's id): the memory is scoped to the session's project. An explicit project wins. With neither, your only live session's project is used; with no live session, or several, the memory is unscoped.")] string? sessionId = null,
+        IMemoryProjectResolver? projectResolver = null,
+        ClaimsPrincipal? user = null)
     {
         const string tool = "memory_store";
         switch (Normalize(operation))
         {
             case "" or "store":
                 return Wrap(tool, "store", await MemoryMcpServer.StoreMemoryV2(
-                    memoryOperations, logger, source, data, entities, claims, evidence, project, sessionId, projectResolver));
+                    memoryOperations, logger, source, data, entities, claims, evidence, project, sessionId, projectResolver, user));
             default:
                 return InvalidOperation(tool, operation, "store");
         }

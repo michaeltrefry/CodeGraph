@@ -22,7 +22,7 @@ public class MemoryController(IMemoryOperationsService memoryOperations) : Contr
         string? projectKey;
         try
         {
-            projectKey = await projectResolver.ResolveAsync(project, sessionId, HttpContext.RequestAborted);
+            projectKey = await projectResolver.ResolveAsync(project, sessionId, MemoryWriteCaller.Of(User), HttpContext.RequestAborted);
         }
         catch (MemoryProjectResolutionException ex)
         {

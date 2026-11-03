@@ -1,6 +1,7 @@
 using CodeGraph.Data;
 using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Memory;
+using CodeGraph.Models.Work;
 using CodeGraph.Services.Embeddings;
 using CodeGraph.Services.Memory;
 using CodeGraph.Services.Work;
@@ -37,6 +38,51 @@ public sealed class MemoryProjectScopeMariaDbTests(WorkDatabase db) : IClassFixt
         await Should.ThrowAsync<MemoryProjectResolutionException>(() => resolver.ResolveAsync(null, Guid.NewGuid().ToString()));
         await Should.ThrowAsync<MemoryProjectResolutionException>(() => resolver.ResolveAsync(null, "not-a-session"));
     }
+
+    [Fact]
+    public async Task A_write_naming_neither_project_nor_session_takes_the_project_of_the_callers_only_live_session()
+    {
+        var first = await db.NewProjectAsync("ML");
+        var second = await db.NewProjectAsync("MN");
+        var user = $"mem-{Guid.NewGuid():N}";
+        var caller = new WorkActor(user);
+        var resolver = new WorkMemoryProjectResolver(db.Store);
+
+        // No live session: unscoped, and an unknown caller is never looked up.
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+        (await resolver.ResolveAsync(null, null, null)).ShouldBeNull();
+
+        var firstSession = await StartSessionAsync(first, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(first);
+        // Another identity's session (a person's, or an agent's of the same name) is not the caller's.
+        (await resolver.ResolveAsync(null, null, new WorkActor($"other-{user}"))).ShouldBeNull();
+        await StartSessionAsync(second, $"other-{user}");
+        var agent = await db.AgentAsync(user);
+        await db.CallAsAsync(WorkTools.StartSession, new { project = second, harness = "codex" }, agent);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(first);
+        (await resolver.ResolveAsync(null, null, agent)).ShouldBe(second);
+
+        // Two live sessions: unscoped.
+        var secondSession = await StartSessionAsync(second, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+
+        // An explicit project or session wins over the inference, as before.
+        (await resolver.ResolveAsync(second, null, caller)).ShouldBe(second);
+        (await resolver.ResolveAsync(null, firstSession, caller)).ShouldBe(first);
+
+        // A session gone silent past the idle threshold is not live; nor is an ended one.
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("UPDATE work_sessions SET last_seen_at = @at WHERE id = @id",
+                new { at = DateTime.UtcNow.AddSeconds(-WorkDatabase.IdleSeconds - 60), id = firstSession });
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBe(second);
+        await db.CallAsync(WorkTools.EndSession, new { session_id = secondSession }, user);
+        (await resolver.ResolveAsync(null, null, caller)).ShouldBeNull();
+        (await resolver.ResolveAsync(null, secondSession, caller)).ShouldBe(second);
+    }
+
+    private async Task<string> StartSessionAsync(string project, string user) =>
+        (await db.CallAsync(WorkTools.StartSession, new { project, harness = "claude-code" }, user))
+            .GetProperty("session").GetProperty("id").GetString()!;
 
     [Fact]
     public async Task A_scoped_write_tags_its_entities_and_claims_and_project_reads_answer_only_that_projects_memory()

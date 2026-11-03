@@ -73,6 +73,12 @@ public interface IWorkStore : IWorkMessageStore
     /// <summary>The project owning <paramref name="repository"/>, if exactly one does.</summary>
     Task<Guid?> FindOwningProjectAsync(string repository, CancellationToken ct = default);
 
+    /// <summary>
+    /// The live sessions (not ended, heard from within the idle threshold) of <paramref name="identity"/>
+    /// (its name and kind: a person's or an agent's), in every project, most recently seen first, at most <paramref name="limit"/>.
+    /// </summary>
+    Task<IReadOnlyList<SessionView>> ListLiveSessionsOfIdentityAsync(WorkActor identity, int limit, CancellationToken ct = default);
+
     // ---- Read-only listings for the UI (sc-27874) ---------------------------------------------
 
     /// <summary>The sessions of a project, most recently seen first: the live ones, or with <paramref name="liveOnly"/> false the ended and silent ones too.</summary>
