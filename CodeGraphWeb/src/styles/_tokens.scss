@@ -109,6 +109,10 @@
 [data-accent="green"]  { --accent: oklch(0.72 0.15 150); --accent-weak: oklch(0.72 0.15 150 / .14); --accent-dim: oklch(0.72 0.15 150 / .28); --accent-ink: oklch(0.84 0.10 150); }
 [data-accent="amber"]  { --accent: oklch(0.76 0.15 75);  --accent-weak: oklch(0.76 0.15 75  / .14); --accent-dim: oklch(0.76 0.15 75  / .28); --accent-ink: oklch(0.86 0.10 75); }
 
+/* The inks above are light tints for dark surfaces (about 1.6:1 on light ones). On the light theme the ink is
+   the accent mixed halfway to the text colour: at least 5.5:1 on --bg and every surface, for every accent. */
+:root[data-theme="light"] { --accent-ink: color-mix(in oklab, var(--accent) 50%, var(--text)); }
+
 /* ==========================================================================
    FONT PAIRINGS
    ========================================================================== */
