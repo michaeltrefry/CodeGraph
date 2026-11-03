@@ -36,6 +36,7 @@ public class MemoryService
         string source,
         string inputMode,
         IMessageBus messageBus,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var receipt = new MemoryWriteReceipt
@@ -60,6 +61,7 @@ public class MemoryService
                 InputMode = inputMode,
                 Extraction = extraction,
                 Source = source,
+                ProjectKey = projectKey,
             }, ct);
         }
         catch (Exception ex)
@@ -77,6 +79,7 @@ public class MemoryService
             EntitiesRequested = extraction.Entities.Count,
             ClaimsRequested = extraction.Claims.Count,
             EvidenceRequested = extraction.Evidence.Count,
+            Project = projectKey,
         };
     }
 
@@ -136,9 +139,12 @@ public class MemoryService
         await _store.UpdateWriteReceiptStatusAsync(receiptId, MemoryWriteReceiptStatus.Failed, errorMessage: errorMessage);
     }
 
-    public async Task<StoreMemoryResult> StoreClaimsAsync(MemoryClaimExtractionResult extraction, string source = "api")
+    public async Task<StoreMemoryResult> StoreClaimsAsync(
+        MemoryClaimExtractionResult extraction,
+        string source = "api",
+        string? projectKey = null)
     {
-        return await _claimIngestion.NormalizeAndUpsertClaimsAsync(extraction, source);
+        return await _claimIngestion.NormalizeAndUpsertClaimsAsync(extraction, source, projectKey);
     }
 
     public async Task<MemoryLegacyMigrationResult> MigrateLegacyRelationshipsAsync()
@@ -156,9 +162,13 @@ public class MemoryService
         return await _retrieval.QueryAsync(topic, hops, maxNodes);
     }
 
-    public async Task<MemorySearchResult> SearchMemoryAsync(string query, int entityLimit = 5, int claimLimit = 5)
+    public async Task<MemorySearchResult> SearchMemoryAsync(
+        string query,
+        int entityLimit = 5,
+        int claimLimit = 5,
+        string? projectKey = null)
     {
-        return await _retrieval.SearchAsync(query, entityLimit, claimLimit);
+        return await _retrieval.SearchAsync(query, entityLimit, claimLimit, projectKey);
     }
 
     public async Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphRequest request)
@@ -170,9 +180,10 @@ public class MemoryService
         string entityId,
         bool includeSuperseded = false,
         bool includeConflicts = true,
-        int neighborLimit = 20)
+        int neighborLimit = 20,
+        string? projectKey = null)
     {
-        return await _retrieval.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit);
+        return await _retrieval.GetEntityBundleAsync(entityId, includeSuperseded, includeConflicts, neighborLimit, projectKey);
     }
 
     public async Task<MemoryClaimBundle?> GetClaimBundleAsync(
@@ -204,13 +215,13 @@ public class MemoryService
         return await _store.GetRelationshipsAsync(entityId);
     }
 
-    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0)
+    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null)
     {
-        return await _store.GetFullGraphAsync(limit, skip);
+        return await _store.GetFullGraphAsync(limit, skip, projectKey);
     }
 
-    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200)
+    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null)
     {
-        return await _store.GetEntityGraphAsync(entityId, neighborLimit);
+        return await _store.GetEntityGraphAsync(entityId, neighborLimit, projectKey);
     }
 }

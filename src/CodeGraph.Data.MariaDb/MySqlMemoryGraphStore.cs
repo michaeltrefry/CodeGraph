@@ -1219,7 +1219,7 @@ public class MySqlMemoryGraphStore(
             });
     }
 
-    public async Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5)
+    public async Task<List<(MemoryEntity Entity, double Score)>> VectorSearchAsync(float[] queryEmbedding, int topK = 5, string? projectKey = null)
     {
         await using var connection = CreateConnection();
         var entities = (await connection.QueryAsync<MemoryEntityRow>(
@@ -1227,11 +1227,13 @@ public class MySqlMemoryGraphStore(
             SELECT id AS RowId, external_id AS Id, canonical_id AS ExternalId, label, type,
                    canonical_name AS CanonicalName, summary, 'memory' AS Source,
                    embedding_json AS EmbeddingJson, created_at AS CreatedAt, updated_at AS UpdatedAt
-            FROM memory_entities_v2
+            FROM memory_entities_v2 entity
             WHERE username = @username AND embedding_json IS NOT NULL
+            """ + EntityInProjectSql + """
+
             ORDER BY updated_at DESC;
             """,
-            new { username = DefaultUsername })).ToList();
+            new { username = DefaultUsername, projectKey })).ToList();
 
         return entities
             .Select(row => (Entity: row.ToModel(), Score: CosineSimilarity(queryEmbedding, DeserializeEmbedding(row.EmbeddingJson))))
@@ -1241,7 +1243,7 @@ public class MySqlMemoryGraphStore(
             .ToList();
     }
 
-    public async Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5)
+    public async Task<List<MemoryEntity>> TextSearchAsync(string query, int limit = 5, string? projectKey = null)
     {
         if (string.IsNullOrWhiteSpace(query))
             return [];
@@ -1252,7 +1254,7 @@ public class MySqlMemoryGraphStore(
             SELECT id AS RowId, external_id AS Id, canonical_id AS ExternalId, label, type,
                    canonical_name AS CanonicalName, summary, 'memory' AS Source,
                    embedding_json AS EmbeddingJson, created_at AS CreatedAt, updated_at AS UpdatedAt
-            FROM memory_entities_v2
+            FROM memory_entities_v2 entity
             WHERE username = @username
               AND (
                   external_id LIKE @likeQuery
@@ -1260,10 +1262,12 @@ public class MySqlMemoryGraphStore(
                   OR canonical_name LIKE @likeQuery
                   OR summary LIKE @likeQuery
               )
+            """ + EntityInProjectSql + """
+
             ORDER BY updated_at DESC
             LIMIT @limit;
             """,
-            new { username = DefaultUsername, likeQuery = $"%{query.Trim()}%", limit });
+            new { username = DefaultUsername, likeQuery = $"%{query.Trim()}%", limit, projectKey });
 
         return rows.Select(row => row.ToModel()).ToList();
     }
@@ -1325,7 +1329,7 @@ public class MySqlMemoryGraphStore(
     public Task<List<MemoryObservation>> GetUnresolvedObservationsForEntitiesAsync(IEnumerable<string> entityIds) =>
         GetUnresolvedObservationsAsync(entityIds, []);
 
-    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0)
+    public async Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null)
     {
         await using var connection = CreateConnection();
         var rows = (await connection.QueryAsync<MemoryEntityRow>(
@@ -1333,12 +1337,14 @@ public class MySqlMemoryGraphStore(
             SELECT id AS RowId, external_id AS Id, canonical_id AS ExternalId, label, type,
                    canonical_name AS CanonicalName, summary, 'memory' AS Source,
                    embedding_json AS EmbeddingJson, created_at AS CreatedAt, updated_at AS UpdatedAt
-            FROM memory_entities_v2
+            FROM memory_entities_v2 entity
             WHERE username = @username
+            """ + EntityInProjectSql + """
+
             ORDER BY updated_at DESC
             LIMIT @limit OFFSET @skip;
             """,
-            new { username = DefaultUsername, limit, skip })).ToList();
+            new { username = DefaultUsername, limit, skip, projectKey })).ToList();
 
         var snapshot = new MemoryGraphSnapshot
         {
@@ -1353,8 +1359,8 @@ public class MySqlMemoryGraphStore(
                 UpdatedAt = row.UpdatedAt,
             }).ToList(),
             TotalNodeCount = await connection.ExecuteScalarAsync<int>(
-                "SELECT COUNT(*) FROM memory_entities_v2 WHERE username = @username;",
-                new { username = DefaultUsername }),
+                "SELECT COUNT(*) FROM memory_entities_v2 entity WHERE username = @username" + EntityInProjectSql + ";",
+                new { username = DefaultUsername, projectKey }),
         };
 
         if (snapshot.Nodes.Count == 0)
@@ -1367,10 +1373,10 @@ public class MySqlMemoryGraphStore(
         return snapshot;
     }
 
-    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200)
+    public async Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null)
     {
         var entity = await GetEntityAsync(entityId);
-        if (entity is null)
+        if (entity is null || (projectKey is not null && !await IsEntityInProjectAsync(entityId, projectKey)))
             return new MemoryGraphSnapshot();
 
         await using var connection = CreateConnection();
@@ -1389,10 +1395,12 @@ public class MySqlMemoryGraphStore(
               ON entity.id = edge.from_entity_id OR entity.id = edge.to_entity_id
             WHERE edge.username = @username
               AND (edge.from_entity_id = @rowId OR edge.to_entity_id = @rowId)
+            """ + EntityInProjectSql + """
+
             ORDER BY entity.updated_at DESC
             LIMIT @limit;
             """,
-            new { username = DefaultUsername, rowId = centerRowId.Value, limit = Math.Clamp(neighborLimit, 1, 500) }))
+            new { username = DefaultUsername, rowId = centerRowId.Value, limit = Math.Clamp(neighborLimit, 1, 500), projectKey }))
             .ToList();
 
         var rows = new List<MemoryEntityRow>
@@ -1527,10 +1535,11 @@ public class MySqlMemoryGraphStore(
         string entityId,
         bool includeSuperseded = false,
         bool includeConflicts = true,
-        int neighborLimit = 20)
+        int neighborLimit = 20,
+        string? projectKey = null)
     {
         var entity = await GetEntityAsync(entityId);
-        if (entity is null)
+        if (entity is null || (projectKey is not null && !await IsEntityInProjectAsync(entityId, projectKey)))
             return null;
 
         await using var connection = CreateConnection();
@@ -1538,15 +1547,17 @@ public class MySqlMemoryGraphStore(
             ClaimSelectSql + "\n" + """
             WHERE memory_claim.username = @username
               AND (subject.external_id = @entityId OR object_entity.external_id = @entityId)
+            """ + ClaimInProjectSql + """
+
             ORDER BY memory_claim.recorded_at DESC;
             """,
-            new { username = DefaultUsername, entityId }))
+            new { username = DefaultUsername, entityId, projectKey }))
             .Select(row => row.ToModel())
             .ToList();
 
         var centerRowId = await GetEntityRowIdAsync(connection, entityId);
         var neighborEdges = centerRowId.HasValue
-            ? (await QueryEntityEdgesAsync(connection, [centerRowId.Value], null))
+            ? (await QueryEntityEdgesAsync(connection, [centerRowId.Value], null, projectKey))
                 .Take(Math.Clamp(neighborLimit, 1, 100))
                 .Select(ToEntityEdge)
                 .ToList()
@@ -1646,12 +1657,14 @@ public class MySqlMemoryGraphStore(
         string query,
         float[]? queryEmbedding,
         int limit = 5,
-        bool includeSuperseded = false)
+        bool includeSuperseded = false,
+        string? projectKey = null)
     {
         await using var connection = CreateConnection();
         var exact = await GetClaimAsync(connection, NormalizeLookupKey(query));
         var results = new Dictionary<string, (MemoryClaim Claim, double Score, string MatchKind)>(StringComparer.OrdinalIgnoreCase);
-        if (exact is not null && (includeSuperseded || exact.Status != MemoryClaimStatus.Superseded))
+        if (exact is not null && (includeSuperseded || exact.Status != MemoryClaimStatus.Superseded)
+            && (projectKey is null || await IsClaimInProjectAsync(connection, exact.Id, projectKey)))
             results[exact.Id] = (exact, 100, "exact");
 
         var rows = await connection.QueryAsync<MemoryClaimRow>(
@@ -1664,6 +1677,8 @@ public class MySqlMemoryGraphStore(
                   OR memory_claim.predicate LIKE @likeQuery
                   OR memory_claim.value_text LIKE @likeQuery
               )
+            """ + ClaimInProjectSql + """
+
             ORDER BY memory_claim.recorded_at DESC
             LIMIT @limit;
             """,
@@ -1673,6 +1688,7 @@ public class MySqlMemoryGraphStore(
                 includeSuperseded,
                 likeQuery = $"%{query.Trim()}%",
                 limit,
+                projectKey,
             });
 
         foreach (var claim in rows.Select(row => row.ToModel()))
@@ -1684,9 +1700,9 @@ public class MySqlMemoryGraphStore(
                 ClaimSelectSql + "\n" + """
                 WHERE memory_claim.username = @username
                   AND (@includeSuperseded OR memory_claim.status <> 'superseded')
-                  AND memory_claim.embedding_json IS NOT NULL;
-                """,
-                new { username = DefaultUsername, includeSuperseded });
+                  AND memory_claim.embedding_json IS NOT NULL
+                """ + ClaimInProjectSql + ";",
+                new { username = DefaultUsername, includeSuperseded, projectKey });
 
             foreach (var row in vectorRows)
             {
@@ -1706,6 +1722,73 @@ public class MySqlMemoryGraphStore(
             .Take(limit)
             .ToList();
     }
+
+    public async Task AddProjectScopeAsync(string projectKey, IReadOnlyCollection<string> entityIds, IReadOnlyCollection<string> claimIds)
+    {
+        if (entityIds.Count == 0 && claimIds.Count == 0)
+            return;
+
+        await using var connection = CreateConnection();
+        var parameters = new { username = DefaultUsername, projectKey, entityIds, claimIds, now = DateTime.UtcNow };
+        if (entityIds.Count > 0)
+        {
+            await connection.ExecuteAsync(
+                """
+                INSERT INTO memory_entity_projects (entity_id, project_key, origin, created_at)
+                SELECT id, @projectKey, 'write', @now
+                FROM memory_entities_v2
+                WHERE username = @username AND external_id IN @entityIds
+                ON DUPLICATE KEY UPDATE origin = VALUES(origin);
+                """,
+                parameters);
+        }
+
+        if (claimIds.Count == 0)
+            return;
+
+        await connection.ExecuteAsync(
+            """
+            INSERT INTO memory_claim_projects (claim_id, project_key, origin, created_at)
+            SELECT id, @projectKey, 'write', @now
+            FROM memory_claims
+            WHERE username = @username AND (external_id IN @claimIds OR claim_key IN @claimIds)
+            ON DUPLICATE KEY UPDATE origin = VALUES(origin);
+
+            INSERT INTO memory_entity_projects (entity_id, project_key, origin, created_at)
+            SELECT DISTINCT entity.id, @projectKey, 'write', @now
+            FROM memory_claims claim
+            JOIN memory_entities_v2 entity
+              ON entity.id = claim.subject_entity_id OR entity.id = claim.object_entity_id
+            WHERE claim.username = @username AND (claim.external_id IN @claimIds OR claim.claim_key IN @claimIds)
+            ON DUPLICATE KEY UPDATE origin = VALUES(origin);
+            """,
+            parameters);
+    }
+
+    public async Task<bool> IsEntityInProjectAsync(string entityId, string projectKey)
+    {
+        await using var connection = CreateConnection();
+        return await connection.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM memory_entities_v2 entity
+                JOIN memory_entity_projects scope ON scope.entity_id = entity.id
+                WHERE entity.username = @username AND entity.external_id = @entityId AND scope.project_key = @projectKey);
+            """,
+            new { username = DefaultUsername, entityId, projectKey });
+    }
+
+    private async Task<bool> IsClaimInProjectAsync(MySqlConnection connection, string claimId, string projectKey) =>
+        await connection.ExecuteScalarAsync<bool>(
+            """
+            SELECT EXISTS (
+                SELECT 1
+                FROM memory_claims claim
+                JOIN memory_claim_projects scope ON scope.claim_id = claim.id
+                WHERE claim.username = @username AND claim.external_id = @claimId AND scope.project_key = @projectKey);
+            """,
+            new { username = DefaultUsername, claimId, projectKey });
 
     public async Task<MemorySubgraphResult> GetMemorySubgraphAsync(
         MemorySubgraphQuery query,
@@ -2190,7 +2273,8 @@ public class MySqlMemoryGraphStore(
     private async Task<List<MemoryEntityEdgeRow>> QueryEntityEdgesAsync(
         MySqlConnection connection,
         IReadOnlyList<long> sourceOrTargetRowIds,
-        IReadOnlyList<long>? constrainedRowIds)
+        IReadOnlyList<long>? constrainedRowIds,
+        string? projectKey = null)
     {
         if (sourceOrTargetRowIds.Count == 0)
             return [];
@@ -2215,11 +2299,19 @@ public class MySqlMemoryGraphStore(
             """;
         }
 
+        if (projectKey is not null)
+        {
+            sql += """
+               AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.from_entity_id AND scope.project_key = @projectKey)
+               AND EXISTS (SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = edge.to_entity_id AND scope.project_key = @projectKey)
+            """;
+        }
+
         sql += " ORDER BY edge.updated_at DESC;";
 
         return (await connection.QueryAsync<MemoryEntityEdgeRow>(
             sql,
-            new { username = DefaultUsername, sourceOrTargetRowIds, constrainedRowIds }))
+            new { username = DefaultUsername, sourceOrTargetRowIds, constrainedRowIds, projectKey }))
             .ToList();
     }
 
@@ -2362,6 +2454,20 @@ public class MySqlMemoryGraphStore(
         Context = row.BestActiveClaimId,
         Timestamp = row.UpdatedAt,
     };
+
+    // Appended to a WHERE over memory_entities_v2 aliased entity (ClaimInProjectSql: over memory_claims
+    // aliased memory_claim): every row without @projectKey, else only the rows scoped to that project.
+    private const string EntityInProjectSql = """
+
+          AND (@projectKey IS NULL OR EXISTS (
+              SELECT 1 FROM memory_entity_projects scope WHERE scope.entity_id = entity.id AND scope.project_key = @projectKey))
+        """;
+
+    private const string ClaimInProjectSql = """
+
+          AND (@projectKey IS NULL OR EXISTS (
+              SELECT 1 FROM memory_claim_projects scope WHERE scope.claim_id = memory_claim.id AND scope.project_key = @projectKey))
+        """;
 
     private const string ClaimSelectSql = """
         SELECT memory_claim.id AS RowId, memory_claim.external_id AS Id, memory_claim.claim_key AS ClaimKey,

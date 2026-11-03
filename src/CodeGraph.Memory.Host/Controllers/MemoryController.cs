@@ -11,12 +11,17 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
 {
     [HttpPost("claims/store")]
     [HttpPost("store")]
-    public async Task<IActionResult> StoreClaims([FromBody] MemoryClaimExtractionResult extraction, [FromQuery] string? source)
+    public async Task<IActionResult> StoreClaims(
+        [FromBody] MemoryClaimExtractionResult extraction,
+        [FromQuery] string? source,
+        [FromQuery] string? project)
     {
         if (extraction.Entities.Count == 0 && extraction.Claims.Count == 0 && extraction.Evidence.Count == 0)
             return BadRequest(new { error = "No entities, claims, or evidence provided" });
 
-        var ack = await memoryService.QueueClaimsAsync(extraction, source ?? "api", "typed", messageBus, HttpContext.RequestAborted);
+        // project is the key the API resolved (and checked) before forwarding; it is recorded as given.
+        var ack = await memoryService.QueueClaimsAsync(
+            extraction, source ?? "api", "typed", messageBus, ProjectKey(project), HttpContext.RequestAborted);
         return Accepted(ack);
     }
 
@@ -87,12 +92,14 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
     public async Task<ActionResult<MemorySearchResult>> Search(
         [FromQuery] string query,
         [FromQuery] int? entityLimit,
-        [FromQuery] int? claimLimit)
+        [FromQuery] int? claimLimit,
+        [FromQuery] string? project)
     {
         var result = await memoryService.SearchMemoryAsync(
             query,
             Math.Clamp(entityLimit ?? 5, 1, 25),
-            Math.Clamp(claimLimit ?? 5, 1, 25));
+            Math.Clamp(claimLimit ?? 5, 1, 25),
+            ProjectKey(project));
         return Ok(result);
     }
 
@@ -108,21 +115,26 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         string id,
         [FromQuery] bool? includeSuperseded,
         [FromQuery] bool? includeConflicts,
-        [FromQuery] int? neighborLimit)
+        [FromQuery] int? neighborLimit,
+        [FromQuery] string? project)
     {
         var bundle = await memoryService.GetEntityBundleAsync(
             id,
             includeSuperseded ?? false,
             includeConflicts ?? true,
-            Math.Clamp(neighborLimit ?? 20, 1, 500));
+            Math.Clamp(neighborLimit ?? 20, 1, 500),
+            ProjectKey(project));
 
         return bundle == null ? NotFound() : Ok(bundle);
     }
 
     [HttpGet("entities/{id}/graph")]
-    public async Task<ActionResult<MemoryGraphSnapshot>> GetEntityGraph(string id, [FromQuery] int? neighborLimit)
+    public async Task<ActionResult<MemoryGraphSnapshot>> GetEntityGraph(
+        string id,
+        [FromQuery] int? neighborLimit,
+        [FromQuery] string? project)
     {
-        var snapshot = await memoryService.GetEntityGraphAsync(id, Math.Clamp(neighborLimit ?? 200, 1, 500));
+        var snapshot = await memoryService.GetEntityGraphAsync(id, Math.Clamp(neighborLimit ?? 200, 1, 500), ProjectKey(project));
         return snapshot.Nodes.Count == 0 ? NotFound() : Ok(snapshot);
     }
 
@@ -179,11 +191,15 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
     }
 
     [HttpGet("graph")]
-    public async Task<ActionResult<MemoryGraphSnapshot>> Graph([FromQuery] int? limit, [FromQuery] int? skip)
+    public async Task<ActionResult<MemoryGraphSnapshot>> Graph(
+        [FromQuery] int? limit,
+        [FromQuery] int? skip,
+        [FromQuery] string? project)
     {
         var snapshot = await memoryService.GetFullGraphAsync(
             Math.Clamp(limit ?? 200, 1, 500),
-            Math.Max(skip ?? 0, 0));
+            Math.Max(skip ?? 0, 0),
+            ProjectKey(project));
         return Ok(snapshot);
     }
 
@@ -197,4 +213,7 @@ public class MemoryController(MemoryService memoryService, IMessageBus messageBu
         var relationships = await memoryService.GetEntityRelationshipsAsync(id);
         return Ok(new { entity, relationships });
     }
+
+    private static string? ProjectKey(string? project) =>
+        string.IsNullOrWhiteSpace(project) ? null : project.Trim();
 }

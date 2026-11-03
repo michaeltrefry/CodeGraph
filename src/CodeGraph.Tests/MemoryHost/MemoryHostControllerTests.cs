@@ -13,7 +13,7 @@ public class MemoryHostControllerTests
     {
         var controller = CreateController();
 
-        var result = await controller.StoreClaims(new MemoryClaimExtractionResult(), source: "test");
+        var result = await controller.StoreClaims(new MemoryClaimExtractionResult(), source: "test", project: null);
 
         result.ShouldBeOfType<BadRequestObjectResult>();
     }

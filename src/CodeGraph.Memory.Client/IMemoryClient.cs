@@ -8,6 +8,7 @@ public interface IMemoryClient
         string username,
         MemoryClaimExtractionResult extraction,
         string source = "api",
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryWriteReceipt?> GetWriteStatusAsync(string username, string receiptId, CancellationToken ct = default);
@@ -47,6 +48,7 @@ public interface IMemoryClient
         string query,
         int entityLimit = 5,
         int claimLimit = 5,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemorySubgraphResult> GetSubgraphAsync(
@@ -70,6 +72,7 @@ public interface IMemoryClient
         bool includeSuperseded = false,
         bool includeConflicts = true,
         int neighborLimit = 20,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryClaimBundle?> GetClaimBundleAsync(
@@ -91,12 +94,14 @@ public interface IMemoryClient
         string username,
         int limit = 200,
         int skip = 0,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryGraphSnapshot?> GetEntityGraphAsync(
         string username,
         string entityId,
         int neighborLimit = 200,
+        string? projectKey = null,
         CancellationToken ct = default);
 
     Task<MemoryEntityWithRelationshipsResponse?> GetEntityWithRelationshipsAsync(

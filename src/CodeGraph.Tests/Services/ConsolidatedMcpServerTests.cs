@@ -270,7 +270,7 @@ public class ConsolidatedMcpServerTests
         public int? LastClaimLimit { get; private set; }
 
         public Task<MemoryStoreAcceptedResult> QueueClaimsAsync(
-            MemoryClaimExtractionResult extraction, string source, string inputMode, CancellationToken ct = default)
+            MemoryClaimExtractionResult extraction, string source, string inputMode, string? projectKey = null, CancellationToken ct = default)
         {
             Calls.Add(nameof(QueueClaimsAsync));
             return Task.FromResult(new MemoryStoreAcceptedResult { ReceiptId = "memory_write_1", Status = "queued" });
@@ -289,7 +289,7 @@ public class ConsolidatedMcpServerTests
             return Task.FromResult(new MemoryQueryResult());
         }
 
-        public Task<MemorySearchResult> SearchMemoryAsync(string query, int entityLimit = 5, int claimLimit = 5, CancellationToken ct = default)
+        public Task<MemorySearchResult> SearchMemoryAsync(string query, int entityLimit = 5, int claimLimit = 5, string? projectKey = null, CancellationToken ct = default)
         {
             Calls.Add(nameof(SearchMemoryAsync));
             LastEntityLimit = entityLimit;
@@ -307,7 +307,7 @@ public class ConsolidatedMcpServerTests
 
         public Task<MemoryEntityBundle?> GetEntityBundleAsync(
             string entityId, bool includeSuperseded = false, bool includeConflicts = true,
-            int neighborLimit = 20, CancellationToken ct = default)
+            int neighborLimit = 20, string? projectKey = null, CancellationToken ct = default)
         {
             Calls.Add(nameof(GetEntityBundleAsync));
             LastEntityLimit = neighborLimit;
@@ -355,10 +355,10 @@ public class ConsolidatedMcpServerTests
             IReadOnlyList<string> claimIds, IReadOnlyList<string> entityIds, bool dryRun, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
-        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, CancellationToken ct = default) =>
+        public Task<MemoryGraphSnapshot> GetEntityGraphAsync(string entityId, int neighborLimit = 200, string? projectKey = null, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
-        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, CancellationToken ct = default) =>
+        public Task<MemoryGraphSnapshot> GetFullGraphAsync(int limit = 200, int skip = 0, string? projectKey = null, CancellationToken ct = default) =>
             throw new NotSupportedException();
 
         public Task<MemoryEntityWithRelationships?> GetEntityWithRelationshipsAsync(string entityId, CancellationToken ct = default) =>

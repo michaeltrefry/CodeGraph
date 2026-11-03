@@ -305,6 +305,10 @@ public static class Startup
             .GetSection(MemoryClientOptions.SectionPath)
             .Get<MemoryClientOptions>() ?? new MemoryClientOptions();
 
+        // A memory write's project (CG-156) is resolved here, where the work store is, before the
+        // write is queued locally or forwarded to the memory host.
+        services.AddTransient<IMemoryProjectResolver, WorkMemoryProjectResolver>();
+
         if (!string.IsNullOrWhiteSpace(memoryOptions.BaseUrl))
         {
             services.AddCodeGraphMemoryClient(configuration);
