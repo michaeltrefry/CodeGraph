@@ -95,7 +95,9 @@ public sealed class LegacyProjectArgumentGuardTests
         tools.ShouldNotBeEmpty();
         // Only the work tools (record, recall, import_knowledge, acquire, renew_hold, release, sync_plan,
         // post, inbox, ack, ...) may take `project`: there it means the multi-repo work scope.
-        var workTools = CodeGraph.Services.Work.WorkTools.All.Select(definition => definition.Name).ToHashSet();
+        // The memory write tools take it in the same sense: the work project the memory is scoped to (CG-156).
+        var workTools = CodeGraph.Services.Work.WorkTools.All.Select(definition => definition.Name)
+            .Concat(["memory_store", "store_memory_v2"]).ToHashSet();
         tools.Select(tool => tool.Name).ShouldContain(CodeGraph.Services.Work.WorkTools.Record);
         tools.Where(tool => tool.Properties.Contains("project") && !workTools.Contains(tool.Name)).Select(tool => tool.Name).ShouldBeEmpty();
         foreach (var name in new[] { "search_graph", "get_service_summary", "get_architecture", "get_repository_health", "trace_call_path", "analyze_impact", "find_consumers", "find_publishers", "trace_data_lineage" })
