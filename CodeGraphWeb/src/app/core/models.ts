@@ -783,6 +783,8 @@ export interface RepositoryReviewRunResponse {
   startedAt?: string;
   completedAt?: string;
   error?: string;
+  /** True when the reviewed commit is behind the repository's head; missing means not stale. */
+  stale?: boolean;
 }
 
 export interface RepositoryReviewFindingResponse {
