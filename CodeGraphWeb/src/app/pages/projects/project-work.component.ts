@@ -43,13 +43,26 @@ const COLUMNS: Column[] = [
       <wrk-error [error]="error()" (reload)="reload()" />
       @if (notice()) { <div class="wrk-ok">{{ notice() }}</div> }
 
-      <!-- Live sessions is a sidebar, so however many there are the Features card stays near the top. -->
+      <!-- Live sessions is a sidebar, so however many there are the main column is not pushed down. -->
       <div class="wrk-grid-2 prj-work-layout">
         <div class="prj-work-main">
           <section class="wrk-card" [class.wrk-attention]="blockedOnYou().length > 0" aria-labelledby="prj-h-you">
             <h2 id="prj-h-you">Blocked on you <span class="wrk-count">{{ blockedOnYou().length }}</span></h2>
             <wrk-message-list [messages]="blockedOnYou()" [project]="p.key" [acknowledgeable]="true" empty="Nothing is waiting on you." (changed)="reload()" />
           </section>
+
+          <!-- Above Features, which can run long; the activity shows only the latest few. -->
+          <div class="wrk-grid">
+            <section class="wrk-card" aria-labelledby="prj-h-holds">
+              <h2 id="prj-h-holds">Holds and waiters</h2>
+              <wrk-resources [project]="p.key" [resources]="resources()" (changed)="reload()" />
+            </section>
+
+            <section class="wrk-card" aria-labelledby="prj-h-activity">
+              <h2 id="prj-h-activity">Recent activity</h2>
+              <wrk-activity [entries]="feed()" [limit]="3" />
+            </section>
+          </div>
 
           <section class="wrk-card prj-features" aria-labelledby="prj-h-features">
             <div class="prj-features-head">
@@ -155,18 +168,6 @@ const COLUMNS: Column[] = [
               <span><i data-k="flight"></i>in progress / in review</span>
             </div>
           </section>
-
-          <div class="wrk-grid">
-            <section class="wrk-card" aria-labelledby="prj-h-holds">
-              <h2 id="prj-h-holds">Holds and waiters</h2>
-              <wrk-resources [project]="p.key" [resources]="resources()" (changed)="reload()" />
-            </section>
-
-            <section class="wrk-card" aria-labelledby="prj-h-activity">
-              <h2 id="prj-h-activity">Recent activity</h2>
-              <wrk-activity [entries]="feed()" [limit]="15" />
-            </section>
-          </div>
         </div>
 
         <aside class="prj-work-side">

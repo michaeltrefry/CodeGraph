@@ -65,11 +65,11 @@ async function render(query: Record<string, string> = {}, over: Record<string, u
 }
 
 describe('ProjectWorkComponent', () => {
-  it('shows Blocked on you, Live sessions, Features, Holds and waiters and Recent activity for the project', async () => {
+  it('shows Blocked on you, Holds and waiters, Recent activity and Features, with Live sessions as the sidebar', async () => {
     const { root, api, streamMessages } = await render();
     const headings = [...root.querySelectorAll('h2')].map(h2 => h2.textContent?.replace(/\s+/g, ' ').trim());
-    expect(headings).toEqual(['Blocked on you 1', 'Features', 'Holds and waiters', 'Recent activity', 'Live sessions 1']);
-    // Live sessions is the sidebar; Features follows Blocked on you in the main column.
+    expect(headings).toEqual(['Blocked on you 1', 'Holds and waiters', 'Recent activity', 'Features', 'Live sessions 1']);
+    // Live sessions is the sidebar; Holds and Recent activity sit between Blocked on you and Features, which can run long.
     expect(root.querySelector('.prj-work-side h2')?.textContent?.trim()).toBe('Live sessions 1');
     expect([...root.querySelectorAll('.prj-work-main > section h2')].map(h => h.id)).toEqual(['prj-h-you', 'prj-h-features']);
     expect(api.features).toHaveBeenCalledWith('W');
@@ -78,8 +78,8 @@ describe('ProjectWorkComponent', () => {
     expect(root.querySelector('.wrk-attention')?.textContent).toContain('Which key should I use?');
     expect(root.textContent).toContain('Build the tab');
     expect(root.textContent).toContain('gpu-0');
-    // Recent activity is limited to 15 entries.
-    expect(root.querySelectorAll('[aria-labelledby="prj-h-activity"] .wrk-list > li')).toHaveLength(15);
+    // Recent activity is limited to the latest 3 entries.
+    expect(root.querySelectorAll('[aria-labelledby="prj-h-activity"] .wrk-list > li')).toHaveLength(3);
   });
 
   it('renders the features table with flags, status, progress, remaining and the count', async () => {
