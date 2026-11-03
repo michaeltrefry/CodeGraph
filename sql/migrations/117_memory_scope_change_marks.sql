@@ -16,6 +16,12 @@ ALTER TABLE memory_entities_v2 ADD COLUMN IF NOT EXISTS scope_seq BIGINT NOT NUL
 
 ALTER TABLE memory_claims ADD COLUMN IF NOT EXISTS scope_seq BIGINT NOT NULL DEFAULT 0;
 
+-- scope_marked_at is when the store stamped scope_seq, by the database's clock: the reconciliation's
+-- settling rule uses it rather than created/recorded times, which callers can set (a claim's recorded_at).
+ALTER TABLE memory_entities_v2 ADD COLUMN IF NOT EXISTS scope_marked_at DATETIME(3) NOT NULL DEFAULT '1970-01-01 00:00:00.000';
+
+ALTER TABLE memory_claims ADD COLUMN IF NOT EXISTS scope_marked_at DATETIME(3) NOT NULL DEFAULT '1970-01-01 00:00:00.000';
+
 CREATE INDEX IF NOT EXISTS ix_memory_entities_v2_scope_seq ON memory_entities_v2 (scope_seq);
 
 CREATE INDEX IF NOT EXISTS ix_memory_claims_scope_seq ON memory_claims (scope_seq);

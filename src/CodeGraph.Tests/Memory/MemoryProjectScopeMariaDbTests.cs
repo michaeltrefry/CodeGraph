@@ -942,6 +942,40 @@ public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : ICl
     }
 
     [Fact]
+    public async Task A_claims_settling_follows_the_time_its_mark_was_taken_not_its_caller_supplied_recorded_at()
+    {
+        var frank = $"user:frank-{Guid.NewGuid():N}";
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var tenant = new MemoryTenantContext();
+        var memory = new MySqlMemoryGraphStore(options, tenant);
+        var now = new MySqlMemoryProjectScopeBackfill(options);
+        var settledClock = new ShiftableClock();
+        settledClock.Advance(MySqlMemoryProjectScopeBackfill.SettleTime + TimeSpan.FromMinutes(1));
+        var later = new MySqlMemoryProjectScopeBackfill(options, settledClock);
+        var before = await now.GetWatermarkAsync(null);
+
+        using (tenant.Enter(frank))
+        {
+            await memory.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("s", "S"), MemoryProjectScopeMariaDbTests.Entity("o", "O")]);
+            // A backdated claim, written just now: it has not settled, so the watermark does not pass it.
+            var backdated = MemoryProjectScopeMariaDbTests.Claim("claim_backdated", "s", "o");
+            backdated.RecordedAt = DateTime.UtcNow.AddYears(-1);
+            await memory.UpsertClaimsBatchAsync([backdated]);
+        }
+        (await now.GetWatermarkAsync(before)).ClaimSeq.ShouldBe(before.ClaimSeq);
+
+        using (tenant.Enter(frank))
+        {
+            // A claim dated in the future: once its mark has settled the watermark passes it.
+            var future = MemoryProjectScopeMariaDbTests.Claim("claim_future", "s", "o");
+            future.RecordedAt = DateTime.UtcNow.AddYears(1);
+            await memory.UpsertClaimsBatchAsync([future]);
+        }
+        var settled = await later.GetWatermarkAsync(before);
+        settled.ClaimSeq.ShouldBe((await now.GetWatermarkAsync(null)).ClaimSeq);
+    }
+
+    [Fact]
     public async Task A_stored_watermark_ahead_of_memory_restarts_as_a_first_run_with_every_project_pending()
     {
         var key = $"RW{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();

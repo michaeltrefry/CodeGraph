@@ -35,9 +35,9 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
     /// not when it commits, so a write still in flight can hold a lower mark than a committed one; a
     /// watermark that passed it would never scan it. Only rows written this long ago count, and newer ones
     /// wait for the next run. This relies on the memory store's writes: autocommit statements (or short
-    /// transactions) that commit well within this time, and timestamps the application sets at write time
-    /// (entities' updated_at, claims' recorded_at, evidence's created_at). A claim whose caller backdates
-    /// recorded_at while its write is still in flight could be passed; ingestion stamps the current time.
+    /// transactions) that commit well within this time, and the time each mark was taken: entities' and
+    /// claims' scope_marked_at, stamped by the database with the mark (never a caller-supplied date such as
+    /// a claim's recorded_at), and evidence's created_at, which ingestion sets to the write time.
     /// </summary>
     public static readonly TimeSpan SettleTime = TimeSpan.FromMinutes(10);
 
@@ -223,8 +223,8 @@ public sealed partial class MySqlMemoryProjectScopeBackfill(IOptions<MariaDbStor
         var cutoff = clock.GetUtcNow().UtcDateTime - SettleTime;
         var settled = await connection.QuerySingleAsync<(long, long, long)>(new CommandDefinition(
             """
-            SELECT COALESCE((SELECT MAX(scope_seq) FROM memory_entities_v2 WHERE scope_seq > @EntitySeq AND updated_at <= @cutoff), @EntitySeq),
-                   COALESCE((SELECT MAX(scope_seq) FROM memory_claims WHERE scope_seq > @ClaimSeq AND recorded_at <= @cutoff), @ClaimSeq),
+            SELECT COALESCE((SELECT MAX(scope_seq) FROM memory_entities_v2 WHERE scope_seq > @EntitySeq AND scope_marked_at <= @cutoff), @EntitySeq),
+                   COALESCE((SELECT MAX(scope_seq) FROM memory_claims WHERE scope_seq > @ClaimSeq AND scope_marked_at <= @cutoff), @ClaimSeq),
                    COALESCE((SELECT MAX(id) FROM memory_evidence WHERE id > @EvidenceId AND created_at <= @cutoff), @EvidenceId)
             """,
             new { since.EntitySeq, since.ClaimSeq, since.EvidenceId, cutoff }, commandTimeout: CommandTimeoutSeconds, cancellationToken: ct));
