@@ -1134,8 +1134,10 @@ public partial class Neo4jMemoryGraphStore : IMemoryGraphStore
         int maxReturnedEntities = 20,
         int maxReturnedClaims = 40,
         bool includeSuperseded = false,
-        bool includeConflicts = true)
+        bool includeConflicts = true,
+        string? projectKey = null)
     {
+        RejectProjectScope(projectKey);
         await using var session = _sessionFactory.GetSession(AccessMode.Read);
         var result = new MemorySubgraphResult
         {

@@ -157,9 +157,9 @@ public class MemoryService
         return await _observationMigration.MigrateAsync();
     }
 
-    public async Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20)
+    public async Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 20, string? projectKey = null)
     {
-        return await _retrieval.QueryAsync(topic, hops, maxNodes);
+        return await _retrieval.QueryAsync(topic, hops, maxNodes, projectKey: projectKey);
     }
 
     public async Task<MemorySearchResult> SearchMemoryAsync(

@@ -194,6 +194,7 @@ public class MemoryControllerCleanupTests
             string topic,
             int hops = 2,
             int maxNodes = 20,
+            string? projectKey = null,
             CancellationToken ct = default)
             => throw new NotSupportedException();
 

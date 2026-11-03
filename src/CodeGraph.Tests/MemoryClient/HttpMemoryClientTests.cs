@@ -112,6 +112,33 @@ public class HttpMemoryClientTests
         await CreateClient(unscopedClaimBundle).GetClaimBundleAsync("michael", "claim_1");
         unscopedClaimBundle.Requests.Single().RequestUri!.PathAndQuery
             .ShouldBe("/api/memory/claims/claim_1/bundle?includeSupersessionChain=true&includeConflicts=true&includeEvidence=true");
+
+        // CG-165: query takes project=KEY; subgraph, frontier expansion and summary carry projectKey in their body.
+        var query = new RecordingHandler(new MemoryQueryResult());
+        await CreateClient(query).QueryAsync("michael", "CodeGraph", 2, 5, projectKey: "CG");
+        query.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/query?topic=CodeGraph&hops=2&maxNodes=5&project=CG");
+
+        var unscopedQuery = new RecordingHandler(new MemoryQueryResult());
+        await CreateClient(unscopedQuery).QueryAsync("michael", "CodeGraph", 2, 5);
+        unscopedQuery.Requests.Single().RequestUri!.PathAndQuery.ShouldBe("/api/memory/query?topic=CodeGraph&hops=2&maxNodes=5");
+
+        var subgraph = new RecordingHandler(new MemorySubgraphResult());
+        await CreateClient(subgraph).GetSubgraphAsync("michael", new MemorySubgraphRequest { Query = "CodeGraph", ProjectKey = "CG" });
+        ProjectKeyOf(await subgraph.Requests.Single().Content!.ReadAsStringAsync()).ShouldBe("CG");
+
+        var frontier = new RecordingHandler(new MemoryFrontierExpansionResult());
+        await CreateClient(frontier).ExpandFrontierAsync("michael", new MemoryFrontierExpansionRequest { FrontierEntityIds = ["codegraph"], ProjectKey = "CG" });
+        ProjectKeyOf(await frontier.Requests.Single().Content!.ReadAsStringAsync()).ShouldBe("CG");
+
+        var summary = new RecordingHandler(new MemorySummaryRenderResult());
+        await CreateClient(summary).RenderSummaryAsync("michael", new MemorySummaryRenderRequest { EntityIds = ["codegraph"], ProjectKey = "CG" });
+        ProjectKeyOf(await summary.Requests.Single().Content!.ReadAsStringAsync()).ShouldBe("CG");
+    }
+
+    private static string? ProjectKeyOf(string body)
+    {
+        using var document = JsonDocument.Parse(body);
+        return document.RootElement.TryGetProperty("projectKey", out var projectKey) ? projectKey.GetString() : null;
     }
 
     [Fact]

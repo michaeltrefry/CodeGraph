@@ -1834,6 +1834,18 @@ public class MySqlMemoryGraphStore(
         return kept;
     }
 
+    private static async Task<List<string>> WhereAsync(IEnumerable<string> ids, Func<string, Task<bool>> predicate)
+    {
+        var kept = new List<string>();
+        foreach (var id in ids)
+        {
+            if (await predicate(id))
+                kept.Add(id);
+        }
+
+        return kept;
+    }
+
     private async Task<bool> IsClaimInProjectAsync(MySqlConnection connection, string claimId, string projectKey) =>
         await connection.ExecuteScalarAsync<bool>(
             """
@@ -1851,7 +1863,8 @@ public class MySqlMemoryGraphStore(
         int maxReturnedEntities = 20,
         int maxReturnedClaims = 40,
         bool includeSuperseded = false,
-        bool includeConflicts = true)
+        bool includeConflicts = true,
+        string? projectKey = null)
     {
         var result = new MemorySubgraphResult
         {
@@ -1865,6 +1878,13 @@ public class MySqlMemoryGraphStore(
             return result;
 
         await using var connection = CreateConnection();
+        if (projectKey is not null)
+        {
+            // CG-165: within a project, seeds outside it are dropped, and so is everything reached through them.
+            seedEntityIds = await WhereAsync(seedEntityIds, id => IsEntityInProjectAsync(id, projectKey));
+            seedClaimIds = await WhereAsync(seedClaimIds, id => IsClaimInProjectAsync(connection, id, projectKey));
+        }
+
         var entityIds = seedEntityIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var seedClaimId in seedClaimIds)
         {
@@ -1876,6 +1896,9 @@ public class MySqlMemoryGraphStore(
             if (!string.IsNullOrWhiteSpace(claim.ObjectEntityId))
                 entityIds.Add(claim.ObjectEntityId);
         }
+
+        if (projectKey is not null)
+            entityIds = (await WhereAsync(entityIds, id => IsEntityInProjectAsync(id, projectKey))).ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var entities = new List<MemoryEntity>();
         foreach (var entityId in entityIds.Take(maxReturnedEntities))
@@ -1903,6 +1926,8 @@ public class MySqlMemoryGraphStore(
                   AND (@includeSuperseded OR memory_claim.status <> 'superseded')
                   AND (@includeConflicts OR memory_claim.status <> 'conflicted')
                   AND (subject.external_id = @entityId OR object_entity.external_id = @entityId)
+                """ + ClaimInProjectSql + """
+
                 ORDER BY memory_claim.recorded_at DESC
                 LIMIT @limit;
                 """,
@@ -1913,6 +1938,7 @@ public class MySqlMemoryGraphStore(
                     includeConflicts,
                     entityId,
                     limit = maxReturnedClaims,
+                    projectKey,
                 });
             claims.AddRange(entityClaims.Select(row => row.ToModel()));
         }
@@ -1945,7 +1971,7 @@ public class MySqlMemoryGraphStore(
             if (rowId.HasValue)
                 rowIds.Add(rowId.Value);
         }
-        result.EntityEdges = (await QueryEntityEdgesAsync(connection, rowIds, rowIds)).Select(ToEntityEdge).ToList();
+        result.EntityEdges = (await QueryEntityEdgesAsync(connection, rowIds, rowIds, projectKey)).Select(ToEntityEdge).ToList();
 
         var claimIds = claims.Select(claim => claim.Id).ToList();
         result.ClaimEdges = (await connection.QueryAsync<MemoryClaimEdgeRow>(
@@ -1964,7 +1990,8 @@ public class MySqlMemoryGraphStore(
             .Select(row => row.ToModel())
             .ToList();
 
-        result.Observations = await GetUnresolvedObservationsAsync(entitySet, claimIds);
+        result.Observations = await FilterObservationsInProjectAsync(
+            connection, await GetUnresolvedObservationsAsync(entitySet, claimIds), projectKey);
         result.Meta.FrontierExpanded = result.Entities.Count + result.Claims.Count;
         result.Meta.ResponseTruncated = result.Entities.Count >= maxReturnedEntities || result.Claims.Count >= maxReturnedClaims;
         return result;

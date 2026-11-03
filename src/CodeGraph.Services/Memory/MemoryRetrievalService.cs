@@ -73,6 +73,7 @@ public class MemoryRetrievalService
         };
     }
 
+    /// <remarks>With request.ProjectKey, only entities, claims and observations scoped to that work project are returned.</remarks>
     public async Task<MemorySubgraphResult> GetMemorySubgraphAsync(MemorySubgraphRequest request)
     {
         var normalizedQuery = request.Query?.Trim() ?? string.Empty;
@@ -85,7 +86,11 @@ public class MemoryRetrievalService
 
         if (!string.IsNullOrWhiteSpace(normalizedQuery))
         {
-            var search = await SearchAsync(normalizedQuery, entityLimit: Math.Min(maxEntities, 10), claimLimit: Math.Min(maxClaims, 10));
+            var search = await SearchAsync(
+                normalizedQuery,
+                entityLimit: Math.Min(maxEntities, 10),
+                claimLimit: Math.Min(maxClaims, 10),
+                projectKey: request.ProjectKey);
             entitySeeds = search.Entities;
             claimSeeds = search.Claims;
         }
@@ -112,7 +117,8 @@ public class MemoryRetrievalService
             maxEntities,
             maxClaims,
             request.IncludeSuperseded,
-            request.IncludeConflicts);
+            request.IncludeConflicts,
+            request.ProjectKey);
 
         result.Query = query;
         result.Seeds = new MemorySubgraphSeeds
@@ -184,6 +190,7 @@ public class MemoryRetrievalService
             MaxReturnedClaims = Math.Clamp(frontierLimit * 2, 1, 200),
             IncludeSuperseded = false,
             IncludeConflicts = true,
+            ProjectKey = request.ProjectKey,
         });
 
         var candidateEntities = subgraph.Entities
@@ -265,6 +272,7 @@ public class MemoryRetrievalService
             MaxReturnedClaims = Math.Clamp(Math.Max(seedCount * 4, 20), 1, 200),
             IncludeSuperseded = true,
             IncludeConflicts = true,
+            ProjectKey = request.ProjectKey,
         });
 
         return new MemorySummaryRenderResult
@@ -274,7 +282,12 @@ public class MemoryRetrievalService
         };
     }
 
-    public async Task<MemoryQueryResult> QueryAsync(string topic, int hops = 2, int maxNodes = 5, int maxRelsPerEntity = 8)
+    public async Task<MemoryQueryResult> QueryAsync(
+        string topic,
+        int hops = 2,
+        int maxNodes = 5,
+        int maxRelsPerEntity = 8,
+        string? projectKey = null)
     {
         _logger.LogInformation("Querying memory for topic: {Topic}", topic);
         var subgraph = await GetMemorySubgraphAsync(new MemorySubgraphRequest
@@ -285,6 +298,7 @@ public class MemoryRetrievalService
             MaxReturnedClaims = Math.Max(maxNodes * 2, maxRelsPerEntity),
             IncludeSuperseded = false,
             IncludeConflicts = true,
+            ProjectKey = projectKey,
         });
 
         if (subgraph.Entities.Count == 0 && subgraph.Claims.Count == 0)

@@ -226,13 +226,15 @@ public sealed class HttpMemoryClient(
         string topic,
         int hops = 2,
         int maxNodes = 20,
+        string? projectKey = null,
         CancellationToken ct = default)
     {
         var path = "api/memory/query" + BuildQueryString(
         [
             ("topic", NormalizeRequired(topic, nameof(topic))),
             ("hops", Math.Clamp(hops, 1, 5).ToString()),
-            ("maxNodes", Math.Clamp(maxNodes, 1, 50).ToString())
+            ("maxNodes", Math.Clamp(maxNodes, 1, 50).ToString()),
+            ("project", projectKey)
         ]);
 
         return SendJsonAsync<MemoryQueryResult>(username, HttpMethod.Get, path, ct: ct, allowRetry: true);
