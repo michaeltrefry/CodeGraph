@@ -15,7 +15,25 @@ public record RepositoryReviewRunResponse(
     DateTime CreatedAt,
     DateTime? StartedAt,
     DateTime? CompletedAt,
-    string? Error);
+    string? Error,
+    bool Stale = false);
+
+/// <summary>One row of the paged review run history; <c>FindingCounts</c> is keyed by lowercase severity.</summary>
+public record RepositoryReviewRunSummary(
+    long Id,
+    string Repository,
+    string Status,
+    string ReviewMode,
+    string? ReviewedCommitSha,
+    string? Model,
+    string? RequestedBy,
+    DateTime CreatedAt,
+    DateTime? StartedAt,
+    DateTime? CompletedAt,
+    bool Stale,
+    IReadOnlyDictionary<string, int> FindingCounts);
+
+public record RepositoryReviewRunPage(IReadOnlyList<RepositoryReviewRunSummary> Items, long? NextBefore);
 
 public record RepositoryReviewFindingResponse(
     string Severity,

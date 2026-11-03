@@ -15,6 +15,163 @@ namespace CodeGraph.Tests.Services;
 public class RepositoryReviewServiceTests
 {
     [Fact]
+    public async Task ListReviewsAsync_UnknownRepository_ReturnsNull()
+    {
+        var service = CreateHistoryService(new InMemoryGraphStore());
+
+        (await service.ListReviewsAsync("Missing", 20)).ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task ListReviewsAsync_PagesNewestFirstByRunId_AndIsolatesRepositories()
+    {
+        var store = new InMemoryGraphStore();
+        await SeedHistoryRepositoryAsync(store, "TestRepo", "head");
+        await SeedHistoryRepositoryAsync(store, "OtherRepo", "head");
+        var ids = new List<long>();
+        for (var i = 0; i < 5; i++)
+            ids.Add(await AddRunAsync(store, "TestRepo", "completed", "head"));
+        var otherId = await AddRunAsync(store, "OtherRepo", "completed", "head");
+        var service = CreateHistoryService(store);
+
+        var first = (await service.ListReviewsAsync("TestRepo", 2))!;
+        first.Items.Select(i => i.Id).ShouldBe([ids[4], ids[3]]);
+        first.NextBefore.ShouldBe(ids[3]);
+
+        var second = (await service.ListReviewsAsync("TestRepo", 2, first.NextBefore))!;
+        second.Items.Select(i => i.Id).ShouldBe([ids[2], ids[1]]);
+        second.NextBefore.ShouldBe(ids[1]);
+
+        var last = (await service.ListReviewsAsync("TestRepo", 2, second.NextBefore))!;
+        last.Items.Select(i => i.Id).ShouldBe([ids[0]]);
+        last.NextBefore.ShouldBeNull();
+
+        var all = (await service.ListReviewsAsync("TestRepo", 100))!;
+        all.Items.ShouldNotContain(i => i.Id == otherId);
+        all.Items.ShouldAllBe(i => i.Repository == "TestRepo");
+    }
+
+    [Fact]
+    public async Task ListReviewsAsync_ExactlyOnePage_HasNoNextBefore()
+    {
+        var store = new InMemoryGraphStore();
+        await SeedHistoryRepositoryAsync(store, "TestRepo", "head");
+        await AddRunAsync(store, "TestRepo", "completed", "head");
+        await AddRunAsync(store, "TestRepo", "completed", "head");
+
+        var page = (await CreateHistoryService(store).ListReviewsAsync("TestRepo", 2))!;
+
+        page.Items.Count.ShouldBe(2);
+        page.NextBefore.ShouldBeNull();
+    }
+
+    [Fact]
+    public async Task ListReviewsAsync_MapsRunFieldsAndSeverityCounts()
+    {
+        var store = new InMemoryGraphStore();
+        await SeedHistoryRepositoryAsync(store, "TestRepo", "head");
+        var runId = await AddRunAsync(store, "TestRepo", "completed", "head", requestedBy: "michael", model: "test-model");
+        await AddRunAsync(store, "TestRepo", "queued", null);
+        await store.UpsertRepositoryReviewFindingsAsync(runId,
+        [
+            Finding("High"), Finding("high"), Finding("medium")
+        ]);
+
+        var items = (await CreateHistoryService(store).ListReviewsAsync("TestRepo", 20))!.Items;
+
+        items[0].Status.ShouldBe("queued");
+        items[0].FindingCounts.ShouldBeEmpty();
+        var run = items[1];
+        run.Id.ShouldBe(runId);
+        run.ReviewedCommitSha.ShouldBe("head");
+        run.Model.ShouldBe("test-model");
+        run.RequestedBy.ShouldBe("michael");
+        run.ReviewMode.ShouldBe("full");
+        run.FindingCounts.ShouldBe(new Dictionary<string, int> { ["high"] = 2, ["medium"] = 1 });
+    }
+
+    [Fact]
+    public async Task ListReviewsAsync_StaleOnlyWhenCompletedAgainstOtherCommit()
+    {
+        var store = new InMemoryGraphStore();
+        await SeedHistoryRepositoryAsync(store, "TestRepo", "head");
+        var current = await AddRunAsync(store, "TestRepo", "completed", "HEAD");
+        var old = await AddRunAsync(store, "TestRepo", "completed", "older");
+        var failed = await AddRunAsync(store, "TestRepo", "failed", "older");
+        var running = await AddRunAsync(store, "TestRepo", "running", "older");
+        var service = CreateHistoryService(store);
+
+        var items = (await service.ListReviewsAsync("TestRepo", 20))!.Items.ToDictionary(i => i.Id);
+
+        items[current].Stale.ShouldBeFalse();
+        items[old].Stale.ShouldBeTrue();
+        items[failed].Stale.ShouldBeFalse();
+        items[running].Stale.ShouldBeFalse();
+
+        (await service.GetReviewAsync(old))!.Run.Stale.ShouldBeTrue();
+        (await service.GetReviewAsync(current))!.Run.Stale.ShouldBeFalse();
+        (await service.GetReviewAsync(failed))!.Run.Stale.ShouldBeFalse();
+        (await service.GetLatestReviewAsync("TestRepo"))!.Run.Stale.ShouldBeFalse();
+
+        await store.UpdateRepositoryCommitShaAsync("TestRepo", "newer");
+        (await service.GetLatestReviewAsync("TestRepo"))!.Run.Id.ShouldBe(running);
+        (await service.GetReviewAsync(current))!.Run.Stale.ShouldBeTrue();
+    }
+
+    [Fact]
+    public async Task ListReviewsAsync_NoStoredHeadCommit_IsNeverStale()
+    {
+        var store = new InMemoryGraphStore();
+        await SeedHistoryRepositoryAsync(store, "TestRepo", null);
+        await AddRunAsync(store, "TestRepo", "completed", "abc");
+
+        var items = (await CreateHistoryService(store).ListReviewsAsync("TestRepo", 20))!.Items;
+
+        items.Single().Stale.ShouldBeFalse();
+    }
+
+    private static RepositoryReviewService CreateHistoryService(InMemoryGraphStore store)
+        => CreateRepositoryService(store, new RecordingProvider(), CreateRepositoryService(store, new RecordingProvider()));
+
+    private static Task SeedHistoryRepositoryAsync(InMemoryGraphStore store, string name, string? headSha)
+        => store.UpsertRepositoryAsync(new RepositoryEntity
+        {
+            Name = name,
+            LocalPath = "/nonexistent/" + name,
+            LastCommitSha = headSha,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow
+        });
+
+    private static Task<long> AddRunAsync(
+        InMemoryGraphStore store, string repo, string status, string? reviewedSha,
+        string? requestedBy = null, string? model = null)
+        => store.CreateRepositoryReviewRunAsync(new RepositoryReviewRunEntity
+        {
+            Repo = repo,
+            Status = status,
+            ReviewedCommitSha = reviewedSha,
+            RequestedByUsername = requestedBy,
+            ModelUsed = model,
+            ReviewMode = "full",
+            PromptVersion = RepositoryReviewService.CurrentPromptVersion,
+            CreatedAt = DateTime.UtcNow
+        });
+
+    private static RepositoryReviewFindingEntity Finding(string severity)
+        => new()
+        {
+            Severity = severity,
+            Category = "bug",
+            Title = "t",
+            Explanation = "e",
+            Evidence = "ev",
+            FilePath = "a.cs",
+            SuggestedImprovement = "s",
+            Confidence = "high"
+        };
+
+    [Fact]
     public async Task StartReviewAsync_UpdateMode_ContinuesInterruptedUpdateReviewWithSameBaseline()
     {
         var store = new InMemoryGraphStore();

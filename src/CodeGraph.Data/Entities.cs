@@ -378,6 +378,7 @@ public class RepositoryReviewRunEntity
 {
     public long Id { get; set; }
     public string Repo { get; set; } = "";
+    public string? RequestedByUsername { get; set; }
     public string? ReviewedCommitSha { get; set; }
     public long? BaselineReviewRunId { get; set; }
     public string? BaselineCommitSha { get; set; }

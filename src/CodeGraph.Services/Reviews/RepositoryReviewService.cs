@@ -38,7 +38,7 @@ public class RepositoryReviewService(
     private const int MaxChangedFilesForIncrementalReview = 40;
     private const double MaxImpactedProjectRatioForIncrementalReview = 0.7;
 
-    public async Task<long> StartReviewAsync(string repo, string mode, CancellationToken ct = default)
+    public async Task<long> StartReviewAsync(string repo, string mode, string? requestedBy = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(repo))
             throw new ArgumentException("Repository name is required.", nameof(repo));
@@ -83,6 +83,7 @@ public class RepositoryReviewService(
         var reviewRun = new RepositoryReviewRunEntity
         {
             Repo = repo,
+            RequestedByUsername = string.IsNullOrWhiteSpace(requestedBy) ? null : requestedBy.Trim(),
             ReviewedCommitSha = reviewedCommitSha,
             BaselineReviewRunId = baselineReviewRunId,
             BaselineCommitSha = baselineCommitSha,
@@ -257,6 +258,37 @@ public class RepositoryReviewService(
         return run is null ? null : await BuildReviewResponseAsync(run, ct);
     }
 
+    public async Task<RepositoryReviewRunPage?> ListReviewsAsync(
+        string repo, int limit, long? before = null, CancellationToken ct = default)
+    {
+        var repository = await store.GetRepositoryByName(repo);
+        if (repository is null)
+            return null;
+
+        // Fetch one extra row to know whether another page exists.
+        var runs = await store.GetRepositoryReviewRunsAsync(repo, limit + 1, before);
+        var hasMore = runs.Count > limit;
+        var page = runs.Take(limit).ToList();
+        var counts = await store.GetRepositoryReviewFindingCountsAsync(page.Select(r => r.Id).ToList());
+
+        var items = page.Select(run => new RepositoryReviewRunSummary(
+                run.Id,
+                run.Repo,
+                run.Status,
+                run.ReviewMode,
+                run.ReviewedCommitSha,
+                run.ModelUsed,
+                run.RequestedByUsername,
+                run.CreatedAt,
+                run.StartedAt,
+                run.CompletedAt,
+                IsStale(run, repository.LastCommitSha),
+                counts.GetValueOrDefault(run.Id) ?? new Dictionary<string, int>()))
+            .ToList();
+
+        return new RepositoryReviewRunPage(items, hasMore ? page[^1].Id : null);
+    }
+
     public async Task<RepositoryReviewResponse?> GetLatestReviewAsync(string repo, CancellationToken ct = default)
     {
         var run = await store.GetLatestRepositoryReviewRunAsync(repo);
@@ -290,8 +322,13 @@ public class RepositoryReviewService(
                 section.ReusedFromBaseline))
             .ToList();
 
+        // Only a completed run can be stale, so skip the repository lookup for in-flight runs (the SSE stream polls this).
+        var currentCommitSha = string.Equals(run.Status, "completed", StringComparison.OrdinalIgnoreCase)
+            ? (await store.GetRepositoryByName(run.Repo))?.LastCommitSha
+            : null;
+
         return new RepositoryReviewResponse(
-            MapRun(run),
+            MapRun(run, IsStale(run, currentCommitSha)),
             overview.Overview,
             responseFindings,
             overview.Strengths,
@@ -1256,7 +1293,14 @@ public class RepositoryReviewService(
         };
     }
 
-    private static RepositoryReviewRunResponse MapRun(RepositoryReviewRunEntity run)
+    /// <summary>A completed run is stale when the repository's current (indexed) commit differs from the one it reviewed.</summary>
+    private static bool IsStale(RepositoryReviewRunEntity run, string? currentCommitSha)
+        => string.Equals(run.Status, "completed", StringComparison.OrdinalIgnoreCase) &&
+           !string.IsNullOrWhiteSpace(run.ReviewedCommitSha) &&
+           !string.IsNullOrWhiteSpace(currentCommitSha) &&
+           !string.Equals(run.ReviewedCommitSha, currentCommitSha, StringComparison.OrdinalIgnoreCase);
+
+    private static RepositoryReviewRunResponse MapRun(RepositoryReviewRunEntity run, bool stale)
         => new(
             run.Id,
             run.Repo,
@@ -1270,7 +1314,8 @@ public class RepositoryReviewService(
             run.CreatedAt,
             run.StartedAt,
             run.CompletedAt,
-            run.Error);
+            run.Error,
+            stale);
 
     private static RepositoryReviewFindingResponse MapFinding(RepositoryReviewFindingEntity finding)
         => new(

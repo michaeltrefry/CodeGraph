@@ -267,6 +267,37 @@ public class MySqlReviewStore(CodeGraphDbContext db) : IReviewStore
             .ToListAsync();
     }
 
+    public async Task<IReadOnlyList<RepositoryReviewRunEntity>> GetRepositoryReviewRunsAsync(
+        string repo, int limit, long? before = null)
+        => await db.RepositoryReviewRuns.AsNoTracking()
+            .Where(r => r.Repo == repo && (before == null || r.Id < before))
+            .OrderByDescending(r => r.Id)
+            .Take(limit)
+            .ToListAsync();
+
+    public async Task<IReadOnlyDictionary<long, IReadOnlyDictionary<string, int>>> GetRepositoryReviewFindingCountsAsync(
+        IReadOnlyList<long> reviewRunIds)
+    {
+        if (reviewRunIds.Count == 0)
+        {
+            return new Dictionary<long, IReadOnlyDictionary<string, int>>();
+        }
+
+        var rows = await db.RepositoryReviewFindings.AsNoTracking()
+            .Where(f => reviewRunIds.Contains(f.ReviewRunId))
+            .GroupBy(f => new { f.ReviewRunId, f.Severity })
+            .Select(g => new { g.Key.ReviewRunId, g.Key.Severity, Count = g.Count() })
+            .ToListAsync();
+
+        return rows
+            .GroupBy(r => r.ReviewRunId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlyDictionary<string, int>)g
+                    .GroupBy(r => r.Severity.ToLowerInvariant())
+                    .ToDictionary(s => s.Key, s => s.Sum(r => r.Count)));
+    }
+
     public async Task<IReadOnlyList<RepositoryReviewFindingEntity>> GetRepositoryReviewFindingsAsync(long reviewRunId)
         => await db.RepositoryReviewFindings.AsNoTracking()
             .Where(f => f.ReviewRunId == reviewRunId)
