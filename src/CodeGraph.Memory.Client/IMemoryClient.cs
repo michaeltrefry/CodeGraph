@@ -118,4 +118,17 @@ public interface IMemoryClient
         IReadOnlyCollection<string> repositories,
         CancellationToken ct = default);
 
+    /// <summary>The memory host's memory watermark (CG-172): the current one, or the settled one above <paramref name="since"/>; the system identity only.</summary>
+    Task<MemoryScopeWatermark> GetProjectScopeWatermarkAsync(
+        string username,
+        MemoryScopeWatermark? since,
+        CancellationToken ct = default);
+
+    /// <summary>Scopes the memory written between two watermarks to every listed project whose repositories it names (CG-172); the system identity only.</summary>
+    Task BackfillProjectScopeRangeAsync(
+        string username,
+        IReadOnlyList<MemoryProjectScopeBackfillRequest> projects,
+        MemoryScopeWatermark after,
+        MemoryScopeWatermark upTo,
+        CancellationToken ct = default);
 }

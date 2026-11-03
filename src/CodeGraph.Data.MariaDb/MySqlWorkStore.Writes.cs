@@ -47,6 +47,9 @@ public sealed partial class MySqlWorkStore
                 new { id, spec.Key, spec.Name, spec.Description, goals = JsonSerializer.Serialize(spec.Goals), actorName = actor.Name, actorKind = actor.Kind, actorSession = actor.SessionId, now },
                 transaction, cancellationToken: ct));
             await WriteRepositoriesAsync(connection, transaction, id, repositories, ct);
+            // Memory naming its repositories is scoped to the new project by a backfill (CG-172): pending until it succeeds.
+            await MySqlMemoryScopeReconciliationStore.AddPendingAsync(connection, transaction, spec.Key,
+                repositories.Select(member => member.Repository).ToList(), now, ct);
             if (keyHash is not null)
                 await InsertKeyAsync(connection, transaction, GlobalScope, ProjectOperation, keyHash, id, null, now, ct);
 
@@ -97,6 +100,10 @@ public sealed partial class MySqlWorkStore
                 await connection.ExecuteAsync(new CommandDefinition(
                     "DELETE FROM work_project_repositories WHERE project_id = @projectId", new { projectId }, transaction, cancellationToken: ct));
                 await WriteRepositoriesAsync(connection, transaction, projectId, repositories, ct);
+                // Only the repositories this update added can name memory not yet scoped to the project (CG-172).
+                var members = before.Repositories.Select(member => member.Repository).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                await MySqlMemoryScopeReconciliationStore.AddPendingAsync(connection, transaction, before.Key,
+                    repositories.Select(member => member.Repository).Where(name => !members.Contains(name)).ToList(), now, ct);
             }
 
             var after = (await LoadProjectViewAsync(connection, transaction, projectId, withCounts: false, ct))!;

@@ -689,8 +689,9 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         listed.Single(project => project.ProjectKey == key).Repositories.ShouldBe([owned, dependency]);
         listed.ShouldNotContain(project => project.ProjectKey == empty);
 
-        var result = await new CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob(db.Store, new MySqlMemoryProjectScopeBackfill(options),
-            NullLogger<CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob>.Instance).ExecuteAsync(new CodeGraph.Jobs.Jobs.EmptyJobRequest());
+        var result = await new CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob(db.Store, new MySqlMemoryScopeReconciliationStore(options),
+            new MySqlMemoryProjectScopeBackfill(options), NullLogger<CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob>.Instance)
+            .ExecuteAsync(new CodeGraph.Jobs.Jobs.EmptyJobRequest());
         result.Success.ShouldBeTrue(result.Message);
         (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, carol)).ShouldBe([$"entity:{owned}@{key}:backfill"]);
     }
@@ -725,11 +726,337 @@ public sealed class MemoryProjectScopeBackfillMariaDbTests(WorkDatabase db) : IC
         }
 
         public async Task<(string, string)> NextRunAsync() => await runs.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(60));
+
+        public Task<MemoryScopeWatermark> GetWatermarkAsync(MemoryScopeWatermark? since, CancellationToken ct = default) => inner.GetWatermarkAsync(since, ct);
+
+        public Task BackfillRangeAsync(IReadOnlyList<ProjectRepositories> projects, MemoryScopeWatermark after, MemoryScopeWatermark upTo, CancellationToken ct = default) =>
+            inner.BackfillRangeAsync(projects, after, upTo, ct);
     }
 
-    private static async Task<JsonElement> CallAsync(WorkService work, string tool, object arguments)
+    internal static async Task<JsonElement> CallAsync(WorkService work, string tool, object arguments)
     {
         var result = await work.ExecuteAsync(tool, JsonSerializer.SerializeToElement(arguments, WorkJson.Options), new WorkActor("alice"));
         return JsonSerializer.SerializeToElement(result, result.GetType(), WorkJson.Options);
+    }
+
+    /// <summary>A queue that accepts every backfill and never runs one: only the pending rows the project writes recorded remain.</summary>
+    internal sealed class NeverRunQueue : IMemoryScopeBackfillQueue
+    {
+        public bool Enqueue(string projectKey, IReadOnlyCollection<string> repositories) => true;
+    }
+}
+
+/// <summary>
+/// The incremental memory scope reconciliation (CG-172) against its own database, whose watermark and
+/// pending rows only this class touches: a project write records its added repositories as pending,
+/// a failed backfill stays pending until a run repairs it, a run after no change scans nothing, and
+/// memory written after the watermark is scoped for every project without rescanning older memory.
+/// </summary>
+public sealed class MemoryScopeReconciliationMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
+{
+    [Fact]
+    public async Task Failed_backfills_are_repaired_a_run_without_change_scans_nothing_and_only_new_memory_is_scanned()
+    {
+        var suffix = Guid.NewGuid().ToString("N")[..6];
+        var first = $"RA{suffix}".ToUpperInvariant();
+        var second = $"RB{suffix}".ToUpperInvariant();
+        string repoA = $"ra{suffix}", repoB = $"rb{suffix}", repoC = $"rc{suffix}";
+        var dave = $"user:dave-{Guid.NewGuid():N}";
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var state = new MySqlMemoryScopeReconciliationStore(options);
+        var tenant = new MemoryTenantContext();
+        var memory = new MySqlMemoryGraphStore(options, tenant);
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+        {
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repoA), (@repoB), (@repoC)", new { repoA, repoB, repoC });
+            // Starts before any reconciliation, whatever the class's other test left.
+            await connection.ExecuteAsync("DELETE FROM memory_scope_watermark; DELETE FROM memory_scope_backfill_pending");
+        }
+
+        // Memory written before any reconciliation: it names repoA and repoC.
+        using (tenant.Enter(dave))
+            await memory.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("old_a", repoA), MemoryProjectScopeMariaDbTests.Entity("old_c", repoC)]);
+
+        // The project writes record their added repositories as pending, coalesced per project; the queue never runs them.
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfillQueue: new MemoryProjectScopeBackfillMariaDbTests.NeverRunQueue());
+        await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key = first, name = "Reconciled", repositories = new[] { new { repository = repoA, role = "owned" } } },
+        });
+        var version = (await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.GetWork, new { id = first })).GetProperty("version").GetInt64();
+        await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.UpdateWork, new
+        {
+            id = first,
+            expected_version = version,
+            repositories = new[] { new { repository = repoA, role = "owned" }, new { repository = repoB, role = "dependency" } },
+        });
+        await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key = second, name = "Already scoped", repositories = new[] { new { repository = repoC, role = "owned" } } },
+        });
+        var pending = await state.ListPendingAsync();
+        pending.Single(row => row.ProjectKey == first).Repositories.ShouldBe([repoA, repoB]);
+        pending.Single(row => row.ProjectKey == second).Repositories.ShouldBe([repoC]);
+        // Taken as already backfilled, so only the first run's scan of all memory scopes old_c to the second project.
+        await state.CompletePendingAsync(second, [repoC]);
+        (await state.ListPendingAsync()).Select(row => row.ProjectKey).ShouldBe([first]);
+
+        // Rows count as settled: the backfill's clock is past the settle time of everything written here.
+        var clock = new ShiftableClock();
+        clock.Advance(MySqlMemoryProjectScopeBackfill.SettleTime + TimeSpan.FromMinutes(1));
+        var real = new MySqlMemoryProjectScopeBackfill(options, clock);
+
+        // 1. The first run scans memory from zero, so old_c (written before the second project's own backfill
+        // completed) is scoped although that project is no longer pending; the first project's full backfill
+        // fails and stays pending, while the range pass still scopes old_a to it.
+        var failing = new CountingBackfill(real) { FailingProject = first };
+        var result = await RunAsync(state, failing);
+        result.Success.ShouldBeFalse();
+        result.Message.ShouldContain(first);
+        failing.RangeScans.ShouldBeGreaterThan(0);
+        var watermark = (await state.GetWatermarkAsync()).ShouldNotBeNull();
+        watermark.EntitySeq.ShouldBeGreaterThan(0);
+        var failed = (await state.ListPendingAsync()).ShouldHaveSingleItem();
+        failed.Attempts.ShouldBe(1);
+        failed.LastError.ShouldBe("memory host unreachable");
+        string[] firstRun = [$"entity:old_a@{first}:backfill", $"entity:old_c@{second}:backfill"];
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(firstRun);
+
+        // 2. The next run repairs it: a full backfill of its pending repositories, and no new memory to scan.
+        var counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBe([$"{first}:{repoA},{repoB}"]);
+        counting.RangeScans.ShouldBe(0);
+        (await state.ListPendingAsync()).ShouldBeEmpty();
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(firstRun);
+
+        // 3. Nothing changed: no scan, and the watermark stays.
+        counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBeEmpty();
+        counting.RangeScans.ShouldBe(0);
+        (await state.GetWatermarkAsync()).ShouldBe(watermark);
+
+        // 4. New memory: an entity naming repoC, and a claim with evidence naming repoB.
+        using (tenant.Enter(dave))
+        {
+            await memory.UpsertEntitiesBatchAsync(
+            [
+                MemoryProjectScopeMariaDbTests.Entity("new_c", repoC),
+                MemoryProjectScopeMariaDbTests.Entity("subject", "Subject"),
+                MemoryProjectScopeMariaDbTests.Entity("object", "Object"),
+            ]);
+            await memory.UpsertClaimsBatchAsync(
+            [
+                MemoryProjectScopeMariaDbTests.Claim("claim_new", "subject", "object"),
+                // A new claim about an old entity whose label names repoA.
+                MemoryProjectScopeMariaDbTests.Claim("claim_about_a", "old_a", "object"),
+            ]);
+            await memory.AddEvidenceBatchAsync([MemoryProjectScopeMariaDbTests.Evidence("evidence_new", "claim_new", $"https://github.com/x/{repoB}/pull/1")]);
+        }
+        counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBeEmpty();
+        counting.RangeScans.ShouldBe(1);
+        string[] incremental =
+        [
+            $"claim:claim_about_a@{first}:backfill",
+            $"claim:claim_new@{first}:backfill",
+            $"entity:new_c@{second}:backfill",
+            $"entity:object@{first}:backfill",
+            $"entity:old_a@{first}:backfill",
+            $"entity:old_c@{second}:backfill",
+            $"entity:subject@{first}:backfill",
+        ];
+        // Only the new rows were scanned; old_c keeps the scope the first run gave it.
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(incremental);
+        var advanced = (await state.GetWatermarkAsync()).ShouldNotBeNull();
+        advanced.EntitySeq.ShouldBeGreaterThan(watermark.EntitySeq);
+        advanced.ClaimSeq.ShouldBeGreaterThan(watermark.ClaimSeq);
+        advanced.EvidenceId.ShouldBeGreaterThan(watermark.EvidenceId);
+
+        // 5. And again nothing changed.
+        counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.RangeScans.ShouldBe(0);
+        (await state.GetWatermarkAsync()).ShouldBe(advanced);
+
+        // 6. Rewrites in place, below the watermark by id: claim_new is repointed at new_c (whose label names
+        // repoC), and the entity "subject" is relabelled repoC. Their change marks move above the watermark.
+        using (tenant.Enter(dave))
+        {
+            await memory.UpsertClaimsBatchAsync([MemoryProjectScopeMariaDbTests.Claim("claim_new", "new_c", "object")]);
+            await memory.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("subject", repoC)]);
+        }
+        counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBeEmpty();
+        counting.RangeScans.ShouldBe(1);
+        var rewritten = incremental
+            .Append($"claim:claim_new@{second}:backfill")
+            .Append($"entity:new_c@{first}:backfill")
+            .Append($"entity:object@{second}:backfill")
+            .Append($"entity:subject@{second}:backfill")
+            .Order(StringComparer.Ordinal).ToArray();
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(rewritten);
+        advanced = (await state.GetWatermarkAsync()).ShouldNotBeNull();
+
+        // 7. A project created after the run's listing: its pending row is neither backfilled nor cleared.
+        var third = $"RC{suffix}".ToUpperInvariant();
+        var repoD = $"rd{suffix}";
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repoD)", new { repoD });
+        var snapshot = await db.Store.ListProjectRepositoriesAsync();
+        await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key = third, name = "Created meanwhile", repositories = new[] { new { repository = repoD, role = "owned" } } },
+        });
+        counting = new CountingBackfill(real);
+        (result = await RunAsync(state, counting, SnapshotWorkStore.Create(snapshot))).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBeEmpty();
+        (await state.ListPendingAsync()).ShouldHaveSingleItem().Repositories.ShouldBe([repoD]);
+        (result = await RunAsync(state, counting)).Success.ShouldBeTrue(result.Message);
+        counting.FullScans.ShouldBe([$"{third}:{repoD}"]);
+        (await state.ListPendingAsync()).ShouldBeEmpty();
+
+        // Completing drops a pending repository the project does not have, and keeps one it has.
+        await state.AddPendingAsync(first, ["not-a-member", repoA]);
+        await state.CompletePendingAsync(first, []);
+        (await state.ListPendingAsync()).ShouldHaveSingleItem().Repositories.ShouldBe([repoA]);
+        await state.CompletePendingAsync(first, [repoA]);
+        (await state.ListPendingAsync()).ShouldBeEmpty();
+
+        // A row written within the settle time does not move the watermark yet.
+        using (tenant.Enter(dave))
+            await memory.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("fresh", repoC)]);
+        (await new MySqlMemoryProjectScopeBackfill(options).GetWatermarkAsync(advanced)).ShouldBe(advanced);
+        (await real.GetWatermarkAsync(advanced)).EntitySeq.ShouldBeGreaterThan(advanced.EntitySeq);
+
+        // The range backfills found what a full backfill finds: a full one adds only the fresh row, not yet
+        // passed by the watermark.
+        await real.BackfillAsync(first, [repoA, repoB]);
+        await real.BackfillAsync(second, [repoC]);
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, dave)).ShouldBe(
+            rewritten.Append($"entity:fresh@{second}:backfill").Order(StringComparer.Ordinal).ToArray());
+    }
+
+    [Fact]
+    public async Task A_claims_settling_follows_the_time_its_mark_was_taken_not_its_caller_supplied_recorded_at()
+    {
+        var frank = $"user:frank-{Guid.NewGuid():N}";
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var tenant = new MemoryTenantContext();
+        var memory = new MySqlMemoryGraphStore(options, tenant);
+        var now = new MySqlMemoryProjectScopeBackfill(options);
+        var settledClock = new ShiftableClock();
+        settledClock.Advance(MySqlMemoryProjectScopeBackfill.SettleTime + TimeSpan.FromMinutes(1));
+        var later = new MySqlMemoryProjectScopeBackfill(options, settledClock);
+        var before = await now.GetWatermarkAsync(null);
+
+        using (tenant.Enter(frank))
+        {
+            await memory.UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("s", "S"), MemoryProjectScopeMariaDbTests.Entity("o", "O")]);
+            // A backdated claim, written just now: it has not settled, so the watermark does not pass it.
+            var backdated = MemoryProjectScopeMariaDbTests.Claim("claim_backdated", "s", "o");
+            backdated.RecordedAt = DateTime.UtcNow.AddYears(-1);
+            await memory.UpsertClaimsBatchAsync([backdated]);
+        }
+        (await now.GetWatermarkAsync(before)).ClaimSeq.ShouldBe(before.ClaimSeq);
+
+        using (tenant.Enter(frank))
+        {
+            // A claim dated in the future: once its mark has settled the watermark passes it.
+            var future = MemoryProjectScopeMariaDbTests.Claim("claim_future", "s", "o");
+            future.RecordedAt = DateTime.UtcNow.AddYears(1);
+            await memory.UpsertClaimsBatchAsync([future]);
+        }
+        var settled = await later.GetWatermarkAsync(before);
+        settled.ClaimSeq.ShouldBe((await now.GetWatermarkAsync(null)).ClaimSeq);
+    }
+
+    [Fact]
+    public async Task A_stored_watermark_ahead_of_memory_restarts_as_a_first_run_with_every_project_pending()
+    {
+        var key = $"RW{Guid.NewGuid().ToString("N")[..6]}".ToUpperInvariant();
+        var repository = key.ToLowerInvariant();
+        var erin = $"user:erin-{Guid.NewGuid():N}";
+        var options = Options.Create(new MariaDbStorageOptions { ConnectionString = db.ConnectionString });
+        var state = new MySqlMemoryScopeReconciliationStore(options);
+        var tenant = new MemoryTenantContext();
+        await using (var connection = new MySqlConnection(db.ConnectionString))
+            await connection.ExecuteAsync("INSERT IGNORE INTO repositories (name) VALUES (@repository)", new { repository });
+        var work = new WorkService(db.Store, db.Clock, Options.Create(new WorkSessionOptions { IdleSeconds = WorkDatabase.IdleSeconds }),
+            memoryScopeBackfillQueue: new MemoryProjectScopeBackfillMariaDbTests.NeverRunQueue());
+        await MemoryProjectScopeBackfillMariaDbTests.CallAsync(work, WorkTools.CreateWork, new
+        {
+            new_project = new { key, name = "Restored", repositories = new[] { new { repository, role = "owned" } } },
+        });
+        // Its backfill ran (so it is not pending), then memory was restored from an older copy: the stored
+        // watermark is ahead of it, and memory naming the repository is not scoped.
+        await state.CompletePendingAsync(key, [repository]);
+        using (tenant.Enter(erin))
+            await new MySqlMemoryGraphStore(options, tenant).UpsertEntitiesBatchAsync([MemoryProjectScopeMariaDbTests.Entity("restored", repository)]);
+        var backfill = new MySqlMemoryProjectScopeBackfill(options);
+        var current = await backfill.GetWatermarkAsync(null);
+        await state.SetWatermarkAsync(current with { EntitySeq = current.EntitySeq + 1_000_000 });
+
+        var counting = new CountingBackfill(backfill);
+        var result = await RunAsync(state, counting);
+
+        result.Success.ShouldBeTrue(result.Message);
+        result.Message.ShouldContain("reset");
+        counting.FullScans.ShouldContain($"{key}:{repository}");
+        // New memory is scanned from zero again, as on a first run, up to what has settled.
+        (await state.GetWatermarkAsync()).ShouldNotBeNull().IsAheadOf(current).ShouldBeFalse();
+        (await state.ListPendingAsync()).ShouldBeEmpty();
+        (await MemoryProjectScopeMariaDbTests.ScopesAsync(db.ConnectionString, erin)).ShouldBe([$"entity:restored@{key}:backfill"]);
+    }
+
+    private Task<CodeGraph.Jobs.JobExecutionResult> RunAsync(IMemoryScopeReconciliationStore state, IMemoryProjectScopeBackfill backfill, IWorkStore? workStore = null) =>
+        new CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob(workStore ?? db.Store, state, backfill,
+            NullLogger<CodeGraph.Jobs.Jobs.ReconcileMemoryProjectScopesJob>.Instance).ExecuteAsync(new CodeGraph.Jobs.Jobs.EmptyJobRequest());
+
+    /// <summary>A work store answering the project listing from a snapshot taken earlier (a listing gone stale during a run).</summary>
+    public class SnapshotWorkStore : System.Reflection.DispatchProxy
+    {
+        private IReadOnlyList<ProjectRepositories> projects = [];
+
+        public static IWorkStore Create(IReadOnlyList<ProjectRepositories> snapshot)
+        {
+            var store = Create<IWorkStore, SnapshotWorkStore>();
+            ((SnapshotWorkStore)(object)store).projects = snapshot;
+            return store;
+        }
+
+        protected override object? Invoke(System.Reflection.MethodInfo? method, object?[]? args) =>
+            method!.Name == nameof(IWorkStore.ListProjectRepositoriesAsync)
+                ? Task.FromResult(projects)
+                : throw new NotSupportedException(method.Name);
+    }
+
+    /// <summary>Counts the scans: full backfills (as project:sorted repositories) and range backfills over a non-empty range.</summary>
+    private sealed class CountingBackfill(IMemoryProjectScopeBackfill inner) : IMemoryProjectScopeBackfill
+    {
+        public string? FailingProject { get; init; }
+        public List<string> FullScans { get; } = [];
+        public int RangeScans { get; private set; }
+
+        public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+        {
+            FullScans.Add($"{projectKey}:{string.Join(",", repositories.Order(StringComparer.Ordinal))}");
+            return projectKey == FailingProject
+                ? Task.FromException(new HttpRequestException("memory host unreachable"))
+                : inner.BackfillAsync(projectKey, repositories, ct);
+        }
+
+        public Task<MemoryScopeWatermark> GetWatermarkAsync(MemoryScopeWatermark? since, CancellationToken ct = default) => inner.GetWatermarkAsync(since, ct);
+
+        public Task BackfillRangeAsync(IReadOnlyList<ProjectRepositories> projects, MemoryScopeWatermark after, MemoryScopeWatermark upTo, CancellationToken ct = default)
+        {
+            if (upTo != after)
+                RangeScans++;
+            return inner.BackfillRangeAsync(projects, after, upTo, ct);
+        }
     }
 }

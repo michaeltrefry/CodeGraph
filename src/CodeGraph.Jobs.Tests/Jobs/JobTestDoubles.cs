@@ -1,5 +1,6 @@
 using CodeGraph.Data;
 using CodeGraph.Indexer.Client;
+using CodeGraph.Models.Memory;
 using CodeGraph.Models.Requests;
 using CodeGraph.Models.Responses;
 using CodeGraph.Services;
@@ -497,9 +498,23 @@ public class ProjectRepositoriesWorkStore : System.Reflection.DispatchProxy
             : throw new NotSupportedException(method.Name);
 }
 
+/// <summary>
+/// A memory scope backfill over a memory whose settled watermark is <see cref="Memory"/>; it records
+/// every scan (a full backfill or a range backfill) and fails the listed projects (and, with
+/// <see cref="FailRange"/>, the range backfill) as an unreachable memory host would.
+/// </summary>
 internal sealed class RecordingMemoryProjectScopeBackfill(params string[] failingProjects) : IMemoryProjectScopeBackfill
 {
     public List<(string ProjectKey, IReadOnlyCollection<string> Repositories)> Calls { get; } = [];
+    public List<(IReadOnlyList<ProjectRepositories> Projects, MemoryScopeWatermark After, MemoryScopeWatermark UpTo)> RangeCalls { get; } = [];
+    public MemoryScopeWatermark Memory { get; set; } = new(10, 20, 30);
+    public bool FailRange { get; set; }
+
+    /// <summary>When set, the range backfill call with this (1-based) number fails.</summary>
+    public int? FailRangeCall { get; set; }
+
+    /// <summary>Every call that scanned memory.</summary>
+    public int Scans => Calls.Count + RangeCalls.Count;
 
     public Task BackfillAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
     {
@@ -507,5 +522,74 @@ internal sealed class RecordingMemoryProjectScopeBackfill(params string[] failin
         return failingProjects.Contains(projectKey)
             ? Task.FromException(new HttpRequestException("memory host unreachable"))
             : Task.CompletedTask;
+    }
+
+    public Task<MemoryScopeWatermark> GetWatermarkAsync(MemoryScopeWatermark? since, CancellationToken ct = default) =>
+        Task.FromResult(Memory);
+
+    public Task BackfillRangeAsync(IReadOnlyList<ProjectRepositories> projects, MemoryScopeWatermark after, MemoryScopeWatermark upTo, CancellationToken ct = default)
+    {
+        RangeCalls.Add((projects, after, upTo));
+        return FailRange || FailRangeCall == RangeCalls.Count
+            ? Task.FromException(new HttpRequestException("memory host unreachable"))
+            : Task.CompletedTask;
+    }
+}
+
+/// <summary>
+/// The reconciliation state in memory: pending repositories per project and the watermark. With
+/// <see cref="Members"/> (the projects' current members, as the work database has them), completing
+/// drops the pending repositories a project no longer has, as the MariaDB store does.
+/// </summary>
+internal sealed class InMemoryReconciliationStore : IMemoryScopeReconciliationStore
+{
+    public Dictionary<string, List<string>> Pending { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, (int Attempts, string? Error)> Failures { get; } = new(StringComparer.Ordinal);
+    public MemoryScopeWatermark? Watermark { get; set; }
+    public Dictionary<string, string[]>? Members { get; set; }
+
+    public InMemoryReconciliationStore WithPending(string projectKey, params string[] repositories)
+    {
+        Pending[projectKey] = [.. repositories];
+        return this;
+    }
+
+    public Task<IReadOnlyList<PendingMemoryScopeBackfill>> ListPendingAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<PendingMemoryScopeBackfill>>(Pending
+            .Select(row => new PendingMemoryScopeBackfill(row.Key, row.Value.ToList(), DateTime.UtcNow,
+                Failures.GetValueOrDefault(row.Key).Attempts, Failures.GetValueOrDefault(row.Key).Error))
+            .ToList());
+
+    public Task CompletePendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+    {
+        if (Pending.TryGetValue(projectKey, out var left))
+        {
+            left.RemoveAll(name => repositories.Contains(name, StringComparer.OrdinalIgnoreCase)
+                || (Members is not null && !Members.GetValueOrDefault(projectKey, []).Contains(name, StringComparer.OrdinalIgnoreCase)));
+            if (left.Count == 0)
+                Pending.Remove(projectKey);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task AddPendingAsync(string projectKey, IReadOnlyCollection<string> repositories, CancellationToken ct = default)
+    {
+        var current = Pending.TryGetValue(projectKey, out var existing) ? existing : Pending[projectKey] = [];
+        current.AddRange(repositories.Where(name => !current.Contains(name, StringComparer.OrdinalIgnoreCase)));
+        return Task.CompletedTask;
+    }
+
+    public Task FailPendingAsync(string projectKey, string error, CancellationToken ct = default)
+    {
+        Failures[projectKey] = (Failures.GetValueOrDefault(projectKey).Attempts + 1, error);
+        return Task.CompletedTask;
+    }
+
+    public Task<MemoryScopeWatermark?> GetWatermarkAsync(CancellationToken ct = default) => Task.FromResult(Watermark);
+
+    public Task SetWatermarkAsync(MemoryScopeWatermark watermark, CancellationToken ct = default)
+    {
+        Watermark = watermark;
+        return Task.CompletedTask;
     }
 }
