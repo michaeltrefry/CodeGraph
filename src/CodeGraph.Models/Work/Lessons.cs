@@ -550,6 +550,10 @@ public static class LessonSimilarity
         _ => null
     };
 
+    /// <summary>The stronger of two human rule reasons: a prompt over a review.</summary>
+    public static RuleReason? StrongerHuman(RuleReason? a, RuleReason? b) =>
+        a == RuleReason.HumanPrompt || b == RuleReason.HumanPrompt ? RuleReason.HumanPrompt : a ?? b;
+
     public static int PriorityRank(string? priority) => priority switch
     {
         "highest" => 0,

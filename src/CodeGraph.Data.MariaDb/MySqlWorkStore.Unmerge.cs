@@ -253,7 +253,10 @@ public sealed partial class MySqlWorkStore
         var appliesNow = MergeDetails(removed.Target.DetailsJson).AppliesWhen;
         // As PromoteIfDueAsync: a person's correction is a rule at once, an inferred one by distinct sources.
         var sources = events.Where(e => baselineIds.Contains(e.CorrectionId) && e.Counted).Select(EventSourceOf).ToHashSet();
-        var sourceHuman = LessonSimilarity.HumanRuleReason(MergeDetails(removed.Target.DetailsJson).Source?.Kind);
+        static RuleReason? HumanOf(EventRow e) => e.Counted && e.SourceKind is { } kind ? LessonSimilarity.HumanRuleReason(ParseName<CorrectionSourceKind>(kind)) : null;
+        // A person's correction the lesson carries: its own source, or a counted correction it holds.
+        var sourceHuman = events.Where(e => baselineIds.Contains(e.CorrectionId)).Select(HumanOf)
+            .Aggregate(LessonSimilarity.HumanRuleReason(MergeDetails(removed.Target.DetailsJson).Source?.Kind), LessonSimilarity.StrongerHuman);
         void Promote(RuleReason? humanEvent, DateTime at)
         {
             if (rebuilt.IsRule || !HasActivity(new KnowledgeDetails(AppliesWhen: appliesNow))) return;
@@ -267,13 +270,15 @@ public sealed partial class MySqlWorkStore
             {
                 appliesNow = UnionAppliesWhen(appliesNow, correction.AppliesWhenJson is null ? null : JsonSerializer.Deserialize<AppliesWhenView>(correction.AppliesWhenJson, WorkJson.Options));
                 if (correction.Counted) sources.Add(EventSourceOf(correction));
-                Promote(correction.Counted && correction.SourceKind is { } kind ? LessonSimilarity.HumanRuleReason(ParseName<CorrectionSourceKind>(kind)) : null, step.At);
+                sourceHuman = LessonSimilarity.StrongerHuman(sourceHuman, HumanOf(correction));
+                Promote(HumanOf(correction), step.At);
             }
             else if (step.Merge is { } merge)
             {
                 appliesNow = UnionAppliesWhen(appliesNow, MergeDetails(merge.Source.DetailsJson).AppliesWhen);
                 var ids = merge.SourceEvents.Select(e => e.CorrectionId).ToHashSet();
                 sources.UnionWith(events.Where(e => ids.Contains(e.CorrectionId) && e.Counted).Select(EventSourceOf));
+                sourceHuman = events.Where(e => ids.Contains(e.CorrectionId)).Select(HumanOf).Aggregate(sourceHuman, LessonSimilarity.StrongerHuman);
                 if (merge.Source.IsRule && !rebuilt.IsRule)
                     rebuilt = rebuilt with { RuleState = "rule", RuleReason = merge.Source.RuleReason,
                         RuleSince = merge.Source.RuleSince ?? step.At, RejectedReason = null };

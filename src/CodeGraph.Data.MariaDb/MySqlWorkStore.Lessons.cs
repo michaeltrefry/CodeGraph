@@ -360,22 +360,27 @@ public sealed partial class MySqlWorkStore
 
     /// <summary>
     /// Makes a lesson with an applies-when activity a rule when it is due: a new correction of a
-    /// person (<paramref name="humanEvent"/>, always, R24), a lesson whose own source is a person's,
-    /// or its counted corrections from <c>ruleThreshold</c> distinct sources; the last two unless it
-    /// was rejected. Writes only the rule columns (the caller advances version and revision).
+    /// person (<paramref name="humanEvent"/>, always, R24), a lesson carrying a person's correction
+    /// (its own source, or a counted correction merged into it), or its counted corrections from
+    /// <c>ruleThreshold</c> distinct sources; the last two unless it was rejected. Writes only the rule columns (the caller advances version and revision).
     /// </summary>
     private async Task<bool> PromoteIfDueAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, DateTime now, RuleReason? humanEvent, CancellationToken ct)
     {
-        var row = await connection.QuerySingleAsync<(string? RuleState, string? Activities, string? SourceKind, int Sources)>(new CommandDefinition(
+        var row = await connection.QuerySingleAsync<(string? RuleState, string? Activities, string? SourceKind, int Sources, bool Prompted, bool Reviewed)>(new CommandDefinition(
             "SELECT rule_state, activities, source_kind, " +
-            $"(SELECT COUNT(DISTINCT {EventSource}) FROM lesson_events WHERE entry_id = @entryId AND counted = 1) AS sources " +
+            $"(SELECT COUNT(DISTINCT {EventSource}) FROM lesson_events WHERE entry_id = @entryId AND counted = 1) AS sources, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND counted = 1 AND source_kind IN ('prompt', 'relayed_prompt')) AS prompted, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND counted = 1 AND source_kind IN ('review', 'relayed_review')) AS reviewed " +
             "FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
         if (row.RuleState == "rule" || string.IsNullOrEmpty(row.Activities))
             return false;
 
         var rejected = row.RuleState == "rejected";
+        var carried = LessonSimilarity.StrongerHuman(
+            LessonSimilarity.HumanRuleReason(row.SourceKind is { } kind ? ParseName<CorrectionSourceKind>(kind) : null),
+            row.Prompted ? RuleReason.HumanPrompt : row.Reviewed ? RuleReason.HumanReview : null);
         var reason = humanEvent
-            ?? (rejected ? null : LessonSimilarity.HumanRuleReason(row.SourceKind is { } kind ? ParseName<CorrectionSourceKind>(kind) : null))
+            ?? (rejected ? null : carried)
             ?? (!rejected && row.Sources >= ruleThreshold ? RuleReason.Recurrence : null);
         if (reason is null)
             return false;

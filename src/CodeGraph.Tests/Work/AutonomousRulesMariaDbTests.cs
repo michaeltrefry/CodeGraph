@@ -54,6 +54,20 @@ public sealed class AutonomousRulesMariaDbTests(WorkDatabase db) : IClassFixture
         }, "michael")).GetProperty("entry").GetProperty("id").GetString()!;
         (await RuleAsync(direct)).ShouldBe(("rule", "human_review"));
 
+        // A person's review without an activity merged (relate same_as) into an inferred lesson with one, by one identity:
+        // the target carries the person's correction, so it is a rule though it has a single source.
+        var inferred = (await db.CallAsync(WorkTools.Record, new
+        {
+            project, entry = new { kind = "lesson", summary = "Rebase before review", what = "w", applies_when = new { activity = new[] { "planning" } }, source = new { kind = "agent", @ref = "i-1" } }
+        }, "michael")).GetProperty("entry").GetProperty("id").GetString()!;
+        var bare = (await db.CallAsync(WorkTools.Record, new
+        {
+            project, entry = new { kind = "lesson", summary = "Rebase onto main before asking for review", what = "w", source = new { kind = "review", @ref = "r-10" } }
+        }, "michael")).GetProperty("entry").GetProperty("id").GetString()!;
+        (await RuleAsync(bare)).ShouldBe(("candidate", null));
+        await db.CallAsync(WorkTools.Record, new { relate = new { id = bare, expected_version = await VersionAsync(bare), same_as = inferred } }, "michael");
+        (await RuleAsync(inferred)).ShouldBe(("rule", "human_review"));
+
         // Served to a matching session at once, and nothing waits in the review queue.
         var rules = (await db.CallAsync(WorkTools.StartSession, new { project, harness = "codex", activity = new[] { "reviewing", "merging", "testing" } }, "bob"))
             .GetProperty("briefing").GetProperty("rules").EnumerateArray().Select(rule => rule.GetProperty("id").GetString()).ToList();
