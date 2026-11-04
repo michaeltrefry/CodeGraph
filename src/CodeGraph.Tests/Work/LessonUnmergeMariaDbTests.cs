@@ -9,9 +9,10 @@ namespace CodeGraph.Tests.Work;
 
 public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
 {
-    private async Task<JsonElement> Lesson(string project, string summary, string? reference, string activity = "implementing", string source = "agent", string? sameAs = null, string? sessionId = null) =>
+    private async Task<JsonElement> Lesson(string project, string summary, string? reference, string activity = "implementing", string source = "agent", string? sameAs = null, string? sessionId = null,
+        string user = "alice") =>
         (await db.CallAsync(WorkTools.Record, new { project, session_id = sessionId, entry = new { kind = "lesson", summary, what = "Observed this correction", confidence = "high",
-            applies_when = new { activity = new[] { activity } }, source = new { kind = source, @ref = reference }, same_as = sameAs } })).GetProperty("entry");
+            applies_when = new { activity = new[] { activity } }, source = new { kind = source, @ref = reference }, same_as = sameAs } }, user)).GetProperty("entry");
 
     private async Task<JsonElement> Entry(string id) =>
         (await db.CallAsync(WorkTools.Recall, new { id, detail = "full" })).GetProperty("items")[0];
@@ -206,7 +207,8 @@ public sealed class LessonUnmergeMariaDbTests(WorkDatabase db) : IClassFixture<W
         var targetId = target.GetProperty("id").GetString()!;
         await db.CallAsync(WorkTools.Promote, new { id = approvedId, expected_version = 1, action = "approve" });
         await db.CallAsync(WorkTools.Record, new { relate = new { id = firstId, expected_version = 1, same_as = targetId } });
-        await Lesson(project, "Own target recurrence before the approved merge", "own-rule-arrival", "merging", sameAs: targetId);
+        // From a second identity: the target's second distinct source, so recurrence makes it a rule here (CG-174).
+        await Lesson(project, "Own target recurrence before the approved merge", "own-rule-arrival", "merging", sameAs: targetId, user: "bob");
         await db.CallAsync(WorkTools.Record, new { relate = new { id = approvedId, expected_version = 2, same_as = targetId } });
         await db.CallAsync(WorkTools.Record, new { unmerge = new { id = firstId, expected_version = 2 } });
         await using var connection = new MySqlConnection(db.ConnectionString);
