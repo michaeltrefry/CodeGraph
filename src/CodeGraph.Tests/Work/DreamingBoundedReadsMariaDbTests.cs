@@ -122,8 +122,15 @@ public sealed partial class DreamingRunAcceptanceMariaDbTests
     public async Task Dream_review_pages_reach_past_the_interactive_500_candidate_bound()
     {
         var project = await ProjectAsync();
+        // One challenged rule per queue item (autonomous decisions are not queued, CG-174).
         for (var index = 0; index < 503; index++)
-            await db.CallAsync(WorkTools.Record, new { project, entry = new { kind = "decision", summary = $"Autonomous decision {index:D3}", made_autonomously = true } });
+        {
+            var rule = (await db.CallAsync(WorkTools.Record, new
+            {
+                project, entry = new { kind = "lesson", summary = $"Challenged rule {index:D3}", what = "w", source = new { kind = "prompt" }, applies_when = new { activity = new[] { "testing" } } }
+            })).GetProperty("entry").GetProperty("id").GetString();
+            await db.CallAsync(WorkTools.Challenge, new { open = new { id = rule, reason = "Disputed", evidence = new[] { new { kind = "link", summary = "Evidence" } } } });
+        }
         var actions = (IKnowledgeDreamActions)db.Service;
         using var scope = DreamExecutionScope.Begin(Guid.NewGuid(), project, "scripted");
         var page = await ReadBoundedAsync(actions, "dream_review_queue", new { limit = 100 });

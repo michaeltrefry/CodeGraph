@@ -114,7 +114,7 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
             what = "Restated the epic requirements in a story",
             correct_behavior = "When slicing a plan, do not restate epic requirements in stories",
             applies_when = new { activity = new[] { "slicing" } },
-            source = new { kind = "review", @ref = "https://github.com/o/r/pull/1#discussion_r1" }
+            source = new { kind = "bot_review", @ref = "https://github.com/o/r/pull/1#discussion_r1" }
         };
 
         var updated = await db.CallAsync(WorkTools.UpdateWork, new
@@ -138,9 +138,9 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         var retried = await db.CallAsync(WorkTools.EndSession, new { session_id = session, corrections = new[] { correction } });
         retried.GetProperty("recorded").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(lessonId);
 
-        // A second, distinct review comment: recurrence 2, the default threshold: a rule.
+        // A second, distinct review comment from another session: two sources, the default threshold: a rule.
         var other = await SessionAsync(key, "carol", "codegraph");
-        var again = await RecordLessonAsync(key, "When slicing a plan, do not restate epic requirements in stories.", "review", ["slicing"],
+        var again = await RecordLessonAsync(key, "When slicing a plan, do not restate epic requirements in stories.", "bot_review", ["slicing"],
             "https://github.com/o/r/pull/2#discussion_r9", sessionId: other, user: "carol");
         (again.GetProperty("merged").GetBoolean(), Id(again)).ShouldBe((true, lessonId));
         var rule = (await LessonAsync(lessonId)).GetProperty("lesson");
@@ -149,7 +149,7 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         rule.GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
 
         // The same second comment reported again by someone else: still 2.
-        await RecordLessonAsync(key, "When slicing a plan, do not restate epic requirements in stories", "review", ["slicing"],
+        await RecordLessonAsync(key, "When slicing a plan, do not restate epic requirements in stories", "bot_review", ["slicing"],
             "https://github.com/o/r/pull/2#discussion_r9", user: "dave");
         (await LessonAsync(lessonId)).GetProperty("lesson").GetProperty("recurrence").GetProperty("events").GetInt32().ShouldBe(2);
         item.GetProperty("key").GetString().ShouldNotBeNull();
@@ -331,8 +331,10 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         var proposed = await PromoteAsync("propose");
         (proposed.GetProperty("changed").GetBoolean(), proposed.GetProperty("entry").GetProperty("lesson").GetProperty("state").GetString()).ShouldBe((true, "proposed"));
         (await PromoteAsync("propose")).GetProperty("changed").GetBoolean().ShouldBeFalse();
-        (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray()
-            .ShouldContain(item => item.GetProperty("kind").GetString() == "proposed_rule");
+        // A proposal waits for nobody: it is listed with the candidates, not in the review queue.
+        (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray().ShouldBeEmpty();
+        (await db.CallAsync(WorkTools.Lessons, new { project = key, view = "candidates" })).GetProperty("items").EnumerateArray().Single()
+            .GetProperty("state").GetString().ShouldBe("proposed");
 
         (await db.RefusedAsync(WorkTools.Promote, new { id = lessonId, expected_version = 1, action = "reject" })).Message.ShouldContain("reason");
         var rejected = await PromoteAsync("reject", new { reason = "Too specific to one tracker" });
@@ -341,9 +343,9 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         reproposed.Code.ShouldBe(WorkErrorCodes.Conflict);
         reproposed.Message.ShouldContain("Too specific");
 
-        // Recurrence does not promote a rejected lesson.
-        await RecordLessonAsync(key, "Read workflow states before moving stories", "agent", ["tracker_updates"], "event-2");
-        await RecordLessonAsync(key, "Read workflow states before moving stories", "agent", ["tracker_updates"], "event-3");
+        // Recurrence (from distinct sources) does not promote a rejected lesson.
+        await RecordLessonAsync(key, "Read workflow states before moving stories", "agent", ["tracker_updates"], "event-2", user: "bob");
+        await RecordLessonAsync(key, "Read workflow states before moving stories", "agent", ["tracker_updates"], "event-3", user: "carol");
         (await LessonAsync(lessonId)).GetProperty("lesson").GetProperty("state").GetString().ShouldBe("rejected");
         Rules(await BriefingAsync(key, ["tracker_updates"])).ShouldBeEmpty();
 
@@ -377,7 +379,8 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
         Id(disjoint).ShouldNotBe(first);
 
         // A paraphrase is only a candidate; relate same_as merges it, its events become recurrences.
-        var paraphrase = await RecordLessonAsync(key, "Run the test suite before pushing", "agent", ["testing"], "e4");
+        // Recorded by another identity: a second source, so the merge makes the lesson a rule.
+        var paraphrase = await RecordLessonAsync(key, "Run the test suite before pushing", "agent", ["testing"], "e4", user: "bob");
         var paraphraseId = Id(paraphrase);
         paraphrase.GetProperty("similar").EnumerateArray().Single().GetProperty("candidates").EnumerateArray()
             .ShouldContain(candidate => candidate.GetProperty("id").GetString() == first);
@@ -406,7 +409,7 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
     }
 
     [Fact]
-    public async Task Autonomous_decisions_are_in_the_review_queue_until_acknowledged_and_nothing_there_blocks_work()
+    public async Task Autonomous_decisions_never_wait_in_the_review_queue_and_acknowledging_one_is_optional()
     {
         var key = await ProjectAsync("LD", "codegraph");
         var item = await db.NewItemAsync(key, "Pick the similarity");
@@ -418,12 +421,11 @@ public sealed class LessonsMariaDbTests(WorkDatabase db) : IClassFixture<WorkDat
             decisions = new[] { new { decision = "Lexical similarity, not embeddings", made_autonomously = true } }
         });
         decided.GetProperty("item").GetProperty("status").GetString().ShouldBe("in_progress");
-        var queue = (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray().ToList();
-        var decision = queue.Single(entry => entry.GetProperty("kind").GetString() == "autonomous_decision").GetProperty("entry");
+        var decision = decided.GetProperty("recorded").EnumerateArray().Single();
+        (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray().ShouldBeEmpty();
 
-        // Work proceeds regardless: the item completes with the decision unreviewed.
+        // Work proceeds and the decision stands unreviewed; acknowledging it still records who reviewed it.
         (await db.UpdateAsync(item.GetProperty("key").GetString()!, new { status = "complete" })).GetProperty("status").GetString().ShouldBe("complete");
-
         await db.CallAsync(WorkTools.Record, new { acknowledge = new { id = decision.GetProperty("id").GetString(), expected_version = decision.GetProperty("version").GetInt64() } });
         (await db.CallAsync(WorkTools.ReviewQueue, new { project = key })).GetProperty("items").EnumerateArray().ShouldBeEmpty();
     }

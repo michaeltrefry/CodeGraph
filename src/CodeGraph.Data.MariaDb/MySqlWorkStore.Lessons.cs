@@ -15,8 +15,9 @@ namespace CodeGraph.Data.MariaDb;
 // Nothing here is decided by a model (E5): a correction merges into an existing lesson only when the
 // recording agent says same_as, or when its normalized summary is exactly an active lesson's with an
 // overlapping applies-when; similarity (LessonSimilarity, lexical) only lists candidates. Nothing
-// here blocks work (E6): a challenged rule stays active, a proposal or contradiction just waits in
-// the review queue, and anyone (agent or person) may approve, reject or resolve.
+// here blocks work (E6) and no rule waits for approval (CG-174): a person's correction is a rule at
+// once, an inferred one a rule by recurrence from distinct sources; a challenged rule stays active
+// and a challenge or contradiction just waits in the review queue for whoever resolves it.
 //
 // Lock order (the store's: project, feature, items, resources and holds, knowledge rows, change
 // feed): every lesson write holds the project row first (save points already do), then knowledge
@@ -41,6 +42,7 @@ public sealed partial class MySqlWorkStore
         public bool? Served { get; init; }
         public string? SourceKind { get; init; }
         public string? SourceRef { get; init; }
+        public string? SourceQuote { get; init; }
         public string Summary { get; init; } = "";
         public string? What { get; init; }
         public string? SessionId { get; init; }
@@ -206,34 +208,33 @@ public sealed partial class MySqlWorkStore
     private static Task InsertEventAsync(MySqlConnection connection, MySqlTransaction transaction, Guid projectId, Guid entryId, KnowledgeSpec spec,
         string key, bool counted, bool ruleAtEvent, bool? served, Guid? item, WorkActor actor, DateTime now, CancellationToken ct) =>
         connection.ExecuteAsync(new CommandDefinition(
-            "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, " +
+            "INSERT INTO lesson_events (correction_id, entry_id, project_id, event_key, event_hash, counted, rule_at_event, served, source_kind, source_ref, source_ref_key, source_quote, " +
             "summary, summary_hash, what, applies_when_json, arrival_revision, item_id, session_id, author, author_kind, author_harness, author_model, author_host, created_at) VALUES (@correction, @entryId, @projectId, " +
-            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @summary, @summaryHash, @what, @appliesWhen, (SELECT revision + IF(@correction = @entryId, 0, 1) FROM knowledge_entries WHERE id = @entryId), @item, @session, @author, @authorKind, " +
+            "@key, @hash, @counted, @ruleAtEvent, @served, @sourceKind, @sourceRef, @sourceRefKey, @sourceQuote, @summary, @summaryHash, @what, @appliesWhen, (SELECT revision + IF(@correction = @entryId, 0, 1) FROM knowledge_entries WHERE id = @entryId), @item, @session, @author, @authorKind, " +
             "@harness, @model, @host, @now)",
             new
             {
                 correction = spec.Id, entryId, projectId, key = key.Length > 600 ? key[..600] : key, hash = Sha(key), counted, ruleAtEvent, served,
                 sourceKind = spec.Details?.Source is { } source ? JsonName(source.Kind) : null, sourceRef = spec.Details?.Source?.Ref,
-                sourceRefKey = SourceRefKey(spec.Details?.Source?.Ref),
+                sourceRefKey = SourceRefKey(spec.Details?.Source?.Ref), sourceQuote = spec.Details?.Source?.Quote,
                 summary = spec.Summary, summaryHash = KnowledgePaths.HashSummary(spec.Summary), what = spec.Details?.What, appliesWhen = AppliesWhenJson(spec.Details?.AppliesWhen), item,
                 session = actor.SessionId, author = actor.Name, authorKind = actor.Kind, harness = actor.Harness, model = actor.Model, host = actor.Host, now
             },
             transaction, cancellationToken: ct));
 
-    /// <summary>The learning-loop state of a newly stored lesson: its first event, rule at once from a prompt, its contradiction link.</summary>
+    /// <summary>The learning-loop state of a newly stored lesson: its first event, rule at once from a person, its contradiction link.</summary>
     private async Task InitLessonAsync(MySqlConnection connection, MySqlTransaction transaction, ProjectRow project, KnowledgeSpec spec, Guid? item, WorkActor actor, DateTime now, CancellationToken ct)
     {
-        var prompt = spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt;
-        // What an agent relays from a person waits for the owner in the review queue (CG-F16 E4).
-        var relayed = LessonSimilarity.IsRelayed(spec.Details?.Source?.Kind);
+        // The human's prompt or review, direct or relayed by an agent, is a rule at once (CG-174).
+        var human = LessonSimilarity.HumanRuleReason(spec.Details?.Source?.Kind);
         // A rule needs an applies-when activity: without one it would be served everywhere (§5.7).
-        var rule = HasActivity(spec.Details) && !relayed && (prompt || ruleThreshold <= 1);
+        RuleReason? reason = !HasActivity(spec.Details) ? null : human ?? (ruleThreshold <= 1 ? RuleReason.Recurrence : null);
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = @state, rule_reason = @reason, rule_since = @since, recurrence = 1, priority = @priority WHERE id = @id",
             new
             {
-                state = rule ? "rule" : relayed && HasActivity(spec.Details) ? "proposed" : "candidate", reason = rule ? JsonName(prompt ? RuleReason.HumanPrompt : RuleReason.Recurrence) : null,
-                since = rule ? now : (DateTime?)null, priority = LessonSimilarity.Priority(spec.Details?.Source?.Kind), id = spec.Id
+                state = reason is null ? "candidate" : "rule", reason = reason is { } why ? JsonName(why) : null,
+                since = reason is null ? (DateTime?)null : now, priority = LessonSimilarity.Priority(spec.Details?.Source?.Kind), id = spec.Id
             },
             transaction, cancellationToken: ct));
         await InsertEventAsync(connection, transaction, project.Id, spec.Id, spec, EventKey(spec, actor, item), counted: true, ruleAtEvent: false, served: null, item, actor, now, ct);
@@ -286,9 +287,9 @@ public sealed partial class MySqlWorkStore
                 now, target
             },
             transaction, cancellationToken: ct));
-        // Only a new event of the human's prompt promotes through the prompt path (which overrides a
+        // Only a new event of a person's correction promotes through the human path (which overrides a
         // rejection); a redelivery that only widens applies-when is evaluated like any other change.
-        await PromoteIfDueAsync(connection, transaction, target, now, counted && spec.Details?.Source?.Kind == CorrectionSourceKind.Prompt, ct);
+        await PromoteIfDueAsync(connection, transaction, target, now, counted ? LessonSimilarity.HumanRuleReason(spec.Details?.Source?.Kind) : null, ct);
         await InsertRevisionAsync(connection, transaction, target, lesson.Revision + 1, counted ? "recurred" : "widened", actor, now, ct);
     }
 
@@ -350,39 +351,39 @@ public sealed partial class MySqlWorkStore
                 "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @since, rejected_reason = NULL WHERE id = @to",
                 new { reason = from.RuleReason, since = from.RuleSince ?? now, to }, transaction, cancellationToken: ct));
         else
-            await PromoteIfDueAsync(connection, transaction, to, now, promptEvent: false, ct);
+            await PromoteIfDueAsync(connection, transaction, to, now, humanEvent: null, ct);
     }
 
+    // The source of a correction event for recurrence (CG-174): its session, else the identity that
+    // wrote it without one. One session repeating a lesson (on other items, with other refs) is one source.
+    private const string EventSource = "COALESCE(CONCAT('session:', session_id), CONCAT('author:', author_kind, ':', author))";
+
     /// <summary>
-    /// Makes a lesson with an applies-when activity a rule when it is due: a correction from the
-    /// human's prompt (always, R24), or its recurrence at the threshold unless it was rejected.
-    /// Writes only the rule columns (the caller advances version and revision).
+    /// Makes a lesson with an applies-when activity a rule when it is due: a new correction of a
+    /// person (<paramref name="humanEvent"/>, always, R24), a lesson carrying a person's correction
+    /// (its own source, or a counted correction merged into it), or its counted corrections from
+    /// <c>ruleThreshold</c> distinct sources; the last two unless it was rejected. Writes only the rule columns (the caller advances version and revision).
     /// </summary>
-    private async Task<bool> PromoteIfDueAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, DateTime now, bool promptEvent, CancellationToken ct)
+    private async Task<bool> PromoteIfDueAsync(MySqlConnection connection, MySqlTransaction transaction, Guid entryId, DateTime now, RuleReason? humanEvent, CancellationToken ct)
     {
-        var row = await connection.QuerySingleAsync<(string? RuleState, int? Recurrence, string? Activities, string? SourceKind, bool Relayed)>(new CommandDefinition(
-            "SELECT rule_state, recurrence, activities, source_kind, " +
-            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND source_kind IN ('relayed_prompt', 'relayed_review')) AS relayed " +
+        var row = await connection.QuerySingleAsync<(string? RuleState, string? Activities, string? SourceKind, int Sources, bool Prompted, bool Reviewed)>(new CommandDefinition(
+            "SELECT rule_state, activities, source_kind, " +
+            $"(SELECT COUNT(DISTINCT {EventSource}) FROM lesson_events WHERE entry_id = @entryId AND counted = 1) AS sources, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND counted = 1 AND source_kind IN ('prompt', 'relayed_prompt')) AS prompted, " +
+            "EXISTS (SELECT 1 FROM lesson_events WHERE entry_id = @entryId AND counted = 1 AND source_kind IN ('review', 'relayed_review')) AS reviewed " +
             "FROM knowledge_entries WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
         if (row.RuleState == "rule" || string.IsNullOrEmpty(row.Activities))
             return false;
 
-        // A lesson carrying the owner's words relayed by an agent (its own source or a merged
-        // correction) becomes a rule only by the owner's approval, never by recurrence: it waits as
-        // proposed in the review queue (CG-F16).
-        var relayed = row.Relayed || row.SourceKind is "relayed_prompt" or "relayed_review";
-        // A new prompt event is the person's own word; a prompt lesson that only gained its activity
-        // from a relayed correction is not (the agent chose it), so it waits for the owner.
-        RuleReason? reason = promptEvent || (row.SourceKind == "prompt" && !relayed && row.RuleState != "rejected") ? RuleReason.HumanPrompt
-            : row.RuleState != "rejected" && !relayed && (row.Recurrence ?? 1) >= ruleThreshold ? RuleReason.Recurrence
-            : null;
+        var rejected = row.RuleState == "rejected";
+        var carried = LessonSimilarity.StrongerHuman(
+            LessonSimilarity.HumanRuleReason(row.SourceKind is { } kind ? ParseName<CorrectionSourceKind>(kind) : null),
+            row.Prompted ? RuleReason.HumanPrompt : row.Reviewed ? RuleReason.HumanReview : null);
+        var reason = humanEvent
+            ?? (rejected ? null : carried)
+            ?? (!rejected && row.Sources >= ruleThreshold ? RuleReason.Recurrence : null);
         if (reason is null)
-        {
-            if (relayed && row.RuleState == "candidate")
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "UPDATE knowledge_entries SET rule_state = 'proposed' WHERE id = @entryId", new { entryId }, transaction, cancellationToken: ct));
             return false;
-        }
 
         await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE knowledge_entries SET rule_state = 'rule', rule_reason = @reason, rule_since = @now, rejected_reason = NULL WHERE id = @entryId",
@@ -425,7 +426,7 @@ public sealed partial class MySqlWorkStore
         entryIds.Count == 0
             ? Array.Empty<EventRow>().ToLookup(row => row.EntryId)
             : (await connection.QueryAsync<EventRow>(new CommandDefinition(
-                "SELECT correction_id, entry_id, event_hash, event_key, arrival_revision, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, summary, what, session_id, author, author_kind, created_at " +
+                "SELECT correction_id, entry_id, event_hash, event_key, arrival_revision, applies_when_json, counted, rule_at_event, served, source_kind, source_ref, source_quote, summary, what, session_id, author, author_kind, created_at " +
                 "FROM lesson_events WHERE entry_id IN @ids ORDER BY created_at, correction_id",
                 new { ids = entryIds.Select(id => id.ToString()).ToArray() }, transaction, cancellationToken: ct))).ToLookup(row => row.EntryId);
 
@@ -495,7 +496,7 @@ public sealed partial class MySqlWorkStore
             withEvents
                 ? events.Select(item => new LessonEventView(item.CorrectionId, item.Counted, item.Summary, new WorkActor(item.Author, item.AuthorKind, item.SessionId),
                     Utc(item.CreatedAt), item.SourceKind is { } kind ? ParseName<CorrectionSourceKind>(kind) : null, item.SourceRef, item.What,
-                    item.RuleAtEvent ? true : null, item.Served, item.SessionId)).ToList()
+                    item.RuleAtEvent ? true : null, item.Served, item.SessionId, item.SourceQuote)).ToList()
                 : null);
     }
 
@@ -1150,6 +1151,10 @@ public sealed partial class MySqlWorkStore
                 where.Append(" AND e.rule_state = 'rule' AND " + NotAddressed);
                 order = "e.activities, e.recurrence DESC, e.id";
                 break;
+            case LessonsView.Candidates:
+                where.Append(" AND e.rule_state IN ('candidate', 'proposed')");
+                order = "e.created_at DESC, e.id";
+                break;
             default:
                 where.Append(" AND e.rule_state = 'rule' AND " + NotAddressed +
                              " AND NOT EXISTS (SELECT 1 FROM lesson_served s WHERE s.entry_id = e.id AND s.last_served_at >= @since)");
@@ -1248,6 +1253,9 @@ public sealed partial class MySqlWorkStore
     // must enumerate the complete queue before applying its own bounded pages.
     private static string ReviewCandidateLimit => DreamExecutionScope.Current is null ? $" LIMIT {MaxReviewCandidates}" : "";
 
+    // Only what needs a person (CG-174, DevWorks REVIEW-01): open challenges, contradictions and the
+    // dreamer's proposals. Proposed lessons (lessons view candidates) and autonomous decisions (recall,
+    // briefings, get_work) never wait here for approval or acknowledgment.
     public async Task<ReviewQueuePage> ReadReviewQueueAsync(Guid projectId, int offset, int limit, CancellationToken ct = default)
     {
         DreamPolicy.RequireCurrentProject(projectId);
@@ -1267,12 +1275,6 @@ public sealed partial class MySqlWorkStore
             items.Add(new ReviewItem(ReviewKinds.Challenge, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, open.Min(challenge => challenge.CreatedAt),
                 Challenges: shown, MoreChallenges: open.Count > shown.Count ? open.Count - shown.Count : null, Author: AuthorOf(row)));
         }
-
-        // Lessons proposed for rule status.
-        foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'lesson' AND e.rule_state = 'proposed' " +
-            $"ORDER BY e.id{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
-            items.Add(new ReviewItem(ReviewKinds.ProposedRule, ToRow(row), row.Priority ?? "normal", row.Recurrence ?? 1, Utc(row.UpdatedAt), Author: AuthorOf(row)));
 
         // Contradicting lessons, both active: one item per pair.
         var pairs = (await connection.QueryAsync<(Guid EntryId, Guid OtherId, DateTime CreatedAt)>(new CommandDefinition(
@@ -1295,12 +1297,6 @@ public sealed partial class MySqlWorkStore
                     Math.Max(a.Recurrence ?? 1, b.Recurrence ?? 1), Utc(createdAt), Other: ToRow(other), Author: AuthorOf(lead), OtherAuthor: AuthorOf(other)));
             }
         }
-
-        // Decisions an agent made on its own, not yet acknowledged (and not overturned).
-        foreach (var row in await connection.QueryAsync<KnowledgeEntryRow>(new CommandDefinition(
-            $"SELECT {KnowledgeColumns} {KnowledgeFrom} WHERE e.project_id = @projectId AND e.status = 'active' AND e.kind = 'decision' AND e.made_autonomously = 1 " +
-            $"AND e.reviewed_at IS NULL ORDER BY e.created_at{ReviewCandidateLimit}", new { projectId }, cancellationToken: ct)))
-            items.Add(new ReviewItem(ReviewKinds.AutonomousDecision, ToRow(row), "normal", 1, Utc(row.CreatedAt), Author: AuthorOf(row)));
 
         await AddDreamProposalQueueAsync(connection, projectId, items, ct);
 

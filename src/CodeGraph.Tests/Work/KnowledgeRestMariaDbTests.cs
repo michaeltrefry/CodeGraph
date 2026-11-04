@@ -94,7 +94,8 @@ public sealed class KnowledgeRestMariaDbTests(WorkDatabase db) : IClassFixture<W
 
         var (queueStatus, queue) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=10");
         queueStatus.ShouldBe(200);
-        queue.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("kind").GetString()).ShouldBe(["challenge", "proposed_rule"]);
+        // A proposed lesson waits for nobody: only the challenge is queued (CG-174).
+        queue.GetProperty("items").EnumerateArray().Select(item => item.GetProperty("kind").GetString()).ShouldBe(["challenge"]);
         (await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&lmit=10")).Status.ShouldBe(400);
 
         var (lessonsStatus, lessons) = await Call(HttpMethod.Post, "/api/work/knowledge/lessons", new { project = key, view = "recently_learned" });

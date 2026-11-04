@@ -284,8 +284,17 @@ public sealed class LessonsScopeMariaDbTests(WorkDatabase db) : IClassFixture<Wo
             lessonId ??= updated.GetProperty("recorded")[0].GetProperty("id").GetString();
         }
 
+        // Two events from one session are one source: not a rule yet (CG-174). Another session makes it one.
         var lesson = (await LessonAsync(lessonId!)).GetProperty("lesson");
-        (lesson.GetProperty("recurrence").GetProperty("events").GetInt32(), lesson.GetProperty("state").GetString()).ShouldBe((2, "rule"));
+        (lesson.GetProperty("recurrence").GetProperty("events").GetInt32(), lesson.GetProperty("state").GetString()).ShouldBe((2, "candidate"));
+        var other = (await db.CallAsync(WorkTools.StartSession, new { project = key, harness = "codex" }, "bob")).GetProperty("session").GetProperty("id").GetString();
+        var third = await db.NewItemAsync(key, "Third");
+        await db.CallAsync(WorkTools.UpdateWork, new
+        {
+            id = third.GetProperty("key").GetString(), expected_version = third.GetProperty("version").GetInt64(), session_id = other, corrections = new[] { correction }
+        }, "bob");
+        lesson = (await LessonAsync(lessonId!)).GetProperty("lesson");
+        (lesson.GetProperty("recurrence").GetProperty("events").GetInt32(), lesson.GetProperty("state").GetString()).ShouldBe((3, "rule"));
 
         for (var index = 0; index < 5; index++)
             await db.CallAsync(WorkTools.Challenge, new { open = new { id = lessonId, reason = $"Reason {index}", evidence = new[] { new { kind = "link", summary = $"Evidence {index}" } } } });

@@ -526,7 +526,11 @@ An AI harness (Claude Code, Codex, ...) signs in to MCP with the token of an **a
   - `inbox` or `ack` without `session_id` (the humans' inbox), and resolving a question put to the humans;
   - changing `dream_settings` (reading is allowed).
 
-  To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`, which need an `applies_when.activity`. Such a lesson waits in the review queue as a proposed rule (highest or high priority). The same holds for any lesson a relayed correction is merged into: recurrence never promotes it, and only the owner's `promote approve` makes it a rule. An agent also cannot revise, retract, supersede or merge away a lesson from a person's prompt or review, nor amend or retract it by resolving a challenge; it opens a challenge for the owner instead.
+  To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`, which need an `applies_when.activity`, with the owner's words in `source.quote`. Such a lesson is a rule at once (highest or high priority), as is any lesson a relayed correction is merged into.
+
+  **No rule or decision waits for the owner (CG-174).** A correction from the owner's prompt or review, direct or relayed, is a rule at once. A lesson an agent, subagent or automated reviewer inferred (`agent`, `subagent`, `bot_review`) becomes a rule on its own once recorded from `Work:Lessons:RuleRecurrenceThreshold` distinct sources (default 2; a source is a session, or an identity writing without one), so one session repeating a lesson never makes it a rule; `lessons` view `candidates` lists the ones still waiting to recur. The owner can still `promote approve` a candidate early, or `challenge` or retract any rule. A decision is `made_autonomously` only when the agent made it without the owner; autonomous decisions are read through `recall`, briefings and `get_work` and are never queued for acknowledgment. The review queue holds only what an agent cannot resolve alone: open challenges, contradicting lessons and the dreamer's proposals.
+
+  An agent also cannot revise, retract, supersede or merge away a lesson from a person's prompt or review, nor amend or retract it by resolving a challenge; it opens a challenge for the owner instead.
 
 **Switching a harness to an agent token (owner steps).** Agents never enter or see token values.
 

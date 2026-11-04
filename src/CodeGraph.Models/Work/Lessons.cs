@@ -4,8 +4,9 @@ using System.Text;
 namespace CodeGraph.Models.Work;
 
 // Lessons, rules and challenges (sc-27873, design §5.7, §6, R22-R28): the learning-loop state of
-// lesson entries. A lesson from the human's prompt is a rule at once; other lessons become rules by
-// recurrence (distinct source events) or by promote approve. Rules are served in briefings when
+// lesson entries. A lesson from the human's prompt or review, direct or relayed by an agent, is a
+// rule at once; a lesson an agent, subagent or automated reviewer inferred becomes a rule by
+// recurrence from distinct sources, or early by promote approve. No rule waits for approval (CG-174). Rules are served in briefings when
 // their applies-when matches the session's activity and location, with contradictions and open
 // challenges shown beside them. Nothing here is decided by a model (E5) and nothing blocks work (E6).
 
@@ -14,7 +15,7 @@ public enum LessonRuleState
 {
     /// <summary>Task-scoped: lives on its item, not served as a rule.</summary>
     Candidate,
-    /// <summary>Proposed for rule status (promote propose); in the review queue.</summary>
+    /// <summary>Proposed for rule status (promote propose); listed by lessons view candidates, and still a rule by recurrence.</summary>
     Proposed,
     /// <summary>A rule: served in briefings when its applies-when matches.</summary>
     Rule,
@@ -25,8 +26,10 @@ public enum LessonRuleState
 /// <summary>How a lesson became a rule.</summary>
 public enum RuleReason
 {
-    /// <summary>From the human's prompt: a rule at once (R24).</summary>
+    /// <summary>From the human's prompt, direct or relayed by an agent: a rule at once (R24).</summary>
     HumanPrompt,
+    /// <summary>From the human's code review, direct or relayed by an agent: a rule at once.</summary>
+    HumanReview,
     /// <summary>Its recurrence reached the threshold.</summary>
     Recurrence,
     /// <summary>promote approve.</summary>
@@ -85,7 +88,9 @@ public enum LessonsView
     /// <summary>Rules not served to any session for since_days (or never).</summary>
     Unmatched,
     /// <summary>GitHub review evidence (reviews and review comments) no lesson was recorded from.</summary>
-    UnlearnedReviews
+    UnlearnedReviews,
+    /// <summary>Lessons that are not rules yet (candidate or proposed), newest first.</summary>
+    Candidates
 }
 
 /// <summary>Settings of the learning loop, bound from configuration section <see cref="Section"/>.</summary>
@@ -93,7 +98,10 @@ public sealed class WorkLessonOptions
 {
     public const string Section = "Work:Lessons";
 
-    /// <summary>Distinct correction events after which a lesson with an applies-when activity becomes a rule (default 2).</summary>
+    /// <summary>
+    /// Distinct sources (sessions, or identities writing without a session) a lesson an agent, subagent or automated
+    /// reviewer inferred must be recorded from before it becomes a rule, given an applies-when activity (default 2).
+    /// </summary>
     public int RuleRecurrenceThreshold { get; set; } = 2;
 
     /// <summary>Cosine similarity at or above which a lesson is listed as similar when an embedding provider is available (default 0.8).</summary>
@@ -134,7 +142,7 @@ public sealed class PromoteRequest : ISessionArguments
     [Description("Its version as last read; refused conflict with the current lesson otherwise.")]
     public required long ExpectedVersion { get; init; }
 
-    [Description("propose: ask for the lesson to become a rule (review queue). approve: make it a rule. reject: refuse rule status with reason (it is not proposed or promoted by recurrence again). " +
+    [Description("propose: mark the lesson proposed for rule status (lessons view candidates; it still becomes a rule by recurrence). approve: make it a rule. reject: refuse rule status with reason (it is not proposed or promoted by recurrence again). " +
                  "addressed_by: the lesson is addressed locally by a skill, instruction, hook, test or CI gate (with addressed_by); it then leaves briefings.")]
     public required PromoteAction Action { get; init; }
 
@@ -238,7 +246,7 @@ public sealed class LessonsRequest : ISessionArguments
     [Description("Key or id of the Project. May be left out with session_id.")]
     public string? Project { get; init; }
 
-    [Description("recently_learned (rules, newest first), recurrence (lessons that recurred, with and without their rule served), unaddressed (rules not addressed_by a local fix, grouped by activity), unmatched (rules not served for since_days).")]
+    [Description("recently_learned (rules, newest first), recurrence (lessons that recurred, with and without their rule served), unaddressed (rules not addressed_by a local fix, grouped by activity), unmatched (rules not served for since_days), candidates (lessons not yet rules, newest first).")]
     public required LessonsView View { get; init; }
 
     [Description("Only lessons applying to this activity.")]
@@ -288,7 +296,7 @@ public sealed class KnowledgeRelateInput
     public string? Contradicts { get; init; }
 }
 
-/// <summary>record acknowledge: an autonomous decision was reviewed; it leaves the review queue (it stands).</summary>
+/// <summary>record acknowledge: mark an autonomous decision reviewed (optional: autonomous decisions are never queued for acknowledgment).</summary>
 public sealed class KnowledgeAcknowledgeInput
 {
     public required string Id { get; init; }
@@ -330,7 +338,8 @@ public sealed record LessonEventView(
     string? What = null,
     bool? RuleAtEvent = null,
     bool? Served = null,
-    string? SessionId = null);
+    string? SessionId = null,
+    string? SourceQuote = null);
 
 /// <summary>
 /// Recurrence of a lesson: distinct source events (<see cref="Events"/>), and of the recurrences
@@ -409,9 +418,7 @@ public sealed record LessonsResult(LessonsView View, IReadOnlyList<LessonRow>? I
 public static class ReviewKinds
 {
     public const string Challenge = "challenge";
-    public const string ProposedRule = "proposed_rule";
     public const string Contradiction = "contradiction";
-    public const string AutonomousDecision = "autonomous_decision";
     public const string DreamProposal = "dream_proposal";
 }
 
@@ -529,8 +536,23 @@ public static class LessonSimilarity
         _ => "normal"
     };
 
-    /// <summary>A person's words relayed by an agent: proposed for the owner, never a rule by recurrence (CG-F16).</summary>
+    /// <summary>A person's words relayed by an agent (CG-F16).</summary>
     public static bool IsRelayed(CorrectionSourceKind? kind) => kind is CorrectionSourceKind.RelayedPrompt or CorrectionSourceKind.RelayedReview;
+
+    /// <summary>
+    /// How a correction from a person makes its lesson a rule at once (CG-174): the human's prompt or review, given
+    /// directly or relayed by an agent. Null for what an agent, subagent or automated reviewer inferred.
+    /// </summary>
+    public static RuleReason? HumanRuleReason(CorrectionSourceKind? kind) => kind switch
+    {
+        CorrectionSourceKind.Prompt or CorrectionSourceKind.RelayedPrompt => RuleReason.HumanPrompt,
+        CorrectionSourceKind.Review or CorrectionSourceKind.RelayedReview => RuleReason.HumanReview,
+        _ => null
+    };
+
+    /// <summary>The stronger of two human rule reasons: a prompt over a review.</summary>
+    public static RuleReason? StrongerHuman(RuleReason? a, RuleReason? b) =>
+        a == RuleReason.HumanPrompt || b == RuleReason.HumanPrompt ? RuleReason.HumanPrompt : a ?? b;
 
     public static int PriorityRank(string? priority) => priority switch
     {

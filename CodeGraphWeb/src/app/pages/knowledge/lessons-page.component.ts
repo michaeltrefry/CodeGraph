@@ -25,6 +25,7 @@ export type LessonsTab = LessonsView | 'all';
 
 export const LESSON_TABS: { id: LessonsTab; label: string; hint: string }[] = [
   { id: 'recently_learned', label: 'Recently learned', hint: 'Rules, newest first, with how each became a rule. Edit or retract one here; the next briefing reflects it.' },
+  { id: 'candidates', label: 'Not rules yet', hint: 'Lessons agents inferred that have not recurred from enough distinct sessions yet, newest first. They become rules on their own; approve one to make it a rule early.' },
   { id: 'all', label: 'All lessons', hint: 'Every lesson by source, priority, recurrence and tier.' },
   { id: 'recurrence', label: 'Served vs recurred', hint: 'Recurred while served: text alone is not working, a candidate for a local fix. Recurred while not served: its applies-when is probably wrong.' },
   { id: 'unaddressed', label: 'Not addressed by a skill', hint: 'Rules no skill, instruction, hook, test or CI gate addresses yet, grouped by activity: input for a manual skill update.' },

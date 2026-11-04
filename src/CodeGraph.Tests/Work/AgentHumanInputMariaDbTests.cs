@@ -10,8 +10,8 @@ namespace CodeGraph.Tests.Work;
 /// <summary>
 /// Agents are never human input (CG-F16 S4): what only a person may do is refused forbidden for an
 /// agent and writes nothing, the owner's same calls work as before, and the owner's words relayed
-/// by an agent (relayed_prompt, relayed_review) wait in the review queue as proposed lessons, first
-/// in line, until the owner approves them; recurrence never promotes them.
+/// by an agent (relayed_prompt, relayed_review) are rules at once, at the owner's priority, with no
+/// approval (CG-174).
 /// </summary>
 public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture<WorkDatabase>
 {
@@ -104,34 +104,19 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
-    public async Task A_relayed_correction_waits_first_in_the_review_queue_until_the_owner_approves_it()
+    public async Task A_relayed_correction_is_a_rule_at_once_at_the_owners_priority_and_not_a_queue_item()
     {
         var project = await db.NewProjectAsync("AK");
         var item = await db.NewItemAsync(project, "Item");
         var key = item.GetProperty("key").GetString()!;
         var session = await StartAsync(project, Agent);
 
-        // A plain agent proposal first, so the relayed one must outrank it.
-        var plain = (await db.CallAsAsync(WorkTools.Record, new { session_id = session, entry = new { kind = "lesson", summary = "Plain proposal", what = "x", applies_when = new { activity = new[] { "testing" } }, source = new { kind = "agent" } } }, Agent))
-            .GetProperty("entry");
-        await db.CallAsAsync(WorkTools.Promote, new { session_id = session, id = plain.GetProperty("id").GetString(), expected_version = plain.GetProperty("version").GetInt64(), action = "propose" }, Agent);
-
         var updated = await db.CallAsAsync(WorkTools.UpdateWork, new { session_id = session, id = key, expected_version = item.GetProperty("version").GetInt64(), corrections = new[] { Correction("relayed_prompt") } }, Agent);
         var relayed = updated.GetProperty("recorded").EnumerateArray().Single().GetProperty("id").GetString()!;
-        (await RuleStateAsync(relayed)).ShouldBe("proposed");
-
-        var queue = await db.CallAsync(WorkTools.ReviewQueue, new { project });
-        var first = queue.GetProperty("items").EnumerateArray().First();
-        first.GetProperty("entry").GetProperty("id").GetString().ShouldBe(relayed);
-        first.GetProperty("priority").GetString().ShouldBe("highest");
-
-        // Recurrence never promotes it: the same correction relayed again from other events.
-        for (var i = 0; i < 4; i++)
-            await db.CallAsAsync(WorkTools.EndSession, new { session_id = await StartAsync(project, Agent), corrections = new[] { Correction("relayed_prompt") } }, Agent);
-        (await RuleStateAsync(relayed)).ShouldBe("proposed");
-
-        await db.CallAsAsync(WorkTools.Promote, new { id = relayed, expected_version = await VersionAsync(relayed), action = "approve" }, Owner);
         (await RuleStateAsync(relayed)).ShouldBe("rule");
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        (await connection.QuerySingleAsync<(string, string)>("SELECT rule_reason, priority FROM knowledge_entries WHERE id = @relayed", new { relayed })).ShouldBe(("human_prompt", "highest"));
+        (await db.CallAsync(WorkTools.ReviewQueue, new { project })).GetProperty("total").GetInt32().ShouldBe(0);
     }
 
     [Fact]
@@ -175,32 +160,33 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
-    public async Task A_relayed_correction_merged_into_a_lesson_does_not_make_it_a_rule_by_recurrence()
+    public async Task A_relayed_correction_merged_into_a_lesson_makes_it_a_rule()
     {
         var project = await db.NewProjectAsync("AM");
         var item = await db.NewItemAsync(project, "Item");
         var key = item.GetProperty("key").GetString()!;
 
-        // Exact match: an agent's lesson, then the same correction relayed (recurrence reaches the threshold of 2).
+        // Exact match: an agent's lesson, then the same correction relayed: the owner's review makes it a rule.
         var first = await db.CallAsAsync(WorkTools.UpdateWork, new { id = key, expected_version = item.GetProperty("version").GetInt64(), corrections = new[] { Correction("agent") } }, Agent);
         var lesson = first.GetProperty("recorded").EnumerateArray().Single().GetProperty("id").GetString()!;
         (await RuleStateAsync(lesson)).ShouldBe("candidate");
         var current = await db.CallAsync(WorkTools.GetWork, new { id = key });
         var second = await db.CallAsAsync(WorkTools.UpdateWork, new { id = key, expected_version = current.GetProperty("version").GetInt64(), corrections = new[] { Correction("relayed_review") } }, Agent);
         second.GetProperty("recorded").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(lesson);
-        (await RuleStateAsync(lesson)).ShouldBe("proposed");
+        (await RuleStateAsync(lesson)).ShouldBe("rule");
         await using var connection = new MySqlConnection(db.ConnectionString);
-        (await connection.QuerySingleAsync<(int, string)>("SELECT recurrence, priority FROM knowledge_entries WHERE id = @lesson", new { lesson })).ShouldBe((2, "high"));
+        (await connection.QuerySingleAsync<(int, string, string)>("SELECT recurrence, priority, rule_reason FROM knowledge_entries WHERE id = @lesson", new { lesson }))
+            .ShouldBe((2, "high", "human_review"));
 
-        // relate same_as: a relayed lesson merged into an agent's lesson leaves it proposed, not a rule.
+        // relate same_as: a relayed lesson (a rule) merged into an agent's lesson passes its rule status on.
         var target = (await db.CallAsAsync(WorkTools.Record, new { project, entry = new { kind = "lesson", summary = "Target", what = "t", applies_when = new { activity = new[] { "testing" } }, source = new { kind = "agent" } } }, Agent))
             .GetProperty("entry").GetProperty("id").GetString()!;
         var relayed = (await db.CallAsAsync(WorkTools.Record, new { project, entry = new { kind = "lesson", summary = "Relayed", what = "r", applies_when = new { activity = new[] { "testing" } }, source = new { kind = "relayed_prompt" } } }, Agent))
             .GetProperty("entry").GetProperty("id").GetString()!;
         await db.CallAsAsync(WorkTools.Record, new { project, relate = new { id = relayed, expected_version = await VersionAsync(relayed), same_as = target } }, Agent);
-        (await RuleStateAsync(target)).ShouldBe("proposed");
+        (await RuleStateAsync(target)).ShouldBe("rule");
 
-        // The owner's prompt lesson without an activity: a relayed correction that brings one does not make it a rule.
+        // The owner's prompt lesson without an activity: a relayed correction that brings one makes it a rule.
         var owners = (await db.CallAsAsync(WorkTools.Record, new { project, entry = new { kind = "lesson", summary = "Owner without activity", what = "o", source = new { kind = "prompt" } } }, Owner))
             .GetProperty("entry").GetProperty("id").GetString()!;
         (await RuleStateAsync(owners)).ShouldBe("candidate");
@@ -209,12 +195,13 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
             project,
             entry = new { kind = "lesson", summary = "Owner without activity", what = "o", applies_when = new { activity = new[] { "testing" } }, source = new { kind = "relayed_prompt" }, same_as = owners }
         }, Agent);
-        (await RuleStateAsync(owners)).ShouldBe("proposed");
+        (await RuleStateAsync(owners)).ShouldBe("rule");
 
-        // A relayed correction needs an activity: it is proposed to the owner as a rule.
+        // A relayed correction needs an activity: it is a rule at once.
         var refused = await Should.ThrowAsync<WorkException>(() => db.CallAsAsync(WorkTools.Record,
             new { project, entry = new { kind = "lesson", summary = "No activity", what = "n", source = new { kind = "relayed_prompt" } } }, Agent));
         refused.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        refused.Message.ShouldContain("rule at once");
     }
 
     private async Task RefusedAsync(string tool, object arguments)

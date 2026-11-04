@@ -487,17 +487,18 @@ public sealed partial class WorkService
         return values.Select((value, index) => Text(value, $"{argument}[{index}]", KnowledgeLimits.MaxFieldLength)).ToList();
     }
 
-    // A relayed correction waits in the review queue as a proposed rule, and a rule needs an activity (CG-F16).
+    // A relayed correction is a rule at once (CG-174), and a rule needs an activity (CG-F16).
     private static void RequireRelayedActivity(CorrectionSourceKind? kind, AppliesWhenView? appliesWhen, string where)
     {
         if (LessonSimilarity.IsRelayed(kind) && appliesWhen?.Activity is not { Count: > 0 })
-            throw WorkException.Invalid($"{where}: a relayed correction is proposed to the owner as a rule, so it needs applies_when.activity. Nothing was changed.");
+            throw WorkException.Invalid($"{where}: a relayed correction is a rule at once, so it needs applies_when.activity. Nothing was changed.");
     }
 
     private static CorrectionSourceView ReadSource(CorrectionSourceInput source, string argument) =>
         new(source.Kind,
             LessonSimilarity.Priority(source.Kind),
-            Optional(source.Ref, $"{argument}.ref", KnowledgeLimits.MaxSourceRefLength));
+            Optional(source.Ref, $"{argument}.ref", KnowledgeLimits.MaxSourceRefLength),
+            Field(source.Quote, $"{argument}.quote"));
 
     private static AppliesWhenView? ReadAppliesWhen(AppliesWhenInput? input, string argument)
     {

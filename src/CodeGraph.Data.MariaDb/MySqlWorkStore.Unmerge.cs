@@ -251,37 +251,46 @@ public sealed partial class MySqlWorkStore
                 e.AppliesWhenJson is null ? new AppliesWhenView() : JsonSerializer.Deserialize<AppliesWhenView>(e.AppliesWhenJson, WorkJson.Options) ?? new AppliesWhenView())))
             .OrderBy(e => e.Revision).ThenBy(e => e.At).ToList();
         var appliesNow = MergeDetails(removed.Target.DetailsJson).AppliesWhen;
-        var count = events.Count(e => baselineIds.Contains(e.CorrectionId) && e.Counted);
-        var sourcePrompt = MergeDetails(removed.Target.DetailsJson).Source?.Kind == CorrectionSourceKind.Prompt;
-        void Promote(bool promptEvent, DateTime at)
+        // As PromoteIfDueAsync: a person's correction is a rule at once, an inferred one by distinct sources.
+        var sources = events.Where(e => baselineIds.Contains(e.CorrectionId) && e.Counted).Select(EventSourceOf).ToHashSet();
+        static RuleReason? HumanOf(EventRow e) => e.Counted && e.SourceKind is { } kind ? LessonSimilarity.HumanRuleReason(ParseName<CorrectionSourceKind>(kind)) : null;
+        // A person's correction the lesson carries: its own source, or a counted correction it holds.
+        var sourceHuman = events.Where(e => baselineIds.Contains(e.CorrectionId)).Select(HumanOf)
+            .Aggregate(LessonSimilarity.HumanRuleReason(MergeDetails(removed.Target.DetailsJson).Source?.Kind), LessonSimilarity.StrongerHuman);
+        void Promote(RuleReason? humanEvent, DateTime at)
         {
             if (rebuilt.IsRule || !HasActivity(new KnowledgeDetails(AppliesWhen: appliesNow))) return;
-            var reason = promptEvent || sourcePrompt && rebuilt.RuleState != "rejected" ? "human_prompt"
-                : rebuilt.RuleState != "rejected" && count >= ruleThreshold ? "recurrence" : null;
-            if (reason is not null) rebuilt = rebuilt with { RuleState = "rule", RuleReason = reason, RuleSince = at, RejectedReason = null };
+            var rejected = rebuilt.RuleState == "rejected";
+            var reason = humanEvent ?? (rejected ? null : sourceHuman) ?? (!rejected && sources.Count >= ruleThreshold ? RuleReason.Recurrence : null);
+            if (reason is { } why) rebuilt = rebuilt with { RuleState = "rule", RuleReason = JsonName(why), RuleSince = at, RejectedReason = null };
         }
         foreach (var step in steps)
         {
             if (step.Correction is { } correction)
             {
                 appliesNow = UnionAppliesWhen(appliesNow, correction.AppliesWhenJson is null ? null : JsonSerializer.Deserialize<AppliesWhenView>(correction.AppliesWhenJson, WorkJson.Options));
-                if (correction.Counted) count++;
-                Promote(correction.Counted && correction.SourceKind == "prompt", step.At);
+                if (correction.Counted) sources.Add(EventSourceOf(correction));
+                sourceHuman = LessonSimilarity.StrongerHuman(sourceHuman, HumanOf(correction));
+                Promote(HumanOf(correction), step.At);
             }
             else if (step.Merge is { } merge)
             {
                 appliesNow = UnionAppliesWhen(appliesNow, MergeDetails(merge.Source.DetailsJson).AppliesWhen);
                 var ids = merge.SourceEvents.Select(e => e.CorrectionId).ToHashSet();
-                count += events.Count(e => ids.Contains(e.CorrectionId) && e.Counted);
+                sources.UnionWith(events.Where(e => ids.Contains(e.CorrectionId) && e.Counted).Select(EventSourceOf));
+                sourceHuman = events.Where(e => ids.Contains(e.CorrectionId)).Select(HumanOf).Aggregate(sourceHuman, LessonSimilarity.StrongerHuman);
                 if (merge.Source.IsRule && !rebuilt.IsRule)
                     rebuilt = rebuilt with { RuleState = "rule", RuleReason = merge.Source.RuleReason,
                         RuleSince = merge.Source.RuleSince ?? step.At, RejectedReason = null };
-                else Promote(false, step.At);
+                else Promote(null, step.At);
             }
-            else { appliesNow = step.Scope; Promote(false, step.At); }
+            else { appliesNow = step.Scope; Promote(null, step.At); }
         }
         return rebuilt;
     }
+
+    // The source of an event, as EventSource in SQL.
+    private static string EventSourceOf(EventRow e) => e.SessionId is { } session ? "session:" + session : $"author:{e.AuthorKind}:{e.Author}";
 
     private sealed record MergeReplayStep(int Revision, DateTime At, EventRow? Correction, LessonMergeSnapshot? Merge, AppliesWhenView? Scope);
 

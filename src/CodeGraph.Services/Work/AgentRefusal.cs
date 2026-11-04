@@ -81,7 +81,7 @@ internal static class AgentRefusal
             return;
         throw Forbidden(
             $"{argument}: an agent cannot record source {(kind == CorrectionSourceKind.Prompt ? "prompt" : "review")}, which is a person's own input. " +
-            $"Relay what the owner said with source {(kind == CorrectionSourceKind.Prompt ? "relayed_prompt" : "relayed_review")}: it waits in the review queue for the owner to approve." + Unchanged);
+            $"Relay what the owner said with source {(kind == CorrectionSourceKind.Prompt ? "relayed_prompt" : "relayed_review")} and the owner's words in source.quote: it is a rule at once." + Unchanged);
     }
 
     private static WorkException Forbidden(string message) => new(WorkErrorCodes.Forbidden, message);

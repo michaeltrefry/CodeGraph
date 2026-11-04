@@ -39,7 +39,7 @@ public sealed partial class WorkService
 
     /// <summary>
     /// Data for the caller about lessons it stored that stay task-scoped: a correction from the
-    /// human's prompt is a rule at once only with an applies-when activity (R24).
+    /// human's prompt or review is a rule at once only with an applies-when activity (R24).
     /// </summary>
     private static IReadOnlyList<string>? LessonHints(IReadOnlyList<KnowledgeSpec> specs, IReadOnlyList<KnowledgeRow>? recorded)
     {
@@ -48,9 +48,9 @@ public sealed partial class WorkService
         if (lessonSpecs.Count == 0 || lessonSpecs.Count != lessonRows.Count)
             return null;
         var hints = lessonSpecs.Zip(lessonRows)
-            .Where(pair => pair.First.Details?.Source?.Kind == CorrectionSourceKind.Prompt &&
+            .Where(pair => LessonSimilarity.HumanRuleReason(pair.First.Details?.Source?.Kind) is not null &&
                            pair.First.Details.AppliesWhen?.Activity is not { Count: > 0 } && pair.Second.Rule != true)
-            .Select(pair => $"Lesson {pair.Second.Id} (from the human's prompt) is stored task-scoped, not as a rule: it has no applies_when.activity. " +
+            .Select(pair => $"Lesson {pair.Second.Id} (from the human's prompt or review) is stored task-scoped, not as a rule: it has no applies_when.activity. " +
                             "Add applies_when.activity (record revise) to make it a rule served in briefings.")
             .Distinct()
             .ToList();

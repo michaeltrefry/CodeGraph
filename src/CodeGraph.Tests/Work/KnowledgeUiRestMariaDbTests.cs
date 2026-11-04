@@ -159,7 +159,7 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
-    public async Task The_review_queue_lists_every_kind_with_authors_and_settles_from_the_ui_without_blocking_work()
+    public async Task The_review_queue_lists_only_challenges_and_contradictions_with_authors_and_nothing_there_blocks_work()
     {
         var key = await NewProjectAsync("KQ");
         var rule = await RecordRuleAsync(key, "Never push to main", "merging");
@@ -203,8 +203,9 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
         var (queueStatus, queue) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&limit=50");
         queueStatus.ShouldBe(200);
         var items = queue.GetProperty("items").EnumerateArray().ToList();
+        // A proposed lesson and an autonomous decision wait for nobody (CG-174).
         items.Select(item => item.GetProperty("kind").GetString()).Order()
-            .ShouldBe(new[] { "autonomous_decision", "challenge", "contradiction", "proposed_rule" }.Order());
+            .ShouldBe(new[] { "challenge", "contradiction" }.Order());
         items.ShouldAllBe(item => item.GetProperty("author").GetProperty("name").GetString() == "ui-reviewer");
         items.Single(item => item.GetProperty("kind").GetString() == "contradiction").GetProperty("other_author").GetProperty("name").GetString().ShouldBe("ui-reviewer");
 
@@ -213,9 +214,10 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
         var (unknownStatus, unknown) = await Call(HttpMethod.Get, "/api/work/knowledge/review-queue", query: $"?project={key}&kind=challenge");
         (unknownStatus, unknown.GetProperty("code").GetString()).ShouldBe((400, "invalid_argument"));
 
-        // One click each: approve the proposed rule, acknowledge the decision.
+        // The owner may still approve a proposal early, and acknowledge a decision (optional).
+        var (_, proposal) = await Call(HttpMethod.Get, $"/api/work/knowledge/{proposed.GetProperty("id").GetString()}");
         (await Call(HttpMethod.Post, $"/api/work/knowledge/{proposed.GetProperty("id").GetString()}/promote",
-            new { expected_version = items.Single(item => item.GetProperty("kind").GetString() == "proposed_rule").GetProperty("entry").GetProperty("version").GetInt64(), action = "approve" }))
+            new { expected_version = proposal.GetProperty("items")[0].GetProperty("version").GetInt64(), action = "approve" }))
             .Status.ShouldBe(200);
         (await Call(HttpMethod.Post, "/api/work/knowledge", new
         {
@@ -252,19 +254,17 @@ public sealed class KnowledgeUiRestMariaDbTests(WorkDatabase db) : IClassFixture
     {
         var key = await NewProjectAsync("KT");
         var other = await NewProjectAsync("KO");
-        foreach (var (project, count) in new[] { (key, 5), (other, 2) })
+        // One challenged rule per queue item.
+        foreach (var (project, count) in new[] { (key, 6), (other, 2) })
             for (var n = 0; n < count; n++)
-                (await Call(HttpMethod.Post, "/api/work/knowledge", new
+            {
+                var rule = await RecordRuleAsync(project, $"Never push to main {n}", "merging");
+                (await Call(HttpMethod.Post, "/api/work/knowledge/challenges", new
                 {
-                    project, idempotency_key = $"ui-total-{project}-{n}",
-                    entry = new { kind = "decision", summary = $"Decision {n}", why = "No human was there", made_autonomously = true }
+                    idempotency_key = $"ui-total-{project}-{n}",
+                    open = new { id = rule.GetProperty("id").GetString(), reason = "Hotfixes", evidence = new[] { new { kind = "link", summary = "HOTFIX.md" } } }
                 })).Status.ShouldBe(200);
-        var rule = await RecordRuleAsync(key, "Never push to main", "merging");
-        (await Call(HttpMethod.Post, "/api/work/knowledge/challenges", new
-        {
-            idempotency_key = "ui-total-challenge",
-            open = new { id = rule.GetProperty("id").GetString(), reason = "Hotfixes", evidence = new[] { new { kind = "link", summary = "HOTFIX.md" } } }
-        })).Status.ShouldBe(200);
+            }
 
         // The Approvals tab pages through the queue (here 2 at a time); every page carries the same total.
         var listed = 0;

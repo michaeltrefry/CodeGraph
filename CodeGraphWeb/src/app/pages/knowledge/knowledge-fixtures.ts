@@ -78,7 +78,7 @@ export function lessonRow(overrides: Partial<LessonRow> = {}): LessonRow {
 
 export function reviewItem(overrides: Partial<ReviewItem> = {}): ReviewItem {
   return {
-    kind: 'proposed_rule',
+    kind: 'challenge',
     entry: { id: 'l-1', kind: 'lesson', summary: 'Squash fixups before review', confidence: 'medium', version: 2 },
     priority: 'normal',
     recurrence: 1,
