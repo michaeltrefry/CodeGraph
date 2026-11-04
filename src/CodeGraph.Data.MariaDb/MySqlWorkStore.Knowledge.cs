@@ -387,9 +387,9 @@ public sealed partial class MySqlWorkStore : IKnowledgeStore
             await WriteScopeAsync(connection, transaction, entryId, repositories, state.Paths, nodes, ct);
             if (DreamExecutionScope.Current is null)
                 await SnapshotFilesAsync(connection, transaction, entryId, before.ProjectId, repositories, state.Paths, nodes, ct);
-            // A lesson given an applies-when activity may now be a rule (prompt source, or recurrence).
+            // A lesson given an applies-when activity may now be a rule (a person's source, or recurrence).
             if (before.Kind == "lesson")
-                await PromoteIfDueAsync(connection, transaction, entryId, now, promptEvent: false, ct);
+                await PromoteIfDueAsync(connection, transaction, entryId, now, humanEvent: null, ct);
         }
 
     public Task<KnowledgeView> RetractKnowledgeAsync(Guid entryId, long expectedVersion, string reason, WorkActor actor, CancellationToken ct = default) =>

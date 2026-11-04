@@ -24,13 +24,13 @@ export type LessonActivity =
   | 'planning' | 'slicing' | 'implementing' | 'testing' | 'reviewing' | 'merging' | 'releasing' | 'tracker_updates' | 'coordinating';
 export type CorrectionSourceKind = 'prompt' | 'review' | 'bot_review' | 'subagent' | 'agent';
 export type LessonRuleState = 'candidate' | 'proposed' | 'rule' | 'rejected';
-export type RuleReason = 'human_prompt' | 'recurrence' | 'approved';
+export type RuleReason = 'human_prompt' | 'human_review' | 'recurrence' | 'approved';
 export type AddressedByKind = 'skill' | 'instruction' | 'hook' | 'test' | 'ci';
 export type ChallengeStatus = 'open' | 'upheld' | 'amended' | 'retracted';
 export type ChallengeOutcome = 'uphold' | 'amend' | 'retract';
 export type EvidenceKind = 'test_result' | 'source' | 'counter_example' | 'link' | 'other';
-export type LessonsView = 'recently_learned' | 'recurrence' | 'unaddressed' | 'unmatched' | 'unlearned_reviews';
-export type ReviewKind = 'challenge' | 'proposed_rule' | 'contradiction' | 'autonomous_decision' | 'dream_proposal';
+export type LessonsView = 'recently_learned' | 'recurrence' | 'unaddressed' | 'unmatched' | 'unlearned_reviews' | 'candidates';
+export type ReviewKind = 'challenge' | 'contradiction' | 'dream_proposal';
 
 export const KNOWLEDGE_KINDS: KnowledgeKind[] = ['goal', 'decision', 'constraint', 'fact', 'gotcha', 'attempt', 'architecture', 'lesson'];
 export const LESSON_ACTIVITIES: LessonActivity[] = [

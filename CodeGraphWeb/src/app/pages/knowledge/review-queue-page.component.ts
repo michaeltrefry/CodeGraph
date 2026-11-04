@@ -16,19 +16,17 @@ export interface QueueForm {
 
 export const REVIEW_KIND_LABELS: Record<ReviewKind, string> = {
   challenge: 'Challenged rule',
-  proposed_rule: 'Proposed rule',
   contradiction: 'Contradicting lessons',
-  autonomous_decision: 'Autonomous decision',
   dream_proposal: 'Dreaming proposal'
 };
 
 const PAGE_SIZE = 20;
 
 /**
- * Review queue (§8.1): challenges, proposed rules, contradictions and decisions agents made on their
- * own. Informational (E6): nothing waits on it, a challenged rule stays served and a decision stands
- * until overturned. Every action is the agents' own call: promote approve / reject, challenge
- * resolve, record acknowledge / retract / revise.
+ * Review queue (§8.1): only what an agent cannot resolve alone (CG-174): challenged rules,
+ * contradicting lessons and the dreamer's proposals. No lesson waits here for approval and no
+ * autonomous decision for acknowledgment. Informational (E6): nothing waits on it and a challenged
+ * rule stays served. Actions: challenge resolve, record relate / retract / revise, dream_review.
  */
 @Component({
   selector: 'app-review-queue-page',
@@ -122,15 +120,11 @@ export class ReviewQueuePageComponent implements OnInit {
 
   // ---- one-click actions ----------------------------------------------------------------------
 
-  /** Approve: a proposed rule becomes a rule; an autonomous decision is acknowledged (it stands). */
+  /** Accept a dreaming proposal. */
   async approve(item: ReviewItem): Promise<void> {
     if (item.kind === 'dream_proposal' && item.proposal) {
       await this.run(() => firstValueFrom(this.api.reviewDreamProposal(item.proposal!.id, this.current()!, item.proposal!.version, 'accept')),
         item.proposal.draft ? 'Draft accepted. Apply the draft outside CodeGraph.' : 'Proposal accepted.');
-    } else if (item.kind === 'proposed_rule') {
-      await this.run(() => firstValueFrom(this.api.promote(item.entry.id, { expected_version: item.entry.version, action: 'approve' })), 'Approved: it is a rule now.');
-    } else if (item.kind === 'autonomous_decision') {
-      await this.run(() => this.acknowledge(item.entry.id, item.entry.version), 'Acknowledged: the decision stands.');
     }
   }
 
@@ -140,15 +134,6 @@ export class ReviewQueuePageComponent implements OnInit {
     if (!other) return;
     await this.run(() => firstValueFrom(this.api.record({ relate: { id: item.entry.id, expected_version: item.entry.version, same_as: other.id } })),
       'Merged the first lesson into the second.');
-  }
-
-  // record acknowledge; a decision that turns out to be acknowledged already (a retry whose first answer was lost) counts as done.
-  private async acknowledge(id: string, version: number): Promise<void> {
-    try {
-      await firstValueFrom(this.api.record({ acknowledge: { id, expected_version: version } }));
-    } catch (error) {
-      if (!/already acknowledged/i.test(workError(error).message)) throw error;
-    }
   }
 
   /** Submit the open form of the item. */
@@ -182,49 +167,18 @@ export class ReviewQueuePageComponent implements OnInit {
     }
 
     const target: KnowledgeRow = form.side === 'other' && item.other ? item.other : item.entry;
-    if (form.action === 'reject' && item.kind === 'proposed_rule') {
-      if (!reason) return this.need('Give the reason it should not be a rule.');
-      await this.run(() => firstValueFrom(this.api.promote(target.id, { expected_version: target.version, action: 'reject', reason })), 'Rejected: it is not proposed again.');
-    } else if (form.action === 'reject' || form.action === 'retract') {
+    if (form.action === 'reject' || form.action === 'retract') {
       if (!reason) return this.need('Give a reason for retracting.');
       await this.run(() => firstValueFrom(this.api.record({ retract: { id: target.id, expected_version: target.version, reason } })), 'Retracted.');
     } else if (form.action === 'amend') {
       if (!summary || summary === target.summary) return this.need('Change the text to amend it.');
-      await this.amend(item, target, summary);
+      await this.amend(target, summary);
     }
   }
 
-  // Revise; for an autonomous decision then acknowledge at the new version (a person amending it has
-  // reviewed it). Two writes: when only the first lands the banner says so, and the queue is read
-  // again after any outcome past the revision.
-  private async amend(item: ReviewItem, target: KnowledgeRow, summary: string): Promise<void> {
-    this.busy.set(true);
-    this.error.set(null);
-    this.notice.set(null);
-    let version: number;
-    try {
-      version = (await firstValueFrom(this.api.record({ revise: { id: target.id, expected_version: target.version, summary } }))).entry.version;
-    } catch (error) {
-      this.error.set(errorText(error));
-      this.busy.set(false);
-      if (workError(error).code === 'conflict') await this.load();
-      return;
-    }
-
-    this.form.set(null);
-    this.reason = '';
-    if (item.kind !== 'autonomous_decision') {
-      this.notice.set('Amended.');
-    } else {
-      try {
-        await this.acknowledge(target.id, version);
-        this.notice.set('Amended and acknowledged.');
-      } catch (error) {
-        this.error.set(`Revised, not acknowledged: ${workError(error).message} Approve it to acknowledge the revised decision.`);
-      }
-    }
-    this.busy.set(false);
-    await this.load();
+  // Revise one side of a contradiction.
+  private async amend(target: KnowledgeRow, summary: string): Promise<void> {
+    await this.run(() => firstValueFrom(this.api.record({ revise: { id: target.id, expected_version: target.version, summary } })), 'Amended.');
   }
 
   challengesOf(item: ReviewItem): Challenge[] {

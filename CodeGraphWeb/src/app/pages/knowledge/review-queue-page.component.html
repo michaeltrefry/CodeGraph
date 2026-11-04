@@ -2,13 +2,13 @@
   @if (embedded()) {
     <div class="kn-embedded-head">
       <h2>Knowledge approvals</h2>
-      <span class="cg-muted cg-small">Proposed changes to knowledge and lessons, by priority then recurrence</span>
+      <span class="cg-muted cg-small">What an agent cannot resolve alone, by priority then recurrence</span>
     </div>
   } @else {
     <header class="cg-page-header">
       <div>
         <h1>Approvals</h1>
-        <p>Challenged rules, proposed rules, contradicting lessons and decisions agents made on their own, by priority then recurrence.</p>
+        <p>Challenged rules, contradicting lessons and dreaming proposals: what an agent cannot resolve alone, by priority then recurrence.</p>
       </div>
       <div class="cg-page-header-actions">
         <label class="cg-field">
@@ -23,7 +23,7 @@
     </header>
   }
 
-  <p class="adm-banner kn-banner">Nothing here blocks work. A challenged rule is still served, a proposed lesson still becomes a rule on recurrence and an agent's decision stands until you overturn it. Agents can settle any of these too.</p>
+  <p class="adm-banner kn-banner">Nothing here blocks work, and nothing waits for your approval: your corrections are rules at once, lessons agents infer become rules when they recur, and agents' own decisions stand. A challenged rule is still served until the challenge is resolved.</p>
 
   @if (selection.error()) {
     <p class="adm-banner err kn-banner" role="alert">{{ selection.error() }}</p>
@@ -113,20 +113,6 @@
             <div class="kn-actions">
               <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Accept</button>
               <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
-            </div>
-          }
-          @case ('proposed_rule') {
-            <div class="kn-actions">
-              <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Approve</button>
-              <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
-              <button class="cg-btn" type="button" (click)="open(item, 'amend')" [disabled]="busy()">Amend…</button>
-            </div>
-          }
-          @case ('autonomous_decision') {
-            <div class="kn-actions">
-              <button class="cg-btn primary" type="button" (click)="approve(item)" [disabled]="busy()">Approve</button>
-              <button class="cg-btn" type="button" (click)="open(item, 'reject')" [disabled]="busy()">Reject…</button>
-              <button class="cg-btn" type="button" (click)="open(item, 'amend')" [disabled]="busy()">Amend…</button>
             </div>
           }
           @case ('contradiction') {

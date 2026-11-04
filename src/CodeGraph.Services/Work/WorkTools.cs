@@ -49,7 +49,11 @@ public static class WorkTools
         " A correction becomes a lesson: with same_as (an existing lesson's id) it is merged into that lesson as a recurrence with its evidence; with contradicts both are kept, linked and served together; " +
         "otherwise an exact normalized match with overlapping applies-when merges, and anything else is new. Recurrence counts distinct source events (source.ref, else the session and item): a merge unites the applies-when; " +
         "the same correction reported twice from one event counts once. similar lists existing lessons that read alike (by embedding when a provider is configured, else lexical; no model decides): candidates for same_as or contradicts " +
-        "(record relate), never merged without the caller. A lesson from the human's prompt with an applies-when activity is a rule at once.";
+        "(record relate), never merged without the caller. No lesson waits for approval: one from the human's prompt or review, direct or relayed by an agent " +
+        "(relayed_prompt / relayed_review, with the owner's words in source.quote), with an applies-when activity is a rule at once; one an agent, subagent or " +
+        "automated reviewer inferred (agent, subagent, bot_review) becomes a rule once recorded from Work:Lessons:RuleRecurrenceThreshold distinct sources " +
+        "(default 2; a source is a session, or an identity writing without one), so one session repeating a lesson never makes it a rule. " +
+        "A decision is made_autonomously only when the agent made it without the owner: one the owner made or approved, in chat included, is not.";
 
     public const string Post = "post";
     public const string Inbox = "inbox";
@@ -188,8 +192,8 @@ public static class WorkTools
             "entry: a new goal, decision, constraint, fact, gotcha, attempt, architecture note or lesson, scoped to the project and optionally to repositories, " +
             "paths/globs and graph nodes, with confidence; supersedes replaces an active entry (it becomes superseded, linked to the new one). revise: a new " +
             "revision of an active entry. retract: mark one wrong (kept, status retracted). verify: re-baseline it against its files. relate: after reading " +
-            "similar, merge a stored lesson into another (same_as) or link the two (contradicts). acknowledge: an autonomous decision was reviewed (it leaves the " +
-            "review queue). A lesson entry takes same_as and contradicts like a correction, and its answer lists similar lessons. Entries are never edited " +
+            "similar, merge a stored lesson into another (same_as) or link the two (contradicts). acknowledge: mark an autonomous decision reviewed (optional: " +
+            "autonomous decisions are never queued and need no acknowledgment). A lesson entry takes same_as and contradicts like a correction, and its answer lists similar lessons. Entries are never edited " +
             "in place; every write adds a revision. unmerge {id, expected_version} reverses a same_as merge using the superseded source id, " +
             "restoring its transferred evidence and state while retaining new target corrections. The indexed files in an entry's paths and nodes are what it is verified against: when one of them changes " +
             "in a later index, the entry reads possibly_stale until it is verified, revised or superseded. Synchronous: answers the stored entry. record " +
@@ -237,8 +241,9 @@ public static class WorkTools
             "was sent to ends." + Sessions + Errors,
             ReadOnly: false, Idempotent: true),
         new(Promote, "Promote Lesson", typeof(PromoteRequest),
-            "Move a lesson between tiers (task-scoped, rule, addressed locally). propose: ask for it to become a rule (it waits in the review queue; it still becomes a " +
-            "rule on recurrence). approve: it is a rule now. reject with reason: refuse rule status; it is not proposed again and recurrence does not promote it " +
+            "Move a lesson between tiers (task-scoped, rule, addressed locally). No lesson needs this to become a rule: a person's correction is one at once and " +
+            "an inferred one on recurrence from distinct sources. propose: mark it proposed (listed by lessons view candidates, not queued; it still becomes a " +
+            "rule on recurrence). approve: it is a rule now, before it recurs. reject with reason: refuse rule status; it is not proposed again and recurrence does not promote it " +
             "(approve overrides). A rule needs an applies-when activity. addressed_by {kind skill, instruction, hook, test or ci, name, ref}: the lesson is addressed " +
             "by a local fix made outside CodeGraph (CodeGraph never writes skills, hooks or tests): a skill takes it out of briefings for sessions that declare " +
             "that skill loaded, an instruction or hook (with harness) for sessions of that harness, a test or ci gate for every session; the same fix with a new " +
@@ -254,10 +259,11 @@ public static class WorkTools
             ReadOnly: false, Idempotent: false),
         new(Lessons, "Lessons", typeof(LessonsRequest),
             "Read the project's lessons for review and for updating skills by hand. view recently_learned: rules, newest first, with how they became rules " +
-            "(human_prompt, recurrence, approved). recurrence: lessons that recurred, with recurrence while their rule was served to the recording session (text " +
+            "(human_prompt, human_review, recurrence, approved). recurrence: lessons that recurred, with recurrence while their rule was served to the recording session (text " +
             "alone is not working: a candidate for a local fix) and while it was not (its applies-when is probably wrong); CodeGraph takes no action on either. " +
             "unaddressed: rules not addressed_by a local fix, grouped by activity. unmatched: rules no briefing served for since_days. unlearned_reviews: GitHub " +
-            "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. Filters activity and source; " +
+            "reviews and review comments on the project's items that no lesson names as its source.ref (their URL or id), newest first. candidates: lessons that are not " +
+            "rules yet (candidate or proposed), newest first; they become rules on recurrence and are not review-queue items. Filters activity and source; " +
             "pages of limit with next_cursor. Each lesson row carries its author." + Sessions + Errors,
             ReadOnly: true, Idempotent: true),
         new(DreamPropose, "Dream Proposal", typeof(DreamProposalRequest),
@@ -265,9 +271,10 @@ public static class WorkTools
         new(DreamReview, "Review Dream Proposal", typeof(DreamReviewRequest),
             "Accept or reject a dream_proposal using its id and expected_version, in project. Reject needs reason. Accept applies the exact proposed target versions atomically as the accepting actor; stale versions refuse conflict. Draft acceptance only records the draft for external application. The dreamer cannot accept or reject.", false, false),
         new(ReviewQueue, "Review Queue", typeof(ReviewQueueRequest),
-            "Read the project's review queue: open challenges of rules (one item per rule), lessons proposed for rule status, contradicting lessons (one item per " +
-            "pair) and decisions agents made autonomously not yet acknowledged (record acknowledge), ranked by priority, then recurrence, then age. Informational: " +
-            "nothing in it blocks work, and every item can be settled by anyone (promote, challenge resolve, record retract/supersede/acknowledge). Each item carries the author " +
+            "Read the project's review queue: only what needs a person, which an agent cannot resolve alone: open challenges of rules (one item per rule), " +
+            "contradicting lessons (one item per pair) and the dreamer's pending proposals, ranked by priority, then recurrence, then age. No lesson waits here " +
+            "for approval (candidates are listed by lessons view candidates) and no autonomous decision for acknowledgment (they are read through recall, " +
+            "briefings and get_work). Informational: nothing in it blocks work (challenge resolve, record relate/retract/supersede, dream_review). Each item carries the author " +
             "of its entry (and other_author, the other lesson's, for a contradiction). total is the number of items in the whole queue, so a count needs one call with limit 1." + Sessions + Errors,
             ReadOnly: true, Idempotent: true)
     ];

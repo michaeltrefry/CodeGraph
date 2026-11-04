@@ -64,9 +64,9 @@ public enum CorrectionSourceKind
     BotReview,
     Subagent,
     Agent,
-    /// <summary>The owner's prompt, relayed by an agent (CG-F16): a proposed lesson until the owner approves it.</summary>
+    /// <summary>The owner's prompt, relayed by an agent (CG-F16): a rule at once, like prompt (CG-174).</summary>
     RelayedPrompt,
-    /// <summary>The owner's code review, relayed by an agent: a proposed lesson until the owner approves it.</summary>
+    /// <summary>The owner's code review, relayed by an agent: a rule at once, like review (CG-174).</summary>
     RelayedReview
 }
 
@@ -128,13 +128,18 @@ public sealed class AppliesWhenInput
 
 public sealed class CorrectionSourceInput
 {
-    [Description("prompt (the human's prompt; highest priority), review (a human code review), bot_review (an automated review), subagent, agent, " +
-        "relayed_prompt / relayed_review (the owner's prompt or review relayed by an agent: a proposed lesson in the review queue until the owner approves it). " +
+    [Description("prompt (the human's prompt; highest priority), review (a human code review), relayed_prompt / relayed_review (the owner's prompt or review " +
+        "relayed by an agent, with the owner's words in quote): a lesson from any of these with an applies-when activity is a rule at once, no approval. " +
+        "bot_review (an automated review), subagent, agent: lessons an agent inferred, a rule once recorded from Work:Lessons:RuleRecurrenceThreshold distinct " +
+        "sources (sessions, or identities without a session; default 2), never from one session repeating itself. " +
         "An agent's token is refused forbidden for prompt and review: an agent relays them instead.")]
     public required CorrectionSourceKind Kind { get; init; }
 
     [Description("The source event, such as a review comment id or URL, a message id or a prompt/session id. Repeats of one event are the same correction.")]
     public string? Ref { get; init; }
+
+    [Description("With relayed_prompt / relayed_review: the owner's own words, verbatim, at most 4000 characters, kept on the lesson so the paraphrase in correct_behavior can be checked against them.")]
+    public string? Quote { get; init; }
 }
 
 // ---- Save points (§5.8): fields of update_work and end_session --------------------------------
@@ -159,7 +164,7 @@ public sealed class DecisionInput
     [Description("high, medium (default) or low.")]
     public KnowledgeConfidence? Confidence { get; init; }
 
-    [Description("true: the agent decided without a human (shown in the review queue).")]
+    [Description(KnowledgeText.MadeAutonomously)]
     public bool? MadeAutonomously { get; init; }
 
     [Description(KnowledgeText.Repositories)]
@@ -323,7 +328,7 @@ public sealed class KnowledgeEntryInput
     [Description("Decision: its consequences.")]
     public string? Consequences { get; init; }
 
-    [Description("Decision: true when the agent decided without a human.")]
+    [Description("Decision: " + KnowledgeText.MadeAutonomously)]
     public bool? MadeAutonomously { get; init; }
 
     [Description("Attempt (required for one): why it failed.")]
@@ -391,6 +396,7 @@ public sealed class KnowledgeRevisionInput
 
     public string? Consequences { get; init; }
 
+    [Description(KnowledgeText.MadeAutonomously)]
     public bool? MadeAutonomously { get; init; }
 
     public string? WhyFailed { get; init; }
@@ -551,6 +557,10 @@ internal static class KnowledgeText
     public const string Paths = "Paths or globs (*, **, ?) relative to the repository root. The indexed files among them are what the entry is verified against: when one changes, the entry reads possibly_stale.";
     public const string Nodes = "Graph node ids the entry is about. Their files join what the entry is verified against.";
     public const string Commit = "The commit the entry was verified at (default: the repository's indexed commit).";
+    public const string MadeAutonomously =
+        "true only when the agent made the decision on its own, without the owner. A decision the owner made or approved, including one approved in chat " +
+        "and recorded by the agent, is not autonomous: leave this out or pass false. Autonomous decisions are kept for recall, briefings and get_work and " +
+        "never wait for the owner's acknowledgment.";
 }
 
 // ---- Views -------------------------------------------------------------------------------------------
@@ -574,7 +584,7 @@ public sealed record AppliesWhenView(
     string? Harness = null);
 
 /// <param name="Priority">highest (prompt), high (review) or normal.</param>
-public sealed record CorrectionSourceView(CorrectionSourceKind Kind, string Priority, string? Ref = null);
+public sealed record CorrectionSourceView(CorrectionSourceKind Kind, string Priority, string? Ref = null, string? Quote = null);
 
 public sealed record KnowledgeNodeView(long Id, string Repository, string QualifiedName, string? FilePath = null);
 
