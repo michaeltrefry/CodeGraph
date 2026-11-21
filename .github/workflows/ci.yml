@@ -100,7 +100,16 @@ jobs:
         run: dotnet build CodeGraph.sln --configuration Release --no-restore
 
       - name: Test
-        run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+        run: |
+          # Capture the unfinished test when the Linux suite stalls (CG-177).
+          results="$RUNNER_TEMP/codegraph-backend-tests"
+          if ! dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal \
+              --results-directory "$results" --blame-hang-timeout 3m --blame-hang-dump-type none; then
+            if [ -d "$results" ]; then
+              find "$results" -name 'Sequence_*.xml' -exec grep -i 'Completed="False"' {} +
+            fi
+            exit 1
+          fi
 
   windows-attachment-security:
     name: Windows Attachment Security
