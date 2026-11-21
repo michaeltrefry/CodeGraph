@@ -201,7 +201,14 @@ public class DotnetSupportInspectorTests
 
             health.ShouldNotBeNull();
             health.DotnetSupport.ShouldNotBeNull();
-            health.DotnetSupport.OverallStatus.ShouldBe("supported");
+            // The reported lifecycle date is fixed even when the support status changes.
+            var endOfSupport = new DateTime(2026, 11, 10, 0, 0, 0, DateTimeKind.Utc);
+            health.DotnetSupport.Sdk.ShouldNotBeNull();
+            health.DotnetSupport.Sdk.Version.ShouldBe("8.0.100");
+            health.DotnetSupport.Sdk.SupportEndedOn.ShouldBe(endOfSupport);
+            var targetFramework = health.DotnetSupport.TargetFrameworks.ShouldHaveSingleItem();
+            targetFramework.Moniker.ShouldBe("net8.0");
+            targetFramework.SupportEndedOn.ShouldBe(endOfSupport);
             health.RepoHealth.ShouldBeNull();
             health.DotnetProjectHealths.ShouldBeEmpty();
             health.TopHotspots.ShouldBeEmpty();
