@@ -93,7 +93,8 @@ public static class WorkTools
             "an item is also its own brief: ref, goal, acceptance_criteria (state met or unmet, evidence), inherits and inherited_requirements (as its feature states them), " +
             "touches, attempts (execution attempts: holder, outcome active, superseded, abandoned, complete or closed, branch and PR links; the latest three and attempt_count, " +
             "detail full: all), merged_awaiting_acceptance, acceptance_report and open_messages. A feature carries its documents, item counts, goals, requirements " +
-            "(active or dropped with the decision, covered_by: the complete items inheriting it), acceptance_tests, and the derived status: complete only when it has " +
+            "(active or dropped with the decision, linked_item_count: all items inheriting it, covered_by: the complete items inheriting it), " +
+            "acceptance_tests, and the derived status: complete only when it has " +
             "items, all are complete or closed, one at least is complete and every active requirement is covered (completion lists what is missing). " +
             "A project carries its goals, repositories and item counts. Every object carries version, the expected_version of update_work." + Errors,
             ReadOnly: true, Idempotent: true),

@@ -13,7 +13,7 @@ export interface FeatureFilter {
   status: FeatureStatusFilter;
   /** Only features with items in progress or in review. */
   inProg: boolean;
-  /** Only features with uncovered requirements. */
+  /** Only features with active requirements that have no complete item. */
   uncovered: boolean;
   /** Only features created by this actor; '' is anyone. */
   by: string;
@@ -50,7 +50,10 @@ export interface FeatureRow {
   pct: number;
   /** in_progress + in_review. */
   inFlight: number;
+  /** All active requirements with no complete item. */
   uncovered: number;
+  unlinked: number;
+  linkedWithoutComplete: number;
   blocked: number;
   /** Progress bar widths in percent. */
   bar: { complete: number; closed: number; flight: number };
@@ -58,6 +61,9 @@ export interface FeatureRow {
 
 export function featureRow(feature: FeatureView): FeatureRow {
   const totals = itemTotals(feature.item_counts);
+  const uncovered = new Set(feature.completion?.uncovered_requirements);
+  const unlinked = feature.requirements?.filter(r => uncovered.has(r.id) && r.linked_item_count === 0).length ?? 0;
+  const linkedWithoutComplete = feature.requirements?.filter(r => uncovered.has(r.id) && (r.linked_item_count ?? 0) > 0).length ?? 0;
   return {
     feature,
     key: feature.key,
@@ -71,7 +77,9 @@ export function featureRow(feature: FeatureView): FeatureRow {
     remaining: totals.total - totals.finished,
     pct: totals.pct,
     inFlight: totals.inFlight,
-    uncovered: feature.completion?.uncovered_requirements?.length ?? 0,
+    uncovered: uncovered.size,
+    unlinked,
+    linkedWithoutComplete,
     blocked: feature.blocked_count ?? 0,
     bar: { complete: share(totals.complete, totals.total), closed: share(totals.closed, totals.total), flight: share(totals.inFlight, totals.total) }
   };
@@ -142,9 +150,8 @@ export function shownText(shown: number, total: number): string {
   return shown === total ? `${total} ${noun}` : `${shown} of ${total} ${noun}`;
 }
 
-/** "{n} uncovered requirement(s)". */
-export function uncoveredLabel(count: number): string {
-  return `${count} uncovered requirement${count === 1 ? '' : 's'}`;
+export function requirementCountLabel(count: number, detail: string): string {
+  return `${count} requirement${count === 1 ? '' : 's'} ${detail}`;
 }
 
 // ---- query params -------------------------------------------------------------------------------

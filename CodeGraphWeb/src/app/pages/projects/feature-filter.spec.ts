@@ -2,7 +2,7 @@ import { convertToParamMap } from '@angular/router';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FEATURE_FILTER, FeatureFilter, FeatureSort, clearFilters, featureRow, featureTable, filterFromParams, filterToParams, hasFilters,
-  shownText, sortByColumn, uncoveredLabel
+  requirementCountLabel, shownText, sortByColumn
 } from './feature-filter';
 import { feature, featureSet } from './project-fixtures';
 
@@ -11,9 +11,9 @@ const keys = (filter: Partial<FeatureFilter>) => featureTable(featureSet(), { ..
 describe('featureRow', () => {
   it('derives total, finished, remaining, pct, in flight, uncovered and blocked', () => {
     const [search, billing, login, empty] = featureSet().map(featureRow);
-    expect(search).toMatchObject({ total: 4, finished: 1, remaining: 3, pct: 25, inFlight: 0, uncovered: 2, blocked: 2 });
+    expect(search).toMatchObject({ total: 4, finished: 1, remaining: 3, pct: 25, inFlight: 0, uncovered: 2, unlinked: 1, linkedWithoutComplete: 1, blocked: 2 });
     expect(billing).toMatchObject({ total: 4, finished: 4, remaining: 0, pct: 100, uncovered: 0, blocked: 0 });
-    expect(login).toMatchObject({ total: 4, finished: 1, remaining: 3, pct: 25, inFlight: 2, uncovered: 1 });
+    expect(login).toMatchObject({ total: 4, finished: 1, remaining: 3, pct: 25, inFlight: 2, uncovered: 1, unlinked: 0, linkedWithoutComplete: 0 });
     expect(login.bar).toEqual({ complete: 25, closed: 0, flight: 50 });
     // No items: 0%, nothing remaining; a missing blocked_count is 0.
     expect(empty).toMatchObject({ total: 0, finished: 0, remaining: 0, pct: 0, inFlight: 0, uncovered: 0, blocked: 0 });
@@ -121,8 +121,8 @@ describe('header clicks, clearing and labels', () => {
     expect(shownText(13, 13)).toBe('13 features');
     expect(shownText(5, 13)).toBe('5 of 13 features');
     expect(shownText(1, 1)).toBe('1 feature');
-    expect(uncoveredLabel(1)).toBe('1 uncovered requirement');
-    expect(uncoveredLabel(3)).toBe('3 uncovered requirements');
+    expect(requirementCountLabel(1, 'with no linked items')).toBe('1 requirement with no linked items');
+    expect(requirementCountLabel(3, 'linked, with no complete item')).toBe('3 requirements linked, with no complete item');
   });
 });
 

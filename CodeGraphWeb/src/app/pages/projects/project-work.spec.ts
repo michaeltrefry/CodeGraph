@@ -89,8 +89,11 @@ describe('ProjectWorkComponent', () => {
     const search = root.querySelector('tr[data-key="W-F2"]')!;
     expect(search.querySelector('.wrk-key')?.textContent).toBe('W-F2');
     expect(search.querySelector('a')?.getAttribute('href')).toBe('/work/features/W-F2');
-    expect(search.querySelector('[data-flag="uncovered"]')?.textContent).toBe('2 uncovered requirements');
-    expect(search.querySelector('[data-flag="uncovered"]')?.classList).toContain('cg-chip-warn');
+    expect(search.querySelector('[data-flag="unlinked"]')?.textContent).toBe('1 requirement with no linked items');
+    expect(search.querySelector('[data-flag="linked-without-complete"]')?.textContent).toBe('1 requirement linked, with no complete item');
+    expect(search.querySelector('[data-flag="uncovered"]')).toBeNull();
+    expect(root.querySelector('tr[data-key="W-F1"] [data-flag="uncovered"]')?.textContent).toBe('1 requirement with no complete item');
+    expect(root.querySelector('.prj-pill[data-dot="amber"]')?.textContent?.trim()).toBe('Requirements without a complete item');
     expect(search.querySelector('[data-flag="blocked"]')?.textContent).toBe('2 blocked');
     expect(search.querySelector('.wrk-chip[data-status]')?.getAttribute('data-status')).toBe('in_progress');
     expect(search.querySelector('.prj-pct')?.textContent).toBe('25%');

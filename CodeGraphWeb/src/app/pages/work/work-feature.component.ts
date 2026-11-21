@@ -104,7 +104,16 @@ type Tab = 'board' | 'graph' | 'progress' | 'docs' | 'plan';
                 <h2 id="wrk-h-req">Requirements and acceptance tests</h2>
                 @for (r of f.requirements ?? []; track r.id) {
                   <div class="wrk-row"><strong>{{ r.id }}</strong><span class="wrk-grow">{{ r.text }}</span>
-                    <span class="wrk-chip" [attr.data-status]="r.state === 'dropped' ? 'closed' : r.covered_by?.length ? 'complete' : 'backlog'">{{ r.state === 'dropped' ? 'dropped' : r.covered_by?.length ? 'covered by ' + r.covered_by!.join(', ') : 'uncovered' }}</span></div>
+                    @if (r.state === 'dropped') {
+                      <span class="wrk-chip" data-status="closed">dropped</span>
+                    } @else if (r.covered_by?.length) {
+                      <span class="wrk-chip" data-status="complete">covered by {{ r.covered_by!.join(', ') }}</span>
+                    } @else if (r.linked_item_count === 0) {
+                      <span class="wrk-chip" data-status="backlog">No linked items</span>
+                    } @else {
+                      <span class="wrk-chip" data-status="backlog">{{ r.linked_item_count ? 'Linked, no complete item' : 'No complete item' }}</span>
+                    }
+                  </div>
                 }
                 @if ((f.requirements ?? []).length === 0) { <div class="wrk-empty">No requirements.</div> }
                 @if ((f.acceptance_tests ?? []).length > 0) { <h3 style="margin-top:10px">Acceptance tests</h3><ul>@for (t of f.acceptance_tests; track t) { <li>{{ t }}</li> }</ul> }

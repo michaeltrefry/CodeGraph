@@ -142,7 +142,9 @@ public sealed class SyncPlanItemInput
 // ---- Views -----------------------------------------------------------------------------------------
 
 /// <param name="CoveredBy">Keys of the complete items that inherit the requirement (feature view only).</param>
-public sealed record RequirementView(string Id, string Text, RequirementState State, string? Decision = null, IReadOnlyList<string>? CoveredBy = null);
+/// <param name="LinkedItemCount">Number of items that inherit the requirement, regardless of status (feature view only).</param>
+public sealed record RequirementView(string Id, string Text, RequirementState State, string? Decision = null,
+    IReadOnlyList<string>? CoveredBy = null, int? LinkedItemCount = null);
 
 /// <summary>An acceptance criterion of an item, as stored and answered.</summary>
 public sealed record AcceptanceCriterionView(string Id, string Text, AcceptanceState State, string? Evidence = null);
