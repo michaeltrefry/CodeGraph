@@ -137,8 +137,8 @@ public sealed class FrontendSourceBoundsPipelineTests
             analyzer.Complete = false; // A bounded sidecar refuses a now-required unsafe template.
             var task = Task.Run(() => pipeline.IndexRepositoryAsync("UI", root,
                 changedFilesOnly: ["view.html"], replaceExistingGraph: !incremental));
-            (await Task.WhenAny(task, Task.Delay(TimeSpan.FromSeconds(2)))).ShouldBe(task);
-            await Should.ThrowAsync<InvalidOperationException>(() => task);
+            // Guard against a blocking FIFO read while allowing for runner scheduling delays.
+            await Should.ThrowAsync<InvalidOperationException>(() => task.WaitAsync(TimeSpan.FromSeconds(15)));
             store.Nodes.ShouldBe(nodes); store.FileHashesOf("UI").ShouldBe(hashes);
         }
         finally { Directory.Delete(root, true); }

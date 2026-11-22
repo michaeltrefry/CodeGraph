@@ -99,8 +99,18 @@ jobs:
       - name: Build
         run: dotnet build CodeGraph.sln --configuration Release --no-restore
 
+      # Run the real MSBuild restore in its own test host, ahead of the parallel suite.
+      - name: Test C# caller indexing
+        timeout-minutes: 5
+        run: >-
+          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj --configuration Release --no-build --verbosity normal
+          --filter 'FullyQualifiedName~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.'
+
       - name: Test
-        run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+        run: >-
+          dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+          --filter 'FullyQualifiedName!~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.'
+          --blame-hang-timeout 3m --blame-hang-dump-type none
 
   windows-attachment-security:
     name: Windows Attachment Security
