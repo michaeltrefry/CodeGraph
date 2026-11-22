@@ -12,7 +12,7 @@ import { AgoPipe } from '../work/work-shared';
 import { FeatureView, ItemView, MessageView, ProjectView, ResourceView, SessionView } from '../work/work.models';
 import {
   DEFAULT_FEATURE_FILTER, FEATURE_SORTS, FeatureFilter, FeatureSort, FeatureStatusFilter, clearFilters, featureTable, filterFromParams,
-  filterToParams, fullDate, hasFilters, shownText, sortByColumn, uncoveredLabel
+  filterToParams, fullDate, hasFilters, requirementCountLabel, shownText, sortByColumn
 } from './feature-filter';
 
 interface Column { label: string; sort: FeatureSort | null; cls: string }
@@ -87,7 +87,7 @@ const COLUMNS: Column[] = [
               </div>
 
               <button type="button" class="prj-pill" data-dot="blue" [attr.aria-pressed]="filter().inProg" (click)="change({ inProg: !filter().inProg })"><span class="prj-pill-dot"></span>Has items in progress</button>
-              <button type="button" class="prj-pill" data-dot="amber" [attr.aria-pressed]="filter().uncovered" (click)="change({ uncovered: !filter().uncovered })"><span class="prj-pill-dot"></span>Uncovered requirements</button>
+              <button type="button" class="prj-pill" data-dot="amber" [attr.aria-pressed]="filter().uncovered" (click)="change({ uncovered: !filter().uncovered })"><span class="prj-pill-dot"></span>Requirements without a complete item</button>
 
               <label class="prj-select">Created by
                 <select class="wrk-input" [value]="filter().by" (change)="change({ by: $any($event.target).value })">
@@ -130,7 +130,10 @@ const COLUMNS: Column[] = [
                         </div>
                         @if (row.uncovered > 0 || row.blocked > 0) {
                           <div class="prj-flags">
-                            @if (row.uncovered > 0) { <span class="cg-chip cg-chip-warn" data-flag="uncovered">{{ uncovered(row.uncovered) }}</span> }
+                            @if (row.unlinked > 0) { <span class="cg-chip cg-chip-warn" data-flag="unlinked">{{ requirementCountLabel(row.unlinked, 'with no linked items') }}</span> }
+                            @if (row.linkedWithoutComplete > 0) { <span class="cg-chip cg-chip-warn" data-flag="linked-without-complete">{{ requirementCountLabel(row.linkedWithoutComplete, 'linked, with no complete item') }}</span> }
+                            @let unknownLinks = row.uncovered - row.unlinked - row.linkedWithoutComplete;
+                            @if (unknownLinks > 0) { <span class="cg-chip cg-chip-warn" data-flag="uncovered">{{ requirementCountLabel(unknownLinks, 'with no complete item') }}</span> }
                             @if (row.blocked > 0) { <span class="wrk-chip wrk-chip-blocked" data-flag="blocked">{{ row.blocked }} blocked</span> }
                           </div>
                         }
@@ -222,7 +225,7 @@ export class ProjectWorkComponent extends WorkPageBase implements OnDestroy {
   });
   readonly filtered = computed(() => hasFilters(this.filter()));
   readonly shown = computed(() => shownText(this.table().rows.length, this.table().total));
-  readonly uncovered = uncoveredLabel;
+  readonly requirementCountLabel = requirementCountLabel;
   readonly full = fullDate;
 
   private readonly featureKey = new KeyHolder('ui-feature');

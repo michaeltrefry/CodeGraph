@@ -144,7 +144,8 @@ public sealed partial class MySqlWorkStore
         var requirements = ReadList<RequirementView>(row.RequirementsJson)
             .Select(requirement => requirement with
             {
-                CoveredBy = complete.Where(item => item.Inherits.Contains(requirement.Id)).Select(item => WorkKeys.Item(row.ProjectKey, item.Number)).ToList() is { Count: > 0 } keys ? keys : null
+                CoveredBy = complete.Where(item => item.Inherits.Contains(requirement.Id)).Select(item => WorkKeys.Item(row.ProjectKey, item.Number)).ToList() is { Count: > 0 } keys ? keys : null,
+                LinkedItemCount = items.Count(item => item.Inherits.Contains(requirement.Id))
             })
             .ToList();
         var uncovered = requirements.Where(requirement => requirement is { State: RequirementState.Active, CoveredBy: null }).Select(requirement => requirement.Id).ToList();

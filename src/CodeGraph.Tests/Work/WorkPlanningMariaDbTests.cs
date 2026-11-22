@@ -234,6 +234,38 @@ public sealed class WorkPlanningMariaDbTests(WorkDatabase db) : IClassFixture<Wo
     }
 
     [Fact]
+    public async Task Requirement_link_counts_include_incomplete_items_and_completion_coverage_counts_only_complete_items()
+    {
+        var (project, feature, items) = await NewPlanAsync("RC");
+        await db.UpdateAsync(feature, new
+        {
+            requirements = new[]
+            {
+                new { id = "E1", text = "Strict contract" }, new { id = "E2", text = "Change feed" },
+                new { id = "E3", text = "No linked items yet" }
+            }
+        });
+
+        var initial = await db.CallAsync(WorkTools.GetWork, new { id = feature });
+        var requirements = initial.GetProperty("requirements").EnumerateArray().ToArray();
+        requirements.Select(r => r.GetProperty("linked_item_count").GetInt32()).ShouldBe([1, 1, 0]);
+        requirements.All(r => !Strings(r, "covered_by").Any()).ShouldBeTrue();
+        Strings(initial.GetProperty("completion"), "uncovered_requirements").ShouldBe(["E1", "E2", "E3"]);
+
+        await db.UpdateAsync(items["a"], new { status = "complete" });
+        await db.UpdateAsync(items["b"], new { status = "closed" });
+
+        var list = await db.CallAsync(WorkTools.FindWork, new { project, kind = "feature", detail = "full" });
+        var listed = list.GetProperty("items").EnumerateArray().Single();
+        var updated = listed.GetProperty("requirements").EnumerateArray().ToArray();
+        updated.Select(r => r.GetProperty("linked_item_count").GetInt32()).ShouldBe([1, 1, 0]);
+        Strings(updated[0], "covered_by").ShouldBe([items["a"]]);
+        Strings(updated[1], "covered_by").ShouldBeEmpty();
+        Strings(listed.GetProperty("completion"), "uncovered_requirements").ShouldBe(["E2", "E3"]);
+        Text(listed, "status").ShouldBe("open");
+    }
+
+    [Fact]
     public async Task A_feature_whose_items_are_all_closed_is_not_complete_and_dependents_of_a_closed_prerequisite_show_cancelled_prerequisite_until_a_replan_replaces_the_edge()
     {
         var (_, feature, items) = await NewPlanAsync("FC");

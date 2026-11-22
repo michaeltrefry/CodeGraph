@@ -114,9 +114,9 @@ describe('DependencyGraphComponent with a 50-item feature', () => {
 describe('WorkFeatureComponent board', () => {
   const items = fiftyItemFeature().filter(item => item.key === 'W-3' || item.key === 'W-33' || item.key === 'W-31');
 
-  async function render(update: ReturnType<typeof vi.fn>) {
+  async function render(update: ReturnType<typeof vi.fn>, view = feature) {
     const api = {
-      get: vi.fn().mockResolvedValue(feature),
+      get: vi.fn().mockResolvedValue(view),
       items: vi.fn().mockResolvedValue(items),
       recentChanges: vi.fn().mockResolvedValue([]),
       update
@@ -132,6 +132,25 @@ describe('WorkFeatureComponent board', () => {
     expect(root.querySelectorAll('.wrk-col')).toHaveLength(6);
     expect(root.querySelectorAll('.wrk-tile')).toHaveLength(3);
     expect(root.querySelector('.wrk-tile[data-reason="cancelled_prerequisite"]')).not.toBeNull();
+  });
+
+  it('distinguishes missing links from linked items without completion', async () => {
+    const { fixture, root } = await render(vi.fn(), {
+      ...feature,
+      requirements: [
+        { id: 'E1', text: 'Missing links', state: 'active', linked_item_count: 0 },
+        { id: 'E2', text: 'Linked work', state: 'active', linked_item_count: 2 },
+        { id: 'E3', text: 'Completed work', state: 'active', linked_item_count: 2, covered_by: ['W-3'] },
+        { id: 'E4', text: 'Removed from scope', state: 'dropped', linked_item_count: 0 },
+        { id: 'E5', text: 'Older server response', state: 'active' }
+      ]
+    });
+    fixture.componentInstance.tab.set('progress');
+    fixture.detectChanges();
+    const chips = root.querySelectorAll('[aria-labelledby="wrk-h-req"] .wrk-chip');
+    expect([...chips].map(chip => chip.textContent?.trim())).toEqual([
+      'No linked items', 'Linked, no complete item', 'covered by W-3', 'dropped', 'No complete item'
+    ]);
   });
 
   it('moves an item with update_work and its version, as an agent would', async () => {

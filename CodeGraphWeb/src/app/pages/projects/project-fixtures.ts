@@ -47,7 +47,13 @@ export function feature(key: string, over: Partial<FeatureView> = {}): FeatureVi
 export function featureSet(): FeatureView[] {
   return [
     feature('W-F2', { title: 'Search box', created_by: 'alice', created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-05T00:00:00Z',
-      item_counts: { complete: 1, ready: 3 }, completion: { items: 4, finished: 1, complete: 1, uncovered_requirements: ['E1', 'E2'] }, blocked_count: 2 }),
+      item_counts: { complete: 1, ready: 3 }, completion: { items: 4, finished: 1, complete: 1, uncovered_requirements: ['E1', 'E2'] },
+      requirements: [
+        { id: 'E1', text: 'Add filters', state: 'active', linked_item_count: 0 },
+        { id: 'E2', text: 'Display results', state: 'active', linked_item_count: 2 },
+        { id: 'E3', text: 'Render the search box', state: 'active', linked_item_count: 1, covered_by: ['W-2'] },
+        { id: 'E4', text: 'Display recommendations', state: 'dropped', linked_item_count: 0 }
+      ], blocked_count: 2 }),
     feature('W-F10', { title: 'Billing', created_at: '2026-01-04T00:00:00Z', updated_at: '2026-01-02T00:00:00Z',
       item_counts: { complete: 2, closed: 2 }, status: 'complete' }),
     feature('W-F1', { title: 'Login flow', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-04T00:00:00Z',

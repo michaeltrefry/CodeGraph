@@ -242,7 +242,7 @@ public sealed partial class MySqlWorkStore
         ["title"] = feature.Title,
         ["description"] = feature.Description,
         ["goals"] = feature.Goals,
-        ["requirements"] = feature.Requirements?.Select(requirement => requirement with { CoveredBy = null }).ToList(),
+        ["requirements"] = feature.Requirements?.Select(requirement => requirement with { CoveredBy = null, LinkedItemCount = null }).ToList(),
         ["acceptance_tests"] = feature.AcceptanceTests,
         ["version"] = feature.Version
     };
@@ -271,7 +271,7 @@ public sealed partial class MySqlWorkStore
                 () => LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct), "Feature", ct);
 
             var before = (await LoadFeatureViewAsync(connection, transaction, featureId, withCounts: false, ct))!;
-            var storedRequirements = (before.Requirements ?? []).Select(requirement => requirement with { CoveredBy = null }).ToList();
+            var storedRequirements = (before.Requirements ?? []).Select(requirement => requirement with { CoveredBy = null, LinkedItemCount = null }).ToList();
             var requirements = MergeRequirements(storedRequirements, patch.Requirements, patch.DropRequirements, before.Key);
             await connection.ExecuteAsync(new CommandDefinition(
                 "UPDATE work_features SET title = @title, description = @description, goals_json = @goals, requirements_json = @requirements, " +

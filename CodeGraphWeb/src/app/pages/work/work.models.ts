@@ -48,7 +48,15 @@ export interface ProjectView {
   item_counts?: Record<string, number>;
 }
 
-export interface Requirement { id: string; text: string; state: 'active' | 'dropped'; decision?: string; covered_by?: string[] }
+export interface Requirement {
+  id: string;
+  text: string;
+  state: 'active' | 'dropped';
+  decision?: string;
+  covered_by?: string[];
+  /** Items inheriting this requirement in any status. Older servers omit the count. */
+  linked_item_count?: number;
+}
 
 export interface FeatureView {
   kind: 'feature';

@@ -99,8 +99,19 @@ jobs:
       - name: Build
         run: dotnet build CodeGraph.sln --configuration Release --no-restore
 
+      # These tests invoke MSBuild restore. Start VSTest directly to avoid a nested MSBuild invocation.
+      - name: Test C# caller indexing
+        timeout-minutes: 5
+        run: >-
+          dotnet vstest src/CodeGraph.Tests/bin/Release/net10.0/CodeGraph.Tests.dll
+          '--TestCaseFilter:FullyQualifiedName~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.'
+          '--Logger:console;verbosity=normal'
+
       - name: Test
-        run: dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+        run: >-
+          dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal
+          --filter 'FullyQualifiedName!~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.'
+          --blame-hang-timeout 3m --blame-hang-dump-type none
 
   windows-attachment-security:
     name: Windows Attachment Security
