@@ -12,6 +12,7 @@ using CodeGraph.Tests.Extractors;
 using Dapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MySqlConnector;
 using Pomelo.EntityFrameworkCore.MySql.Infrastructure;
@@ -35,11 +36,12 @@ public sealed class CSharpTestCallerImpactTests
     [InlineData(true)]
     public async Task IndexRepositoryAsync_TestProjectCallersOfStaticMethod_ProduceCallsEdges(bool trusted)
     {
+        var tracePath = trusted ? Environment.GetEnvironmentVariable("CODEGRAPH_MSBUILD_CI_TRACE") : null;
         var root = CopyFixture();
         try
         {
             var store = new InMemoryGraphStore();
-            await CreatePipeline(store, root, trusted).IndexRepositoryAsync(
+            await CreatePipeline(store, root, trusted, tracePath).IndexRepositoryAsync(
                 Repository, root, repositoryToolingIdentity: Identity(root), ct: CancellationToken.None);
 
             var calls = CallsByName(store);
@@ -135,16 +137,28 @@ public sealed class CSharpTestCallerImpactTests
         }
     }
 
-    private static IndexingPipeline CreatePipeline(IGraphStore store, string root, bool trusted) => new(
+    private static IndexingPipeline CreatePipeline(IGraphStore store, string root, bool trusted, string? tracePath = null) => new(
         store,
         [new RoslynExtractor()],
         Options.Create(new IndexingOptions { TrustedDotnetRepositories = trusted ? Identity(root) : "" }),
         new LocalFileSystem(),
-        NullLogger<IndexingPipeline>.Instance,
+        tracePath is null ? NullLogger<IndexingPipeline>.Instance : new TraceLogger<IndexingPipeline>(tracePath),
         new SolutionAnalyzer(
-            NullLogger<SolutionAnalyzer>.Instance,
+            tracePath is null ? NullLogger<SolutionAnalyzer>.Instance : new TraceLogger<SolutionAnalyzer>(tracePath),
             new LintResultCache(),
             new DiagnosticDetailCache()));
+
+    private sealed class TraceLogger<T>(string path) : ILogger<T>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            lock (path)
+                File.AppendAllText(path, $"{DateTime.UtcNow:O} {typeof(T).Name} {formatter(state, exception)}\n");
+        }
+    }
 
     private static string Identity(string root) => $"folder-path:{root}";
 

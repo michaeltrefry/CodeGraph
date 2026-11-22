@@ -103,8 +103,12 @@ jobs:
         run: |
           # Capture the unfinished test when the Linux suite stalls (CG-177).
           results="$RUNNER_TEMP/codegraph-backend-tests"
+          export CODEGRAPH_MSBUILD_CI_TRACE="$RUNNER_TEMP/codegraph-msbuild-ci-trace"
           if ! dotnet test CodeGraph.sln --configuration Release --no-build --verbosity normal \
               --results-directory "$results" --blame-hang-timeout 3m --blame-hang-dump-type none; then
+            if [ -f "$CODEGRAPH_MSBUILD_CI_TRACE" ]; then
+              cat "$CODEGRAPH_MSBUILD_CI_TRACE"
+            fi
             if [ -d "$results" ]; then
               find "$results" -name 'Sequence_*.xml' -exec grep -i 'Completed="False"' {} +
             fi
