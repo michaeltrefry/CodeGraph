@@ -102,9 +102,34 @@ jobs:
       # Run the real MSBuild restore in its own test host, ahead of the parallel suite.
       - name: Test C# caller indexing
         timeout-minutes: 5
-        run: >-
-          dotnet test src/CodeGraph.Tests/CodeGraph.Tests.csproj --configuration Release --no-build --verbosity normal
-          --filter 'FullyQualifiedName~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.'
+        run: |
+          dotnet vstest src/CodeGraph.Tests/bin/Release/net10.0/CodeGraph.Tests.dll \
+            '--TestCaseFilter:FullyQualifiedName~CodeGraph.Tests.Services.CSharpTestCallerImpactTests.' \
+            '--Logger:console;verbosity=normal' &
+          test_pid=$!
+          (
+            sleep 30
+            if kill -0 "$test_pid" 2>/dev/null; then
+              ps -eo pid=,ppid=,stat=,wchan:24=,args= | awk '
+                /[d]otnet restore.*StaticCallers\.slnx/ {print $1, $2, $3, $4, "fixture restore"}
+                /[t]esthost\.dll/ {print $1, $2, $3, $4, "test host"}
+                /[M]SBuild\.dll/ {print $1, $2, $3, $4, "MSBuild"}'
+              stack_tool="$RUNNER_TEMP/codegraph-dotnet-stack"
+              if curl -fsSL --max-time 20 https://aka.ms/dotnet-stack/linux-x64 -o "$stack_tool"; then
+                chmod +x "$stack_tool"
+                for pid in $(pgrep -f '^[^ ]*dotnet restore .*StaticCallers\.slnx' || true); do
+                  echo "Managed stack for fixture restore PID $pid"
+                  timeout 15s "$stack_tool" report --process-id "$pid" || true
+                done
+              fi
+            fi
+          ) &
+          diagnostics_pid=$!
+          status=0
+          wait "$test_pid" || status=$?
+          kill "$diagnostics_pid" 2>/dev/null || true
+          wait "$diagnostics_pid" 2>/dev/null || true
+          exit "$status"
 
       - name: Test
         run: >-
