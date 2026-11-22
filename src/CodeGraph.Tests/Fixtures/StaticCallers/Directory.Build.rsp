@@ -1,0 +1,2 @@
+# The tests run restore inside a disposable workspace. Keep its MSBuild nodes local to that run.
+-nodeReuse:false
