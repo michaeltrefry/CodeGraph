@@ -118,6 +118,9 @@ public sealed class PostRequest : ISessionArguments
     [Description("answered or declined: closes the question or request named in in_reply_to, as the caller.")]
     public MessageResolution? Resolves { get; init; }
 
+    [Description("An agent sets true only when the human explicitly answered or declined this exact CodeGraph question in chat. Give the human's decision and its scope in body, with in_reply_to and resolves. The relay stays attributed to the agent.")]
+    public bool? RelayedFromChat { get; init; }
+
     [Description("Caller-chosen key: a repeat by the same identity in this project answers the first message, with created false.")]
     public string? IdempotencyKey { get; init; }
 }
@@ -181,7 +184,8 @@ public sealed record MessageView(
     WorkActor? ResolvedBy = null,
     DateTime? ResolvedAt = null,
     DeliveryState? Delivery = null,
-    bool? HandedOver = null);
+    bool? HandedOver = null,
+    bool? ResolutionRelayedFromChat = null);
 
 /// <summary>One line of a list (E4): a message to choose from, not to read.</summary>
 public sealed record MessageLine(

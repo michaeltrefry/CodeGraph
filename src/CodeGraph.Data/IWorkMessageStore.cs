@@ -68,7 +68,8 @@ public sealed record NewMessageSpec(
     bool ToHuman,
     bool Blocking,
     Guid? InReplyTo,
-    MessageResolution? Resolves);
+    MessageResolution? Resolves,
+    bool RelayedFromChat = false);
 
 public sealed record PostedMessage(bool Created, MessageView Message, int Recipients, MessageView? Resolved, IReadOnlyList<ItemVersionRef>? ItemVersions = null);
 
