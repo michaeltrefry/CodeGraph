@@ -96,6 +96,7 @@ public sealed partial class MySqlWorkStore
         public string? ResolverModel { get; init; }
         public string? ResolverHost { get; init; }
         public DateTime? ResolvedAt { get; init; }
+        public bool ResolutionRelayedFromChat { get; init; }
         public DateTime CreatedAt { get; init; }
         public int? ItemNumber { get; init; }
         public int? FeatureNumber { get; init; }
@@ -108,7 +109,7 @@ public sealed partial class MySqlWorkStore
         "m.sequence, m.id, m.project_id, p.project_key, m.channel, m.item_id, m.feature_id, m.kind, m.state, m.blocking, m.to_session_id, m.to_human, m.resource_name, " +
         "m.in_reply_to, m.body, m.sender_name, m.sender_kind, m.sender_session_id, COALESCE(ss.harness, m.sender_harness) AS sender_harness, COALESCE(ss.model, m.sender_model) AS sender_model, COALESCE(ss.host, m.sender_host) AS sender_host, " +
         "m.resolved_by, m.resolved_by_kind, m.resolved_by_session_id, COALESCE(rs.harness, m.resolved_by_harness) AS resolver_harness, COALESCE(rs.model, m.resolved_by_model) AS resolver_model, COALESCE(rs.host, m.resolved_by_host) AS resolver_host, " +
-        "m.resolved_at, m.created_at, i.number AS item_number, f.number AS feature_number";
+        "m.resolved_at, m.resolution_relayed_from_chat, m.created_at, i.number AS item_number, f.number AS feature_number";
 
     private const string DeliveryColumns = ", d.sequence AS delivery_sequence, d.state AS delivery_state, d.handed_over AS delivery_handed_over";
 
@@ -137,7 +138,8 @@ public sealed partial class MySqlWorkStore
             row.ResolvedBy is null ? null : new WorkActor(row.ResolvedBy, row.ResolvedByKind ?? WorkActor.UserKind, row.ResolvedBySessionId, row.ResolverHarness, row.ResolverModel, row.ResolverHost),
             row.ResolvedAt is { } resolvedAt ? Utc(resolvedAt) : null,
             row.DeliveryState is null ? null : ParseName<DeliveryState>(row.DeliveryState),
-            row.DeliveryHandedOver == true ? true : null);
+            row.DeliveryHandedOver == true ? true : null,
+            row.ResolutionRelayedFromChat ? true : null);
     }
 
     private static MessageLine ToLine(MessageRow row)
@@ -306,21 +308,27 @@ public sealed partial class MySqlWorkStore
                 parent = await ReadMessageRowAsync(connection, transaction, parentId, ct);
                 if (parent is null || parent.ProjectId != spec.ProjectId)
                     throw WorkException.NotFound($"There is no message {parentId} in this project. Nothing was changed.");
-                // Only a person resolves what was put to the humans (CG-F16 E4).
-                if (actor.IsAgent && parent.ToHuman && spec.Resolves is not null)
+                if (spec.RelayedFromChat)
+                {
+                    if (!actor.IsAgent || !parent.ToHuman || parent.Kind != "question")
+                        throw WorkException.Invalid("relayed_from_chat is for an agent relaying a human's chat decision on a question addressed to the humans. Nothing was changed.");
+                    if (itemId is not null && itemId != parent.ItemId)
+                        throw WorkException.Invalid("item must match the question's item when relaying a chat decision. Nothing was changed.");
+                }
+                else if (actor.IsAgent && parent.ToHuman && spec.Resolves is not null)
                     throw new WorkException(WorkErrorCodes.Forbidden,
-                        "An agent cannot answer or decline a question or request put to the project's humans; only a person resolves it. " +
-                        "Reply without resolves to add information. Nothing was changed.");
-                if (!HasExplicitTarget(spec))
+                        "An agent cannot directly resolve a question or request addressed to the humans. If the human explicitly answered or declined the question in chat, " +
+                        "reply with relayed_from_chat: true, in_reply_to, resolves and the decision in body. Reply without resolves to add information. Nothing was changed.");
+                if (spec.RelayedFromChat || !HasExplicitTarget(spec))
                 {
                     itemId = parent.ItemId;
                     if (parent.SenderSessionId is { } sender && sender != actor.SessionId)
                     {
                         toSession = sender;
                     }
-                    else if (parent.SenderSessionId is null && actor.SessionId is not null)
+                    else if (spec.RelayedFromChat || (parent.SenderSessionId is null && actor.SessionId is not null))
                     {
-                        // A session answering a person writes to the humans.
+                        // A relay without another sender to notify stays on the human thread.
                         toHuman = true;
                     }
                     else
@@ -401,8 +409,10 @@ public sealed partial class MySqlWorkStore
                     name = actor.Name, actorKind = actor.Kind, session = actor.SessionId, now
                 },
                 transaction, cancellationToken: ct));
+            // Keep the relayed reply in the human's inbox history without asking them to read it again.
+            var deliveryState = spec.RelayedFromChat && toHuman ? DeliveryState.Read : DeliveryState.Pending;
             foreach (var recipient in recipientIds)
-                await InsertDeliveryAsync(connection, transaction, id, spec.ProjectId, recipient, DeliveryState.Pending, handedOver: false, now, ct);
+                await InsertDeliveryAsync(connection, transaction, id, spec.ProjectId, recipient, deliveryState, handedOver: false, now, ct);
             await InsertMessageEventAsync(connection, transaction, spec.ProjectId, id, MessageEventKinds.Posted, null, actor, now, ct);
             if (keyHash is not null)
                 await InsertKeyAsync(connection, transaction, spec.ProjectId, MessageOperation, keyHash, id, null, now, ct);
@@ -415,7 +425,7 @@ public sealed partial class MySqlWorkStore
             MessageRow? resolved = null;
             if (spec.Resolves is { } resolution)
             {
-                await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct);
+                await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct, spec.RelayedFromChat);
                 if (parent!.Blocking && parent.ItemId is { } unblocked)
                     Collect(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct), entries, versions);
                 resolved = await ReadMessageRowAsync(connection, transaction, parent.Id, ct);
@@ -428,12 +438,13 @@ public sealed partial class MySqlWorkStore
 
     /// <summary>
     /// Closes an open question or request as <paramref name="actor"/>: the message, and the actor's
-    /// own delivery (made if it has none). Takes no expected_version: the UPDATE is guarded by
-    /// state = 'open', and a message closed already is refused conflict. The caller holds the messages
+    /// own delivery (made if it has none), or the human delivery for an explicit relay. The UPDATE
+    /// is guarded by state = 'open', and a message closed already is refused conflict. The caller holds the messages
     /// lock (and, for a blocking question, its item's row).
     /// </summary>
     private static async Task ResolveAsync(
-        MySqlConnection connection, MySqlTransaction transaction, MessageRow message, MessageResolution resolution, WorkActor actor, DateTime now, CancellationToken ct)
+        MySqlConnection connection, MySqlTransaction transaction, MessageRow message, MessageResolution resolution, WorkActor actor,
+        DateTime now, CancellationToken ct, bool relayedFromChat = false)
     {
         var kind = ParseName<MessageKind>(message.Kind);
         if (kind is not (MessageKind.Question or MessageKind.Request))
@@ -441,9 +452,10 @@ public sealed partial class MySqlWorkStore
 
         var name = JsonName(resolution);
         var changed = await connection.ExecuteAsync(new CommandDefinition(
-            "UPDATE work_messages SET state = @name, resolved_by = @by, resolved_by_kind = @byKind, resolved_by_session_id = @bySession, resolved_at = @now " +
+            "UPDATE work_messages SET state = @name, resolved_by = @by, resolved_by_kind = @byKind, resolved_by_session_id = @bySession, resolved_at = @now, " +
+            "resolution_relayed_from_chat = @relayedFromChat " +
             "WHERE id = @id AND state = 'open'",
-            new { name, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, now, id = message.Id }, transaction, cancellationToken: ct));
+            new { name, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, now, relayedFromChat, id = message.Id }, transaction, cancellationToken: ct));
         if (changed == 0)
         {
             var current = await connection.QuerySingleAsync<(string? State, string? ResolvedBy)>(new CommandDefinition(
@@ -452,7 +464,7 @@ public sealed partial class MySqlWorkStore
                 $"Message {message.Id} is already {current.State}{(current.ResolvedBy is null ? string.Empty : $" (by {current.ResolvedBy})")}. Nothing was changed.");
         }
 
-        var recipient = RecipientOf(actor);
+        var recipient = relayedFromChat ? MessageChannels.HumanRecipient : RecipientOf(actor);
         var updated = await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_message_deliveries SET state = @name, delivered_at = COALESCE(delivered_at, @now), read_at = COALESCE(read_at, @now), resolved_at = @now " +
             "WHERE message_id = @id AND recipient = @recipient",

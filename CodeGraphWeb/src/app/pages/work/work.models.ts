@@ -295,6 +295,7 @@ export interface MessageView {
   in_reply_to?: string;
   resolved_by?: WorkActor;
   resolved_at?: string;
+  resolution_relayed_from_chat?: boolean;
   delivery?: string;
 }
 

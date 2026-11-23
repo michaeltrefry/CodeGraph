@@ -19,11 +19,12 @@ import { MESSAGE_KINDS, MessageKind, MessageView } from './work.models';
     @if (messages().length === 0) { <div class="wrk-empty">{{ empty() }}</div> }
     <div class="wrk-list-gap">
       @for (message of messages(); track message.id) {
-        <article class="wrk-msg" [attr.data-kind]="message.kind" [attr.data-blocking]="message.blocking ? 'true' : null" [attr.data-reply]="message.in_reply_to ? 'true' : null">
+        @let isBlocking = message.blocking && message.state === 'open';
+        <article class="wrk-msg" [attr.data-kind]="message.kind" [attr.data-blocking]="isBlocking ? 'true' : null" [attr.data-reply]="message.in_reply_to ? 'true' : null">
           <div class="wrk-row">
             <wrk-actor [actor]="message.from" />
             <span class="wrk-chip">{{ message.kind }}</span>
-            @if (message.blocking) { <span class="wrk-chip wrk-chip-blocked" data-reason="awaiting_human">blocks {{ message.item }}</span> }
+            @if (isBlocking) { <span class="wrk-chip wrk-chip-blocked" data-reason="awaiting_human">blocks {{ message.item }}</span> }
             @if (message.state === 'open') { <span class="wrk-chip wrk-chip-open">open</span> }
             @if (message.state === 'answered' || message.state === 'declined') { <span class="wrk-chip">{{ message.state }}</span> }
             <span class="wrk-sub">{{ channelLabel(message) }}</span>
@@ -32,7 +33,14 @@ import { MESSAGE_KINDS, MessageKind, MessageView } from './work.models';
           <p class="wrk-pre">{{ message.body }}</p>
           @if (message.item && showItem()) { <div class="wrk-sub">About <a [routerLink]="['/work/items', message.item]">{{ message.item }}</a></div> }
           @if (message.resolved_by) {
-            <div class="wrk-sub">{{ message.state }} by <wrk-actor [actor]="message.resolved_by" /> {{ message.resolved_at | ago }}</div>
+            <div class="wrk-sub">
+              @if (message.resolution_relayed_from_chat) {
+                {{ message.state }} in chat, relayed by
+              } @else {
+                {{ message.state }} by
+              }
+              <wrk-actor [actor]="message.resolved_by" /> {{ message.resolved_at | ago }}
+            </div>
           }
           <div class="wrk-row">
             @if (message.state === 'open') {

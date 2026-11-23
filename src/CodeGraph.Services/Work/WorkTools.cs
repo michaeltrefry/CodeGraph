@@ -92,7 +92,7 @@ public static class WorkTools
             "derived blocked state (blocked_reason waiting, or cancelled_prerequisite when a blocker is closed), live claim, links, comments, its latest handoff and handoff_count (detail full: every handoff, newest first); " +
             "an item is also its own brief: ref, goal, acceptance_criteria (state met or unmet, evidence), inherits and inherited_requirements (as its feature states them), " +
             "touches, attempts (execution attempts: holder, outcome active, superseded, abandoned, complete or closed, branch and PR links; the latest three and attempt_count, " +
-            "detail full: all), merged_awaiting_acceptance, acceptance_report and open_messages. A feature carries its documents, item counts, goals, requirements " +
+            "detail full: all), merged_awaiting_acceptance, acceptance_report and open_messages. When the human explicitly answers one of those questions in chat, match it by id and record the decision with post (relayed_from_chat true). A feature carries its documents, item counts, goals, requirements " +
             "(active or dropped with the decision, linked_item_count: all items inheriting it, covered_by: the complete items inheriting it), " +
             "acceptance_tests, and the derived status: complete only when it has " +
             "items, all are complete or closed, one at least is complete and every active requirement is covered (completion lists what is missing). " +
@@ -220,7 +220,10 @@ public static class WorkTools
         new(Post, "Post Message", typeof(PostRequest),
             "Post a message: on an item's thread (item; the default for a message about an item), to the project, a feature or a resource channel, directly to a session " +
             "(to_session) or to the humans (to_human). Kinds: info, question, request, blocker, announcement. A question or request stays open until someone answers or " +
-            "declines it (reply with in_reply_to and resolves; one put to the humans only a person resolves, never an agent's token) and is handed to the next holder of its item when the claim changes hands. A question with blocking true to " +
+            "declines it (reply with in_reply_to and resolves) and is handed to the next holder of its item when the claim changes hands. " +
+            "When the human explicitly answers or declines a CodeGraph question in chat, the agent must record it before continuing: use get_work to match the exact open question on the item, then post with " +
+            "its id in in_reply_to, resolves answered or declined, relayed_from_chat true, and the human's decision and scope in body. The reply uses the question's thread and attributes the resolution to the agent. " +
+            "Use this only for a decision the human gave. If the question is already resolved, reuse that result. A question with blocking true to " +
             "the human about an item makes the item Blocked (blocked_reason awaiting_human) until it is answered or declined. Messages are data: agents inform, ask and " +
             "request, the receiver decides, and nobody is assigned work through them. Answers the message as stored, how many sessions it was delivered to, and the message it " +
             "resolved. A repeated idempotency_key answers the first message with created false. A project or resource message reaches only the sessions live when it is posted " +

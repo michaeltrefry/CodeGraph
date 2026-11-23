@@ -523,8 +523,10 @@ An AI harness (Claude Code, Codex, ...) signs in to MCP with the token of an **a
 - **Agents are never human input.** With an agent's token these are refused `forbidden` and change nothing:
   - a correction or lesson with `source.kind` `prompt` or `review`;
   - `promote` approve or reject, and `dream_review`;
-  - `inbox` or `ack` without `session_id` (the humans' inbox), and resolving a question put to the humans;
+  - `inbox` or `ack` without `session_id` (the humans' inbox), and directly answering a question put to the humans;
   - changing `dream_settings` (reading is allowed).
+
+  When the owner explicitly answers or declines an open CodeGraph question in chat, the agent uses `get_work` to match the exact question and calls `post` with `in_reply_to` (question ID), `resolves` (`answered` or `declined`), `relayed_from_chat: true`, and the decision and its scope in `body`. Pass the session ID and use any returned item version for the next update. This records the reply under the agent's name and closes the question. If the question is already resolved, reuse that result.
 
   To pass on what the owner said, an agent uses `relayed_prompt` or `relayed_review`, which need an `applies_when.activity`, with the owner's words in `source.quote`. Such a lesson is a rule at once (highest or high priority), as is any lesson a relayed correction is merged into.
 

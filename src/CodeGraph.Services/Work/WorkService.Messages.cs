@@ -93,9 +93,14 @@ public sealed partial class WorkService
         if (request.Resolves is not null && replyTo is null)
             throw WorkException.Invalid("resolves closes the question or request named in in_reply_to; pass in_reply_to with it. Nothing was changed.");
 
+        var relayedFromChat = request.RelayedFromChat == true;
+        if (relayedFromChat && (request.Resolves is null || kind != MessageKind.Info || targets.Count != 0))
+            throw WorkException.Invalid("relayed_from_chat needs in_reply_to, resolves and an info reply without a separate target. Nothing was changed.");
+
         var keyHash = request.IdempotencyKey is { } key ? HashKey(actor, key) : null;
         var posted = await Store.PostMessageAsync(
-            new NewMessageSpec(project.Id, body, kind, itemId, featureId, resource, toSession, toHuman, blocking, replyTo, request.Resolves), actor, keyHash, ct);
+            new NewMessageSpec(project.Id, body, kind, itemId, featureId, resource, toSession, toHuman, blocking, replyTo, request.Resolves, relayedFromChat),
+            actor, keyHash, ct);
         return new PostResult(posted.Created, posted.Message, posted.Recipients, posted.Resolved, posted.ItemVersions);
     }
 

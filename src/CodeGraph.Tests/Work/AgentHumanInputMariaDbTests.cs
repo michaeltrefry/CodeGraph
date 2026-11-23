@@ -87,7 +87,7 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
-    public async Task An_agent_cannot_resolve_a_question_put_to_the_humans()
+    public async Task An_agent_cannot_directly_resolve_a_question_put_to_the_humans()
     {
         var project = await db.NewProjectAsync("AJ");
         var asker = await StartAsync(project, new WorkActor("claude-s4", WorkActor.AgentKind));
@@ -101,6 +101,93 @@ public sealed class AgentHumanInputMariaDbTests(WorkDatabase db) : IClassFixture
 
         var answered = await db.CallAsAsync(WorkTools.Post, new { project, in_reply_to = question, resolves = "answered", body = "Use codex." }, Owner);
         answered.GetProperty("resolved").GetProperty("state").GetString().ShouldBe("answered");
+        answered.GetProperty("resolved").TryGetProperty("resolution_relayed_from_chat", out _).ShouldBeFalse();
+    }
+
+    [Theory]
+    [InlineData("answered", false)]
+    [InlineData("declined", true)]
+    public async Task An_agent_relays_a_chat_decision_and_clears_the_block(string resolution, bool differentAgent)
+    {
+        var project = await db.NewProjectAsync("AR");
+        var item = (await db.NewItemAsync(project, "Awaiting a decision")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Agent);
+        var posted = await db.CallAsAsync(WorkTools.Post, new
+        {
+            session_id = asker, item, kind = "question", to_human = true, blocking = true, body = "May I rebase this branch?"
+        }, Agent);
+        var questionId = posted.GetProperty("message").GetProperty("id").GetString()!;
+        var relayActor = differentAgent ? new WorkActor("claude-s4", WorkActor.AgentKind) : Agent;
+        var relaySession = differentAgent ? await StartAsync(project, relayActor) : asker;
+        var before = await db.CallAsAsync(WorkTools.GetWork, new { id = item, session_id = relaySession }, relayActor);
+        before.GetProperty("blocked_reason").GetString().ShouldBe("awaiting_human");
+        before.GetProperty("open_messages").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(questionId);
+
+        var body = resolution == "answered" ? "The owner approved rebasing this branch." : "The owner declined to rebase this branch.";
+        var reply = new { session_id = relaySession, item, in_reply_to = questionId, resolves = resolution, relayed_from_chat = true, body, idempotency_key = questionId };
+        var result = await db.CallAsAsync(WorkTools.Post, reply, relayActor);
+        var message = result.GetProperty("message");
+        message.GetProperty("body").GetString().ShouldBe(body);
+        message.GetProperty("in_reply_to").GetString().ShouldBe(questionId);
+        message.GetProperty("item").GetString().ShouldBe(item);
+        var resolved = result.GetProperty("resolved");
+        resolved.GetProperty("id").GetString().ShouldBe(questionId);
+        resolved.GetProperty("state").GetString().ShouldBe(resolution);
+        resolved.GetProperty("resolution_relayed_from_chat").GetBoolean().ShouldBeTrue();
+        var resolver = resolved.GetProperty("resolved_by");
+        resolver.GetProperty("kind").GetString().ShouldBe("agent");
+        resolver.GetProperty("name").GetString().ShouldBe(relayActor.Name);
+        resolver.GetProperty("session_id").GetString().ShouldBe(relaySession);
+
+        var version = result.GetProperty("item_versions").EnumerateArray().Single().GetProperty("version").GetInt64();
+        version.ShouldBe(before.GetProperty("version").GetInt64() + 1);
+        var after = await db.CallAsync(WorkTools.GetWork, new { id = item });
+        after.GetProperty("blocked").GetBoolean().ShouldBeFalse();
+        after.GetProperty("version").GetInt64().ShouldBe(version);
+        (await db.CallAsAsync(WorkTools.Inbox, new { project }, Owner)).GetProperty("items").GetArrayLength().ShouldBe(0);
+        var history = await db.CallAsAsync(WorkTools.Inbox, new { project, include_read = true }, Owner);
+        var original = history.GetProperty("items").EnumerateArray().Single(entry => entry.GetProperty("id").GetString() == questionId);
+        original.GetProperty("delivery").GetString().ShouldBe(resolution);
+        original.GetProperty("resolution_relayed_from_chat").GetBoolean().ShouldBeTrue();
+
+        var retry = await db.CallAsAsync(WorkTools.Post, reply, relayActor);
+        retry.GetProperty("created").GetBoolean().ShouldBeFalse();
+        retry.GetProperty("message").GetProperty("id").GetString().ShouldBe(message.GetProperty("id").GetString());
+        var conflict = await Should.ThrowAsync<WorkException>(() => db.CallAsAsync(WorkTools.Post, new
+        {
+            session_id = relaySession, in_reply_to = questionId, resolves = resolution == "answered" ? "declined" : "answered", relayed_from_chat = true, body
+        }, relayActor));
+        conflict.Code.ShouldBe(WorkErrorCodes.Conflict);
+        (await db.CallAsync(WorkTools.GetWork, new { id = item })).GetProperty("version").GetInt64().ShouldBe(version);
+    }
+
+    [Fact]
+    public async Task A_chat_relay_requires_the_exact_human_question_and_resolves()
+    {
+        var project = await db.NewProjectAsync("AT");
+        var item = (await db.NewItemAsync(project, "First item")).GetProperty("key").GetString()!;
+        var otherItem = (await db.NewItemAsync(project, "Other item")).GetProperty("key").GetString()!;
+        var question = (await db.CallAsAsync(WorkTools.Post, new { item, kind = "question", to_human = true, blocking = true, body = "Proceed?" }, Agent))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        var itemQuestion = (await db.CallAsAsync(WorkTools.Post, new { item, kind = "question", body = "Check?" }, Agent))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        foreach (var args in new object[]
+        {
+            new { project, in_reply_to = question, relayed_from_chat = true, body = "Yes." },
+            new { project, resolves = "answered", relayed_from_chat = true, body = "Yes." },
+            new { item = otherItem, in_reply_to = question, resolves = "answered", relayed_from_chat = true, body = "Yes." },
+            new { project, in_reply_to = itemQuestion, resolves = "answered", relayed_from_chat = true, body = "Yes." },
+            new { project, in_reply_to = question, resolves = "answered", relayed_from_chat = true, body = "Yes.", to_human = true }
+        })
+        {
+            var refused = await Should.ThrowAsync<WorkException>(() => db.CallAsAsync(WorkTools.Post, args, Agent));
+            refused.Code.ShouldBe(WorkErrorCodes.InvalidArgument);
+        }
+
+        var after = await db.CallAsync(WorkTools.GetWork, new { id = item });
+        after.GetProperty("blocked_reason").GetString().ShouldBe("awaiting_human");
+        var inbox = await db.CallAsAsync(WorkTools.Inbox, new { project, include_read = true }, Owner);
+        inbox.GetProperty("items").EnumerateArray().Single().GetProperty("id").GetString().ShouldBe(question);
     }
 
     [Fact]
