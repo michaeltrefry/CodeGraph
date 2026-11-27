@@ -194,6 +194,32 @@ public sealed class QuestionAnswersMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
+    public async Task A_holder_that_read_the_open_question_gets_its_ack_resolution_as_new()
+    {
+        var project = await db.NewProjectAsync("QB");
+        var item = (await db.NewItemAsync(project, "Decide")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Asker);
+        var deciderActor = new WorkActor("claude-decider", WorkActor.AgentKind);
+        var decider = await StartAsync(project, deciderActor);
+        var question = (await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, to_session = decider, kind = "question", body = "Merge now?" }, Asker))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        // The holder inherits the open question and reads it.
+        var holder = await StartAsync(project, Holder);
+        await ClaimAsync(item, holder, Holder);
+        var inherited = await db.CallAsAsync(WorkTools.Inbox, new { session_id = holder }, Holder);
+        inherited.GetProperty("items").EnumerateArray().ShouldHaveSingleItem().GetProperty("id").GetString().ShouldBe(question);
+        var cursor = inherited.GetProperty("next_cursor").GetString();
+        await db.CallAsAsync(WorkTools.Ack, new { session_id = holder, messages = new[] { question } }, Holder);
+        await db.CallAsAsync(WorkTools.EndSession, new { session_id = asker }, Asker);
+
+        await db.CallAsAsync(WorkTools.Ack, new { session_id = decider, messages = new[] { question }, resolution = "declined" }, deciderActor);
+
+        var news = (await db.CallAsAsync(WorkTools.Inbox, new { session_id = holder, cursor }, Holder)).GetProperty("items").EnumerateArray().ShouldHaveSingleItem();
+        news.GetProperty("id").GetString().ShouldBe(question);
+        news.GetProperty("state").GetString().ShouldBe("declined");
+    }
+
+    [Fact]
     public async Task The_migration_links_questions_answered_before_it_and_the_resolved_filter_lists_them()
     {
         var project = await db.NewProjectAsync("QM");

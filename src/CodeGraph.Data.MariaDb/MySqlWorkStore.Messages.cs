@@ -495,12 +495,25 @@ public sealed partial class MySqlWorkStore
         // question itself, delivered back to it as answered or declined (CG-180). A reply reaches it on its own.
         if (answerId is null && message.SenderSessionId is { } asker && asker != actor.SessionId)
         {
-            await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, asker, DeliveryState.Pending, handedOver: false, now, ct);
+            await RedeliverAsync(connection, transaction, message, asker, now, ct);
             // An asker that ended is not there to read it: the item's live holder is.
             if (message.ItemId is { } askedAbout && !await IsLiveSessionAsync(connection, transaction, asker, now, ct)
                 && await LiveHolderAsync(connection, transaction, askedAbout, now, ct) is { } holder && holder != actor.SessionId)
-                await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, holder, DeliveryState.Pending, handedOver: false, now, ct);
+                await RedeliverAsync(connection, transaction, message, holder, now, ct);
         }
+    }
+
+    /// <summary>
+    /// Delivers a closed question to <paramref name="recipient"/> as news: a copy it already has (of the
+    /// open question, perhaps read) is replaced by a new pending delivery, so its inbox replays it after
+    /// any cursor it holds. The caller holds the messages lock.
+    /// </summary>
+    private static async Task RedeliverAsync(MySqlConnection connection, MySqlTransaction transaction, MessageRow message, string recipient, DateTime now, CancellationToken ct)
+    {
+        await connection.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM work_message_deliveries WHERE message_id = @id AND recipient = @recipient",
+            new { id = message.Id, recipient }, transaction, cancellationToken: ct));
+        await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, recipient, DeliveryState.Pending, handedOver: false, now, ct);
     }
 
     private async Task<bool> IsLiveSessionAsync(MySqlConnection connection, MySqlTransaction transaction, string sessionId, DateTime now, CancellationToken ct) =>
