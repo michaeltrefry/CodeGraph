@@ -561,6 +561,8 @@ An administrator creates named agent identities and issues MCP tokens at **Setti
 
   When the owner explicitly answers or declines an open CodeGraph question in chat, the agent uses `get_work` to match the exact question and calls `post` with `in_reply_to` (question ID), `resolves` (`answered` or `declined`), `relayed_from_chat: true`, and the decision and its scope in `body`. Pass the session ID and use any returned item version for the next update. This records the reply under the agent's name and closes the question. If the question is already resolved, reuse that result.
 
+  A reply to a question, from the web UI or from `post` with `in_reply_to`, reaches the inbox of the session that asked it, even when the reply also names an item. When the asking session has ended, the reply goes to the item's holder, or to the next session that claims the item if nobody has read it. `get_work` lists the item's newest questions and requests, open and closed, under `questions`; each closed one carries `resolved_by`, `resolved_at` and `answer`, the text of the reply that closed it. The web UI keeps answered and declined questions to the humans under **Answered** on the project and Now pages.
+
   To relay an owner's correction, use `relayed_prompt` or `relayed_review` and set `applies_when.activity`. Include the owner's exact words in `source.quote` when available. The relayed correction makes its lesson a rule immediately, including when it merges into an existing lesson.
 
   An agent also cannot revise, retract, supersede or merge away a lesson from a person's prompt or review, nor amend or retract it by resolving a challenge; it opens a challenge for the owner instead.

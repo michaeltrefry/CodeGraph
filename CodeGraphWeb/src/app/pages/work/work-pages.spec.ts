@@ -270,9 +270,11 @@ describe('MessageListComponent', () => {
       state: 'answered',
       resolved_by: { name: 'codex', kind: 'agent' },
       resolution_relayed_from_chat: true,
+      answer: 'The owner approved rebasing.',
     } satisfies MessageView]);
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('answered in chat, relayed by');
+    expect(fixture.nativeElement.querySelector('.wrk-answer')?.textContent).toBe('The owner approved rebasing.');
     expect(fixture.nativeElement.textContent).toContain('codex');
     expect(fixture.nativeElement.textContent).not.toContain('blocks W-7');
   });

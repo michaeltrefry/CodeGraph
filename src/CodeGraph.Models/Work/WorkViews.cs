@@ -131,6 +131,8 @@ public sealed record ItemView(
     int? AttemptCount = null,
     // The messages story (S7): open questions and requests about the item.
     IReadOnlyList<MessageLine>? OpenMessages = null,
+    // The item's questions and requests, open and closed, oldest first, each with its answer (CG-180).
+    IReadOnlyList<MessageView>? Questions = null,
     // The knowledge relevant to the item (S5): linked to it, scoped to its touches, its repository or the project.
     IReadOnlyList<KnowledgeRow>? Knowledge = null,
     // The rules of the item brief (S9): matched like a briefing's (activity, location), the activity derived from the item's status unless the session declared one.

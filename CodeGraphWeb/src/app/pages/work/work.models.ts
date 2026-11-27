@@ -296,7 +296,15 @@ export interface MessageView {
   resolved_by?: WorkActor;
   resolved_at?: string;
   resolution_relayed_from_chat?: boolean;
+  /** The reply that answered or declined this question or request, and its text. */
+  answer_id?: string;
+  answer?: string;
   delivery?: string;
+}
+
+/** The questions and requests to the humans that are answered or declined, newest first: the history Blocked on you leaves. */
+export function answeredQuestions(messages: MessageView[], take = 10): MessageView[] {
+  return messages.filter(message => message.state === 'answered' || message.state === 'declined').slice(0, take);
 }
 
 export interface MessageEvent {

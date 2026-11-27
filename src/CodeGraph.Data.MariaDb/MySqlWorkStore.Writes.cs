@@ -1090,7 +1090,11 @@ public sealed partial class MySqlWorkStore
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return new NextWorkResult(after with { OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct) }, Reused: false, Recovery: recovery);
+                return new NextWorkResult(after with
+                {
+                    OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct),
+                    Questions = await ReadItemQuestionsAsync(connection, null, itemId, ct)
+                }, Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number is (MySqlDeadlock or MySqlRecordChanged) && attempt < DeadlockAttempts)
             {

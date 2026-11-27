@@ -97,6 +97,8 @@ public sealed partial class MySqlWorkStore
         public string? ResolverHost { get; init; }
         public DateTime? ResolvedAt { get; init; }
         public bool ResolutionRelayedFromChat { get; init; }
+        public Guid? ResolutionMessageId { get; init; }
+        public string? Answer { get; init; }
         public DateTime CreatedAt { get; init; }
         public int? ItemNumber { get; init; }
         public int? FeatureNumber { get; init; }
@@ -109,13 +111,14 @@ public sealed partial class MySqlWorkStore
         "m.sequence, m.id, m.project_id, p.project_key, m.channel, m.item_id, m.feature_id, m.kind, m.state, m.blocking, m.to_session_id, m.to_human, m.resource_name, " +
         "m.in_reply_to, m.body, m.sender_name, m.sender_kind, m.sender_session_id, COALESCE(ss.harness, m.sender_harness) AS sender_harness, COALESCE(ss.model, m.sender_model) AS sender_model, COALESCE(ss.host, m.sender_host) AS sender_host, " +
         "m.resolved_by, m.resolved_by_kind, m.resolved_by_session_id, COALESCE(rs.harness, m.resolved_by_harness) AS resolver_harness, COALESCE(rs.model, m.resolved_by_model) AS resolver_model, COALESCE(rs.host, m.resolved_by_host) AS resolver_host, " +
-        "m.resolved_at, m.resolution_relayed_from_chat, m.created_at, i.number AS item_number, f.number AS feature_number";
+        "m.resolved_at, m.resolution_relayed_from_chat, m.resolution_message_id, am.body AS answer, m.created_at, i.number AS item_number, f.number AS feature_number";
 
     private const string DeliveryColumns = ", d.sequence AS delivery_sequence, d.state AS delivery_state, d.handed_over AS delivery_handed_over";
 
     private const string MessageJoins =
         " JOIN work_projects p ON p.id = m.project_id LEFT JOIN work_items i ON i.id = m.item_id LEFT JOIN work_features f ON f.id = m.feature_id " +
-        "LEFT JOIN work_sessions ss ON ss.id = m.sender_session_id LEFT JOIN work_sessions rs ON rs.id = m.resolved_by_session_id";
+        "LEFT JOIN work_sessions ss ON ss.id = m.sender_session_id LEFT JOIN work_sessions rs ON rs.id = m.resolved_by_session_id " +
+        "LEFT JOIN work_messages am ON am.id = m.resolution_message_id";
 
     private static Task<MessageRow?> ReadMessageRowAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid messageId, CancellationToken ct) =>
         connection.QuerySingleOrDefaultAsync<MessageRow>(new CommandDefinition(
@@ -139,7 +142,9 @@ public sealed partial class MySqlWorkStore
             row.ResolvedAt is { } resolvedAt ? Utc(resolvedAt) : null,
             row.DeliveryState is null ? null : ParseName<DeliveryState>(row.DeliveryState),
             row.DeliveryHandedOver == true ? true : null,
-            row.ResolutionRelayedFromChat ? true : null);
+            row.ResolutionRelayedFromChat ? true : null,
+            row.ResolutionMessageId,
+            row.Answer);
     }
 
     private static MessageLine ToLine(MessageRow row)
@@ -387,10 +392,18 @@ public sealed partial class MySqlWorkStore
             }
             else
             {
-                var holder = await connection.QueryFirstOrDefaultAsync<string?>(new CommandDefinition(
-                    "SELECT claim_session_id FROM work_items WHERE id = @itemId AND claim_session_id IS NOT NULL AND claim_holder IS NOT NULL AND claim_expires_at > @now",
-                    new { itemId, now }, transaction, cancellationToken: ct));
-                if (holder is not null)
+                if (await LiveHolderAsync(connection, transaction, itemId.Value, now, ct) is { } holder)
+                    recipientIds.Add(holder);
+            }
+
+            // A reply reaches the session that sent the message it answers, whatever else it targets
+            // (CG-180): the UI's answer names the item, which alone would reach only the item's holder.
+            // A sender that ended or fell silent is not there to read it: the item's live holder is.
+            if (parent?.SenderSessionId is { } asker && asker != actor.SessionId)
+            {
+                recipientIds.Add(asker);
+                if (parent.ItemId is { } askedAbout && !await IsLiveSessionAsync(connection, transaction, asker, now, ct)
+                    && await LiveHolderAsync(connection, transaction, askedAbout, now, ct) is { } holder)
                     recipientIds.Add(holder);
             }
 
@@ -425,7 +438,7 @@ public sealed partial class MySqlWorkStore
             MessageRow? resolved = null;
             if (spec.Resolves is { } resolution)
             {
-                await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct, spec.RelayedFromChat);
+                await ResolveAsync(connection, transaction, parent!, resolution, actor, now, ct, spec.RelayedFromChat, answerId: id);
                 if (parent!.Blocking && parent.ItemId is { } unblocked)
                     Collect(await AwaitingHumanChangeAsync(connection, transaction, unblocked, opened: false, now, ct), entries, versions);
                 resolved = await ReadMessageRowAsync(connection, transaction, parent.Id, ct);
@@ -444,7 +457,7 @@ public sealed partial class MySqlWorkStore
     /// </summary>
     private static async Task ResolveAsync(
         MySqlConnection connection, MySqlTransaction transaction, MessageRow message, MessageResolution resolution, WorkActor actor,
-        DateTime now, CancellationToken ct, bool relayedFromChat = false)
+        DateTime now, CancellationToken ct, bool relayedFromChat = false, Guid? answerId = null)
     {
         var kind = ParseName<MessageKind>(message.Kind);
         if (kind is not (MessageKind.Question or MessageKind.Request))
@@ -453,9 +466,9 @@ public sealed partial class MySqlWorkStore
         var name = JsonName(resolution);
         var changed = await connection.ExecuteAsync(new CommandDefinition(
             "UPDATE work_messages SET state = @name, resolved_by = @by, resolved_by_kind = @byKind, resolved_by_session_id = @bySession, resolved_at = @now, " +
-            "resolution_relayed_from_chat = @relayedFromChat " +
+            "resolution_relayed_from_chat = @relayedFromChat, resolution_message_id = @answerId " +
             "WHERE id = @id AND state = 'open'",
-            new { name, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, now, relayedFromChat, id = message.Id }, transaction, cancellationToken: ct));
+            new { name, by = actor.Name, byKind = actor.Kind, bySession = actor.SessionId, now, relayedFromChat, answerId, id = message.Id }, transaction, cancellationToken: ct));
         if (changed == 0)
         {
             var current = await connection.QuerySingleAsync<(string? State, string? ResolvedBy)>(new CommandDefinition(
@@ -473,7 +486,22 @@ public sealed partial class MySqlWorkStore
             await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, recipient,
                 resolution == MessageResolution.Answered ? DeliveryState.Answered : DeliveryState.Declined, handedOver: false, now, ct);
         await InsertMessageEventAsync(connection, transaction, message.ProjectId, message.Id, name, recipient, actor, now, ct);
+
+        // Closed without a reply (ack with a resolution): the asking session learns it from the
+        // question itself, delivered back to it as answered or declined (CG-180). A reply reaches it on its own.
+        if (answerId is null && message.SenderSessionId is { } asker && asker != actor.SessionId)
+            await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, asker, DeliveryState.Pending, handedOver: false, now, ct);
     }
+
+    private async Task<bool> IsLiveSessionAsync(MySqlConnection connection, MySqlTransaction transaction, string sessionId, DateTime now, CancellationToken ct) =>
+        await connection.ExecuteScalarAsync<long>(new CommandDefinition(
+            "SELECT COUNT(*) FROM work_sessions WHERE id = @sessionId AND ended_at IS NULL AND last_seen_at > @staleBefore",
+            new { sessionId, staleBefore = StaleBefore(now) }, transaction, cancellationToken: ct)) > 0;
+
+    private static Task<string?> LiveHolderAsync(MySqlConnection connection, MySqlTransaction transaction, Guid itemId, DateTime now, CancellationToken ct) =>
+        connection.QueryFirstOrDefaultAsync<string?>(new CommandDefinition(
+            "SELECT claim_session_id FROM work_items WHERE id = @itemId AND claim_session_id IS NOT NULL AND claim_holder IS NOT NULL AND claim_expires_at > @now",
+            new { itemId, now }, transaction, cancellationToken: ct));
 
     // ---- inbox -----------------------------------------------------------------------------------
 
@@ -650,12 +678,14 @@ public sealed partial class MySqlWorkStore
         // read): a post to the item's thread holds the item's row shared, so every post that
         // committed before this claim's row lock is seen here, and one that follows sees the new
         // holder. Only when something is open is the lock taken and the look repeated under it.
+        var staleBefore = StaleBefore(now);
         await using (var look = await OpenAsync(ct))
         {
             if (await look.ExecuteScalarAsync<long>(new CommandDefinition(
                     "SELECT EXISTS (SELECT 1 FROM work_messages m WHERE m.item_id = @itemId AND m.state = 'open' AND m.kind IN ('question', 'request') " +
-                    "AND m.to_human = 0 AND (m.sender_session_id IS NULL OR m.sender_session_id <> @session))",
-                    new { itemId, session }, cancellationToken: ct)) == 0)
+                    "AND m.to_human = 0 AND (m.sender_session_id IS NULL OR m.sender_session_id <> @session)) " +
+                    $"OR EXISTS (SELECT 1 {UnreadAnswersOfGoneAskers})",
+                    new { itemId, session, staleBefore }, cancellationToken: ct)) == 0)
                 return;
         }
 
@@ -665,12 +695,29 @@ public sealed partial class MySqlWorkStore
             "AND m.to_human = 0 AND (m.sender_session_id IS NULL OR m.sender_session_id <> @session) " +
             "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries d WHERE d.message_id = m.id AND d.recipient = @session) ORDER BY m.sequence FOR UPDATE",
             new { itemId, session }, transaction, cancellationToken: ct))).ToList();
+        // The answers to the item's questions whose asker ended or fell silent before reading them (CG-180).
+        // Read on a connection of its own under the messages lock, so it is current without locking the
+        // session and delivery rows it joins (code holding the lock takes no further row locks).
+        await using (var answers = await OpenAsync(ct))
+            open.AddRange(await answers.QueryAsync<(Guid Id, Guid ProjectId)>(new CommandDefinition(
+                $"SELECT r.id, r.project_id {UnreadAnswersOfGoneAskers} ORDER BY r.sequence",
+                new { itemId, session, staleBefore }, cancellationToken: ct)));
         foreach (var (id, projectId) in open)
         {
             await InsertDeliveryAsync(connection, transaction, id, projectId, session, DeliveryState.Pending, handedOver: true, now, ct);
             await InsertMessageEventAsync(connection, transaction, projectId, id, MessageEventKinds.HandedOver, session, actor, now, ct);
         }
     }
+
+    // The replies that answered or declined an item's questions, unread by an asking session (not
+    // @session) that has ended or fell silent before @staleBefore, and not yet with @session.
+    private const string UnreadAnswersOfGoneAskers =
+        "FROM work_messages q JOIN work_messages r ON r.id = q.resolution_message_id " +
+        "JOIN work_message_deliveries ad ON ad.message_id = r.id AND ad.recipient = q.sender_session_id " +
+        "JOIN work_sessions asker ON asker.id = q.sender_session_id " +
+        "WHERE q.item_id = @itemId AND q.sender_session_id <> @session AND ad.read_at IS NULL " +
+        "AND (asker.ended_at IS NOT NULL OR asker.last_seen_at <= @staleBefore) " +
+        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = r.id AND own.recipient = @session)";
 
     /// <summary>
     /// The unread (or still open) direct messages with no item that a new session of a project and
@@ -736,6 +783,17 @@ public sealed partial class MySqlWorkStore
             new { itemId }, transaction, cancellationToken: ct));
         var lines = rows.Select(ToLine).ToList();
         return lines.Count == 0 ? null : lines;
+    }
+
+    /// <summary>The newest questions and requests of an item's thread, open and closed, oldest first, each with its answer; null when there are none.</summary>
+    private static async Task<IReadOnlyList<MessageView>?> ReadItemQuestionsAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct)
+    {
+        var rows = (await connection.QueryAsync<MessageRow>(new CommandDefinition(
+            $"SELECT {MessageColumns} FROM work_messages m{MessageJoins} WHERE m.item_id = @itemId AND m.kind IN ('question', 'request') " +
+            $"ORDER BY m.sequence DESC LIMIT {WorkMessageLimits.MaxItemQuestions}",
+            new { itemId }, transaction, cancellationToken: ct))).ToList();
+        rows.Reverse();
+        return rows.Count == 0 ? null : rows.Select(ToView).ToList();
     }
 
     private static async Task<bool> HasOpenBlockingQuestionAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct) =>

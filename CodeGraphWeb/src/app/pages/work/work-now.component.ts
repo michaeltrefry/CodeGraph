@@ -7,7 +7,7 @@ import { MessageListComponent } from './work-messages-ui';
 import { ResourcesComponent } from './work-resources-ui';
 import { SessionListComponent } from './work-sessions-ui';
 import { withDebounce } from './work-live.service';
-import { ItemView, MessageView, ResourceView, SessionView } from './work.models';
+import { ItemView, MessageView, ResourceView, SessionView, answeredQuestions } from './work.models';
 
 /** Now: who is working, what is held, and what waits on a person. */
 @Component({
@@ -43,6 +43,11 @@ import { ItemView, MessageView, ResourceView, SessionView } from './work.models'
             <wrk-message-list [messages]="blockedOnYou()" [project]="ctx.selected()" [acknowledgeable]="true" empty="Nothing is waiting on you." (changed)="reload()" />
           </section>
 
+          <section class="wrk-card" aria-labelledby="wrk-h-answered">
+            <h2 id="wrk-h-answered">Answered <span class="wrk-count">{{ answered().length }}</span></h2>
+            <wrk-message-list [messages]="answered()" [project]="ctx.selected()" empty="No answered questions yet." (changed)="reload()" />
+          </section>
+
           <section class="wrk-card" aria-labelledby="wrk-h-sessions">
             <h2 id="wrk-h-sessions">Live sessions <span class="wrk-count">{{ sessions().length }}</span></h2>
             <wrk-session-list [sessions]="sessions()" [claimed]="claimed()" [feed]="feed()" />
@@ -67,6 +72,8 @@ export class WorkNowComponent extends WorkPageBase implements OnInit, OnDestroy 
   readonly sessions = signal<SessionView[]>([]);
   readonly resources = signal<ResourceView[]>([]);
   readonly blockedOnYou = signal<MessageView[]>([]);
+  /** The latest questions to the humans that were answered or declined, with the answer. */
+  readonly answered = signal<MessageView[]>([]);
   readonly claimed = signal<ItemView[]>([]);
   private stopStream?: () => void;
   private readonly refresh = withDebounce(() => void this.reload(), 300);
@@ -107,17 +114,19 @@ export class WorkNowComponent extends WorkPageBase implements OnInit, OnDestroy 
     if (!key) return;
     this.error.set(null);
     try {
-      const [sessions, resources, messages, claimed] = await Promise.all([
+      const [sessions, resources, messages, claimed, , toHumans] = await Promise.all([
         this.api.sessions(key),
         this.api.resources(key),
         this.api.messages(key, { open: true, toHuman: true, limit: 50 }),
         this.api.items(key, { claimed: true, status: ['ready', 'in_progress', 'in_review', 'backlog'] }),
-        this.loadRecent(key, 40)
+        this.loadRecent(key, 40),
+        this.api.messages(key, { toHuman: true, limit: 50 })
       ]);
       if (key !== this.ctx.selected()) return;
       this.sessions.set(sessions);
       this.resources.set(resources);
       this.blockedOnYou.set(messages.items);
+      this.answered.set(answeredQuestions(toHumans.items));
       this.claimed.set(claimed);
     } catch (error) {
       await this.run(() => Promise.reject(error));
