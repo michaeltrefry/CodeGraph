@@ -727,7 +727,7 @@ public sealed partial class MySqlWorkStore
 
     // The answers to an item's closed questions (the reply that closed one, or the question itself when
     // ack closed it) that no session has read: the asking session (not @session) ended, fell silent
-    // before @staleBefore or was pruned, no later holder read it, and @session does not have it yet.
+    // before @staleBefore or was pruned, no session read it as an answer, and @session does not have it yet.
     // Once a session reads it, it passes on no further.
     private const string UnreadAnswersOfGoneAskers =
         "FROM work_messages q " +
@@ -735,7 +735,11 @@ public sealed partial class MySqlWorkStore
         "LEFT JOIN work_sessions asker ON asker.id = q.sender_session_id " +
         "WHERE q.item_id = @itemId AND q.state IN ('answered', 'declined') AND q.sender_session_id <> @session AND ad.read_at IS NULL " +
         "AND (asker.id IS NULL OR asker.ended_at IS NOT NULL OR asker.last_seen_at <= @staleBefore) " +
-        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries x WHERE x.message_id = ad.message_id AND x.recipient <> 'human' AND x.read_at IS NOT NULL) " +
+        // Read by a session it was delivered to as an answer: any reader of the reply; for a question
+        // closed by ack, a delivery made at or after its closing to a session other than the resolver
+        // (the resolver's own copy, and reads of the open question, are not reads of the answer).
+        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries x WHERE x.message_id = ad.message_id AND x.recipient <> 'human' AND x.read_at IS NOT NULL " +
+        "AND (q.resolution_message_id IS NOT NULL OR (x.created_at >= q.resolved_at AND x.recipient <> COALESCE(q.resolved_by_session_id, '')))) " +
         "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = ad.message_id AND own.recipient = @session)";
 
     /// <summary>

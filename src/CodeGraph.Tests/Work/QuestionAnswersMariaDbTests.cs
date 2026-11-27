@@ -171,6 +171,29 @@ public sealed class QuestionAnswersMariaDbTests(WorkDatabase db) : IClassFixture
     }
 
     [Fact]
+    public async Task An_agents_ack_resolution_is_not_a_read_of_the_answer()
+    {
+        var project = await db.NewProjectAsync("QX");
+        var item = (await db.NewItemAsync(project, "Agent decides")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Asker);
+        var resolver = await StartAsync(project, Holder);
+        // A question to the item's thread (not the humans), delivered to its holder, who closes it by ack.
+        await ClaimAsync(item, resolver, Holder);
+        var question = (await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, kind = "question", body = "Merge now?" }, Asker))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        await db.CallAsAsync(WorkTools.EndSession, new { session_id = asker }, Asker);
+        await db.CallAsAsync(WorkTools.Ack, new { session_id = resolver, messages = new[] { question }, resolution = "declined" }, Holder);
+        await db.CallAsAsync(WorkTools.UpdateWork, new { id = item, expected_version = await VersionAsync(item), session_id = resolver, release_claim = new { } }, Holder);
+
+        var nextActor = new WorkActor("claude-next", WorkActor.AgentKind);
+        var next = await StartAsync(project, nextActor);
+        await ClaimAsync(item, next, nextActor);
+        var handed = (await db.CallAsAsync(WorkTools.Inbox, new { session_id = next }, nextActor)).GetProperty("items").EnumerateArray().ShouldHaveSingleItem();
+        handed.GetProperty("id").GetString().ShouldBe(question);
+        handed.GetProperty("state").GetString().ShouldBe("declined");
+    }
+
+    [Fact]
     public async Task The_migration_links_questions_answered_before_it_and_the_resolved_filter_lists_them()
     {
         var project = await db.NewProjectAsync("QM");
