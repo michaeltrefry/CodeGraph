@@ -328,7 +328,7 @@ export class ProjectWorkComponent extends WorkPageBase implements OnDestroy {
         this.api.messages(key, { open: true, toHuman: true, limit: 50 }),
         this.api.items(key, { claimed: true, status: ['ready', 'in_progress', 'in_review', 'backlog'] }),
         this.loadRecent(key, 40),
-        this.api.messages(key, { toHuman: true, limit: 50 })
+        this.api.messages(key, { resolved: true, toHuman: true, limit: 50 })
       ]);
       if (generation !== this.generation) return;
       this.error.set(null);

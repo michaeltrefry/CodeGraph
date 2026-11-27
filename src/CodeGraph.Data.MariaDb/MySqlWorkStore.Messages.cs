@@ -278,6 +278,10 @@ public sealed partial class MySqlWorkStore
                 holds[thread] = spec.Blocking;
             if (spec.Resolves is not null && parentBefore is { Blocking: true, ItemId: { } blockedItem })
                 holds[blockedItem] = true;
+            // A reply may fall back to the holder of the question's item: hold that row too, so a claim
+            // either sees this reply (handover) or commits after it.
+            if (parentBefore is { SenderSessionId: not null, ItemId: { } askedItem })
+                holds.TryAdd(askedItem, false);
 
             await using var transaction = await connection.BeginTransactionAsync(ct);
             await using var messageLock = new MessageLockScope(connection, transaction);
@@ -455,7 +459,7 @@ public sealed partial class MySqlWorkStore
     /// is guarded by state = 'open', and a message closed already is refused conflict. The caller holds the messages
     /// lock (and, for a blocking question, its item's row).
     /// </summary>
-    private static async Task ResolveAsync(
+    private async Task ResolveAsync(
         MySqlConnection connection, MySqlTransaction transaction, MessageRow message, MessageResolution resolution, WorkActor actor,
         DateTime now, CancellationToken ct, bool relayedFromChat = false, Guid? answerId = null)
     {
@@ -490,7 +494,13 @@ public sealed partial class MySqlWorkStore
         // Closed without a reply (ack with a resolution): the asking session learns it from the
         // question itself, delivered back to it as answered or declined (CG-180). A reply reaches it on its own.
         if (answerId is null && message.SenderSessionId is { } asker && asker != actor.SessionId)
+        {
             await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, asker, DeliveryState.Pending, handedOver: false, now, ct);
+            // An asker that ended is not there to read it: the item's live holder is.
+            if (message.ItemId is { } askedAbout && !await IsLiveSessionAsync(connection, transaction, asker, now, ct)
+                && await LiveHolderAsync(connection, transaction, askedAbout, now, ct) is { } holder && holder != actor.SessionId)
+                await InsertDeliveryAsync(connection, transaction, message.Id, message.ProjectId, holder, DeliveryState.Pending, handedOver: false, now, ct);
+        }
     }
 
     private async Task<bool> IsLiveSessionAsync(MySqlConnection connection, MySqlTransaction transaction, string sessionId, DateTime now, CancellationToken ct) =>
@@ -572,8 +582,14 @@ public sealed partial class MySqlWorkStore
             if (spec is { Resolution: not null, Messages: { } named })
             {
                 foreach (var messageId in named.Distinct())
-                    if (await ReadMessageRowAsync(connection, null, messageId, ct) is { Blocking: true, ItemId: { } blockedItem })
+                {
+                    var namedMessage = await ReadMessageRowAsync(connection, null, messageId, ct);
+                    if (namedMessage is { Blocking: true, ItemId: { } blockedItem })
                         holds[blockedItem] = true;
+                    // Its answer may fall back to the item's holder: a claim either sees it or follows it.
+                    else if (namedMessage is { SenderSessionId: not null, ItemId: { } askedItem })
+                        holds.TryAdd(askedItem, false);
+                }
             }
 
             await using var transaction = await connection.BeginTransactionAsync(ct);
@@ -700,24 +716,27 @@ public sealed partial class MySqlWorkStore
         // session and delivery rows it joins (code holding the lock takes no further row locks).
         await using (var answers = await OpenAsync(ct))
             open.AddRange(await answers.QueryAsync<(Guid Id, Guid ProjectId)>(new CommandDefinition(
-                $"SELECT r.id, r.project_id {UnreadAnswersOfGoneAskers} ORDER BY r.sequence",
+                $"SELECT COALESCE(q.resolution_message_id, q.id), q.project_id {UnreadAnswersOfGoneAskers} ORDER BY q.resolved_at, q.sequence",
                 new { itemId, session, staleBefore }, cancellationToken: ct)));
         foreach (var (id, projectId) in open)
         {
-            await InsertDeliveryAsync(connection, transaction, id, projectId, session, DeliveryState.Pending, handedOver: true, now, ct);
-            await InsertMessageEventAsync(connection, transaction, projectId, id, MessageEventKinds.HandedOver, session, actor, now, ct);
+            if (await InsertDeliveryAsync(connection, transaction, id, projectId, session, DeliveryState.Pending, handedOver: true, now, ct))
+                await InsertMessageEventAsync(connection, transaction, projectId, id, MessageEventKinds.HandedOver, session, actor, now, ct);
         }
     }
 
-    // The replies that answered or declined an item's questions, unread by an asking session (not
-    // @session) that has ended or fell silent before @staleBefore, and not yet with @session.
+    // The answers to an item's closed questions (the reply that closed one, or the question itself when
+    // ack closed it) that no session has read: the asking session (not @session) ended, fell silent
+    // before @staleBefore or was pruned, no later holder read it, and @session does not have it yet.
+    // Once a session reads it, it passes on no further.
     private const string UnreadAnswersOfGoneAskers =
-        "FROM work_messages q JOIN work_messages r ON r.id = q.resolution_message_id " +
-        "JOIN work_message_deliveries ad ON ad.message_id = r.id AND ad.recipient = q.sender_session_id " +
-        "JOIN work_sessions asker ON asker.id = q.sender_session_id " +
-        "WHERE q.item_id = @itemId AND q.sender_session_id <> @session AND ad.read_at IS NULL " +
-        "AND (asker.ended_at IS NOT NULL OR asker.last_seen_at <= @staleBefore) " +
-        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = r.id AND own.recipient = @session)";
+        "FROM work_messages q " +
+        "JOIN work_message_deliveries ad ON ad.message_id = COALESCE(q.resolution_message_id, q.id) AND ad.recipient = q.sender_session_id " +
+        "LEFT JOIN work_sessions asker ON asker.id = q.sender_session_id " +
+        "WHERE q.item_id = @itemId AND q.state IN ('answered', 'declined') AND q.sender_session_id <> @session AND ad.read_at IS NULL " +
+        "AND (asker.id IS NULL OR asker.ended_at IS NOT NULL OR asker.last_seen_at <= @staleBefore) " +
+        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries x WHERE x.message_id = ad.message_id AND x.recipient <> 'human' AND x.read_at IS NOT NULL) " +
+        "AND NOT EXISTS (SELECT 1 FROM work_message_deliveries own WHERE own.message_id = ad.message_id AND own.recipient = @session)";
 
     /// <summary>
     /// The unread (or still open) direct messages with no item that a new session of a project and
@@ -865,12 +884,12 @@ public sealed partial class MySqlWorkStore
             $"SELECT {MessageColumns} FROM work_messages m{MessageJoins} WHERE m.project_id = @projectId " +
             "AND (@channel IS NULL OR m.channel = @channel) AND (@itemId IS NULL OR m.item_id = @itemId) " +
             "AND (@featureId IS NULL OR m.feature_id = @featureId) AND (@resource IS NULL OR m.resource_name = @resource) " +
-            "AND (@openOnly = 0 OR m.state = 'open') AND (@toHuman = 0 OR m.to_human = 1) AND (@before IS NULL OR m.sequence < @before) " +
+            "AND (@openOnly = 0 OR m.state = 'open') AND (@resolved = 0 OR m.state IN ('answered', 'declined')) AND (@toHuman = 0 OR m.to_human = 1) AND (@before IS NULL OR m.sequence < @before) " +
             "ORDER BY m.sequence DESC LIMIT @take",
             new
             {
                 projectId = query.ProjectId, channel = query.Channel, itemId = query.ItemId, featureId = query.FeatureId, resource = query.Resource,
-                openOnly = query.OpenOnly ? 1 : 0, toHuman = query.ToHuman ? 1 : 0, before = query.Before, take = limit + 1
+                openOnly = query.OpenOnly ? 1 : 0, resolved = query.Resolved ? 1 : 0, toHuman = query.ToHuman ? 1 : 0, before = query.Before, take = limit + 1
             }, cancellationToken: ct))).ToList();
         var page = rows.Take(limit).ToList();
         return new MessageListPage(page.Select(ToView).ToList(), rows.Count > limit ? page[^1].Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);

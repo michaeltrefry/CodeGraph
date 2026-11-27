@@ -51,11 +51,11 @@ public sealed class WorkViewsController(IServiceProvider services) : ControllerB
         return Json(new { items = page.Take(limit).ToList(), next_after = page.Count > limit ? page[limit - 1].Name : null });
     });
 
-    /// <summary>The project's messages, newest first: channel, item, feature, resource, open, to_human, before (page cursor) and limit as filters.</summary>
+    /// <summary>The project's messages, newest first: channel, item, feature, resource, open, resolved (answered or declined), to_human, before (page cursor) and limit as filters.</summary>
     [HttpGet("messages")]
     public Task<IActionResult> Messages(string project, CancellationToken ct) => GuardedAsync(async () =>
     {
-        var query = ReadQuery(["channel", "item", "feature", "resource", "open", "to_human", "before", "limit"]);
+        var query = ReadQuery(["channel", "item", "feature", "resource", "open", "resolved", "to_human", "before", "limit"]);
         var channel = query.GetValueOrDefault("channel");
         if (channel is not null && !Channels.Contains(channel))
             throw WorkException.Invalid($"channel must be one of: {string.Join(", ", Channels)}.");
@@ -66,6 +66,9 @@ public sealed class WorkViewsController(IServiceProvider services) : ControllerB
                 : throw WorkException.Invalid("before is not a message cursor.");
         var open = Flag(query, "open") ?? false;
         var toHuman = Flag(query, "to_human") ?? false;
+        var resolved = Flag(query, "resolved") ?? false;
+        if (open && resolved)
+            throw WorkException.Invalid("Pass open or resolved, not both.");
         var limit = Limit(query, WorkLimits.MaxPageSize);
 
         var (store, projectId) = await ResolveProjectAsync(project, ct);
@@ -78,7 +81,7 @@ public sealed class WorkViewsController(IServiceProvider services) : ControllerB
         if (resource is not null && resource.Length == 0)
             throw WorkException.Invalid("resource is empty.");
 
-        var page = await store.ListMessagesAsync(new MessageListQuery(projectId, channel, itemId, featureId, resource, open, toHuman, before, limit), ct);
+        var page = await store.ListMessagesAsync(new MessageListQuery(projectId, channel, itemId, featureId, resource, open, toHuman, before, limit, resolved), ct);
         return Json(new { items = page.Items, next_before = page.NextBefore });
     });
 

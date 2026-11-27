@@ -88,9 +88,10 @@ describe('ProjectWorkComponent', () => {
       resolved_by: { name: 'michael', kind: 'user' }, resolved_at: '2026-01-02T00:04:00Z'
     };
     const declined: MessageView = { ...answered, id: 'd', state: 'declined', body: 'May I force-push?', answer: 'No, open a new branch.' };
-    const messages = vi.fn((_key: string, filters: { open?: boolean }) => Promise.resolve({ items: filters.open ? [question] : [declined, question, answered] }));
+    const later: MessageView = { ...declined, resolved_at: '2026-01-02T00:05:00Z' };
+    const messages = vi.fn((_key: string, filters: { open?: boolean }) => Promise.resolve({ items: filters.open ? [question] : [answered, later] }));
     const { root, api } = await render({}, { messages });
-    expect(api.messages).toHaveBeenCalledWith('W', { toHuman: true, limit: 50 });
+    expect(api.messages).toHaveBeenCalledWith('W', { resolved: true, toHuman: true, limit: 50 });
     const history = root.querySelector('[aria-labelledby="prj-h-answered"]')!;
     expect(history.querySelector('h2')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Answered 2');
     expect(history.textContent).toContain('May I rebase?');
@@ -98,6 +99,8 @@ describe('ProjectWorkComponent', () => {
     expect(history.textContent).toContain('No, open a new branch.');
     expect(history.textContent).not.toContain('Which key should I use?');
     expect(history.textContent).not.toContain('blocks W-3');
+    // The most recently closed comes first.
+    expect(history.querySelector('.wrk-answer')?.textContent).toBe('No, open a new branch.');
   });
 
   it('renders the features table with flags, status, progress, remaining and the count', async () => {

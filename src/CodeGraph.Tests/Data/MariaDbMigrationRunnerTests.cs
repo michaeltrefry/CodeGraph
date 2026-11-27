@@ -167,7 +167,9 @@ public class MariaDbMigrationRunnerTests
             // CG-147: delete the retired Shortcut, shim and KanbanBoard providers' grants, tools, credentials, config and
             // rows, and a WorkImport schedule (all keyed by fixed provider keys or job type, so a replay deletes nothing more).
             ["112_retire_shortcut_and_work_imports.sql"] = 6,
-            ["118_rules_without_approval.sql"] = 1
+            ["118_rules_without_approval.sql"] = 1,
+            // CG-180: link already-answered questions to their closing reply, only where no link exists yet.
+            ["120_question_answers.sql"] = 1
         };
         var mutationPattern = new Regex(
             @"(?:^|\n)\s*(?:UPDATE\b|DELETE\b|TRUNCATE\s+TABLE\b)",

@@ -89,6 +89,7 @@ public sealed record AckSpec(Guid ProjectId, string Recipient, IReadOnlyList<Gui
 /// <param name="OpenOnly">Only questions and requests that are still open.</param>
 /// <param name="ToHuman">Only messages addressed to the humans.</param>
 /// <param name="Before">Only messages older than this message sequence (a page cursor), or null.</param>
+/// <param name="Resolved">Only questions and requests that are answered or declined.</param>
 public sealed record MessageListQuery(
     Guid ProjectId,
     string? Channel,
@@ -98,7 +99,8 @@ public sealed record MessageListQuery(
     bool OpenOnly,
     bool ToHuman,
     long? Before,
-    int Limit);
+    int Limit,
+    bool Resolved = false);
 
 /// <param name="NextBefore">The cursor of the next (older) page, or null on the last page.</param>
 public sealed record MessageListPage(IReadOnlyList<MessageView> Items, string? NextBefore);

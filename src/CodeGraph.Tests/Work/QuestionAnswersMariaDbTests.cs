@@ -1,5 +1,8 @@
 using System.Text.Json;
+using CodeGraph.Data.MariaDb;
 using CodeGraph.Models.Work;
+using Dapper;
+using MySqlConnector;
 using CodeGraph.Services.Work;
 using Shouldly;
 
@@ -122,6 +125,81 @@ public sealed class QuestionAnswersMariaDbTests(WorkDatabase db) : IClassFixture
         handed.GetProperty("in_reply_to").GetString().ShouldBe(question);
         handed.GetProperty("handed_over").GetBoolean().ShouldBeTrue();
     }
+
+    [Fact]
+    public async Task An_answer_to_an_ended_asker_goes_to_the_live_holder_and_passes_on_no_further_once_read()
+    {
+        var project = await db.NewProjectAsync("QL");
+        var item = (await db.NewItemAsync(project, "Choose the size")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Asker);
+        var question = (await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, kind = "question", to_human = true, body = "Which size?" }, Asker))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        await db.CallAsAsync(WorkTools.EndSession, new { session_id = asker }, Asker);
+        var holder = await StartAsync(project, Holder);
+        await ClaimAsync(item, holder, Holder);
+
+        // A reply with to_human as its only target still reaches the item's live holder.
+        var reply = await db.CallAsAsync(WorkTools.Post, new { project, to_human = true, in_reply_to = question, resolves = "answered", body = "Large." }, Owner);
+        var replyId = reply.GetProperty("message").GetProperty("id").GetString()!;
+        var got = (await db.CallAsAsync(WorkTools.Inbox, new { session_id = holder }, Holder)).GetProperty("items").EnumerateArray().ShouldHaveSingleItem();
+        got.GetProperty("body").GetString().ShouldBe("Large.");
+        await db.CallAsAsync(WorkTools.Ack, new { session_id = holder, messages = new[] { replyId } }, Holder);
+        await db.CallAsAsync(WorkTools.UpdateWork, new { id = item, expected_version = await VersionAsync(item), session_id = holder, release_claim = new { } }, Holder);
+
+        // Read once, it is not handed to the next claimer.
+        var next = await StartAsync(project, new WorkActor("claude-next", WorkActor.AgentKind));
+        await ClaimAsync(item, next, new WorkActor("claude-next", WorkActor.AgentKind));
+        (await db.CallAsAsync(WorkTools.Inbox, new { session_id = next }, new WorkActor("claude-next", WorkActor.AgentKind))).GetProperty("items").GetArrayLength().ShouldBe(0);
+    }
+
+    [Fact]
+    public async Task A_question_closed_by_ack_after_its_asker_ended_passes_to_the_next_claimer()
+    {
+        var project = await db.NewProjectAsync("QE");
+        var item = (await db.NewItemAsync(project, "Ship it")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Asker);
+        var question = (await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, kind = "question", to_human = true, body = "Ship tonight?" }, Asker))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        await db.CallAsAsync(WorkTools.EndSession, new { session_id = asker }, Asker);
+        await db.CallAsAsync(WorkTools.Ack, new { project, messages = new[] { question }, resolution = "declined" }, Owner);
+
+        var next = await StartAsync(project, Holder);
+        await ClaimAsync(item, next, Holder);
+        var handed = (await db.CallAsAsync(WorkTools.Inbox, new { session_id = next }, Holder)).GetProperty("items").EnumerateArray().ShouldHaveSingleItem();
+        handed.GetProperty("id").GetString().ShouldBe(question);
+        handed.GetProperty("state").GetString().ShouldBe("declined");
+    }
+
+    [Fact]
+    public async Task The_migration_links_questions_answered_before_it_and_the_resolved_filter_lists_them()
+    {
+        var project = await db.NewProjectAsync("QM");
+        var item = (await db.NewItemAsync(project, "Old answer")).GetProperty("key").GetString()!;
+        var asker = await StartAsync(project, Asker);
+        var question = (await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, kind = "question", to_human = true, body = "Old question?" }, Asker))
+            .GetProperty("message").GetProperty("id").GetString()!;
+        await db.CallAsAsync(WorkTools.Post, new { session_id = asker, item, kind = "question", to_human = true, body = "Still open?" }, Asker);
+        var replyId = (await db.CallAsAsync(WorkTools.Post, new { project, item, in_reply_to = question, resolves = "answered", body = "Old answer." }, Owner))
+            .GetProperty("message").GetProperty("id").GetString()!;
+
+        // The state of a question answered before migration 120.
+        await using var connection = new MySqlConnection(db.ConnectionString);
+        await connection.ExecuteAsync("UPDATE work_messages SET resolution_message_id = NULL WHERE id = @question", new { question });
+        var migration = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../sql/migrations/120_question_answers.sql"));
+        for (var run = 0; run < 2; run++)
+            foreach (var statement in MariaDbMigrationRunner.SplitStatements(await File.ReadAllTextAsync(migration)))
+                await connection.ExecuteAsync(statement);
+        (await connection.QuerySingleAsync<Guid?>("SELECT resolution_message_id FROM work_messages WHERE id = @question", new { question })).ShouldBe(Guid.Parse(replyId));
+
+        var projectId = Guid.Parse((await db.CallAsync(WorkTools.GetWork, new { id = project })).GetProperty("id").GetString()!);
+        var resolved = await db.Store.ListMessagesAsync(new CodeGraph.Data.MessageListQuery(projectId, null, null, null, null, OpenOnly: false, ToHuman: true, null, 50, Resolved: true));
+        resolved.Items.ShouldHaveSingleItem().Answer.ShouldBe("Old answer.");
+    }
+
+    private async Task ClaimAsync(string item, string session, WorkActor actor) =>
+        await db.CallAsAsync(WorkTools.UpdateWork, new { id = item, expected_version = await VersionAsync(item), session_id = session, claim = new { } }, actor);
+
+    private async Task<long> VersionAsync(string item) => (await db.CallAsync(WorkTools.GetWork, new { id = item })).GetProperty("version").GetInt64();
 
     private async Task<List<string>> BodiesAsync(string session, WorkActor actor) =>
         (await db.CallAsAsync(WorkTools.Inbox, new { session_id = session }, actor)).GetProperty("items").EnumerateArray()

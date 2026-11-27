@@ -35,7 +35,9 @@ public sealed partial class MySqlWorkStore
             "d.recipient <> @human AND NOT EXISTS (SELECT 1 FROM work_sessions s WHERE s.id = d.recipient AND COALESCE(s.ended_at, s.last_seen_at) >= @deadBefore) " +
             "AND NOT (m.item_id IS NULL AND m.to_session_id IS NOT NULL AND EXISTS (SELECT 1 FROM work_sessions o WHERE o.id = m.to_session_id AND COALESCE(o.ended_at, o.last_seen_at) > @inheritFrom))" +
         ")))) " +
-        "AND NOT EXISTS (SELECT 1 FROM work_items i WHERE i.id = m.item_id AND (i.status NOT IN ('complete', 'closed') OR i.updated_at >= @cutoff))";
+        "AND NOT EXISTS (SELECT 1 FROM work_items i WHERE i.id = m.item_id AND (i.status NOT IN ('complete', 'closed') OR i.updated_at >= @cutoff)) " +
+        // A reply that is a kept question's answer stays with it (CG-180).
+        "AND NOT EXISTS (SELECT 1 FROM work_messages aq WHERE aq.resolution_message_id = m.id)";
 
     public async Task<MessageRetentionResult> PruneMessagesAsync(DateTime cutoff, int batchSize, CancellationToken ct = default)
     {

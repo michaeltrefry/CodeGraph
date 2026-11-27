@@ -302,9 +302,12 @@ export interface MessageView {
   delivery?: string;
 }
 
-/** The questions and requests to the humans that are answered or declined, newest first: the history Blocked on you leaves. */
+/** The answered and declined questions and requests, most recently closed first: the history Blocked on you leaves. */
 export function answeredQuestions(messages: MessageView[], take = 10): MessageView[] {
-  return messages.filter(message => message.state === 'answered' || message.state === 'declined').slice(0, take);
+  return messages
+    .filter(message => message.state === 'answered' || message.state === 'declined')
+    .sort((a, b) => (b.resolved_at ?? '').localeCompare(a.resolved_at ?? ''))
+    .slice(0, take);
 }
 
 export interface MessageEvent {
