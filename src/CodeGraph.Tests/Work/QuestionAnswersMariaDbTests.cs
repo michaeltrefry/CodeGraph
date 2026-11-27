@@ -196,6 +196,43 @@ public sealed class QuestionAnswersMariaDbTests(WorkDatabase db) : IClassFixture
         resolved.Items.ShouldHaveSingleItem().Answer.ShouldBe("Old answer.");
     }
 
+    [Fact]
+    public async Task A_repeated_next_work_still_carries_the_items_questions()
+    {
+        var project = await db.NewProjectAsync("QW");
+        var item = (await db.NewItemAsync(project, "Next work")).GetProperty("key").GetString()!;
+        var session = await StartAsync(project, Holder);
+        (await db.CallAsAsync(WorkTools.NextWork, new { project, session_id = session }, Holder)).GetProperty("item").GetProperty("key").GetString().ShouldBe(item);
+        await db.CallAsAsync(WorkTools.Post, new { session_id = session, item, kind = "question", to_human = true, body = "Which branch?" }, Holder);
+
+        var again = (await db.CallAsAsync(WorkTools.NextWork, new { project, session_id = session }, Holder)).GetProperty("item");
+        again.GetProperty("key").GetString().ShouldBe(item);
+        again.GetProperty("questions").EnumerateArray().ShouldHaveSingleItem().GetProperty("body").GetString().ShouldBe("Which branch?");
+        again.GetProperty("open_messages").GetArrayLength().ShouldBe(1);
+    }
+
+    [Fact]
+    public async Task The_resolved_listing_puts_the_most_recently_closed_first_and_pages()
+    {
+        var project = await db.NewProjectAsync("QR");
+        var asker = await StartAsync(project, Asker);
+        var ids = new List<string>();
+        foreach (var body in new[] { "Oldest?", "Middle?", "Newest?" })
+            ids.Add((await db.CallAsAsync(WorkTools.Post, new { session_id = asker, kind = "question", to_human = true, body }, Asker))
+                .GetProperty("message").GetProperty("id").GetString()!);
+        // Answered newest first, oldest last: the oldest question was closed most recently.
+        foreach (var id in Enumerable.Reverse(ids))
+            await db.CallAsAsync(WorkTools.Post, new { project, in_reply_to = id, resolves = "answered", body = "ok" }, Owner);
+
+        var projectId = Guid.Parse((await db.CallAsync(WorkTools.GetWork, new { id = project })).GetProperty("id").GetString()!);
+        var first = await db.Store.ListMessagesAsync(new CodeGraph.Data.MessageListQuery(projectId, null, null, null, null, false, true, null, 2, Resolved: true));
+        first.Items.Select(message => message.Body).ShouldBe(["Oldest?", "Middle?"]);
+        CodeGraph.Data.ResolvedCursor.TryParse(first.NextBefore!, out var resolvedAt, out var sequence).ShouldBeTrue();
+        var second = await db.Store.ListMessagesAsync(new CodeGraph.Data.MessageListQuery(projectId, null, null, null, null, false, true, sequence, 2, Resolved: true, BeforeResolvedAt: resolvedAt));
+        second.Items.Select(message => message.Body).ShouldBe(["Newest?"]);
+        second.NextBefore.ShouldBeNull();
+    }
+
     private async Task ClaimAsync(string item, string session, WorkActor actor) =>
         await db.CallAsAsync(WorkTools.UpdateWork, new { id = item, expected_version = await VersionAsync(item), session_id = session, claim = new { } }, actor);
 

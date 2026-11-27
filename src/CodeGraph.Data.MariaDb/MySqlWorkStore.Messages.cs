@@ -804,6 +804,14 @@ public sealed partial class MySqlWorkStore
         return lines.Count == 0 ? null : lines;
     }
 
+    /// <summary>The item's brief with its thread: open questions and requests, and its questions with their answers (next_work, every path).</summary>
+    private static async Task<ItemView?> WithThreadAsync(MySqlConnection connection, ItemView? view, CancellationToken ct) =>
+        view is null ? null : view with
+        {
+            OpenMessages = await ReadOpenMessagesAsync(connection, null, view.Id, ct),
+            Questions = await ReadItemQuestionsAsync(connection, null, view.Id, ct)
+        };
+
     /// <summary>The newest questions and requests of an item's thread, open and closed, oldest first, each with its answer; null when there are none.</summary>
     private static async Task<IReadOnlyList<MessageView>?> ReadItemQuestionsAsync(MySqlConnection connection, MySqlTransaction? transaction, Guid itemId, CancellationToken ct)
     {
@@ -884,15 +892,23 @@ public sealed partial class MySqlWorkStore
             $"SELECT {MessageColumns} FROM work_messages m{MessageJoins} WHERE m.project_id = @projectId " +
             "AND (@channel IS NULL OR m.channel = @channel) AND (@itemId IS NULL OR m.item_id = @itemId) " +
             "AND (@featureId IS NULL OR m.feature_id = @featureId) AND (@resource IS NULL OR m.resource_name = @resource) " +
-            "AND (@openOnly = 0 OR m.state = 'open') AND (@resolved = 0 OR m.state IN ('answered', 'declined')) AND (@toHuman = 0 OR m.to_human = 1) AND (@before IS NULL OR m.sequence < @before) " +
-            "ORDER BY m.sequence DESC LIMIT @take",
+            "AND (@openOnly = 0 OR m.state = 'open') AND (@toHuman = 0 OR m.to_human = 1) " +
+            (query.Resolved
+                // Most recently closed first, so answering an old question puts it at the head.
+                ? "AND m.state IN ('answered', 'declined') " +
+                  "AND (@beforeResolvedAt IS NULL OR m.resolved_at < @beforeResolvedAt OR (m.resolved_at = @beforeResolvedAt AND m.sequence < @before)) " +
+                  "ORDER BY m.resolved_at DESC, m.sequence DESC LIMIT @take"
+                : "AND (@before IS NULL OR m.sequence < @before) ORDER BY m.sequence DESC LIMIT @take"),
             new
             {
                 projectId = query.ProjectId, channel = query.Channel, itemId = query.ItemId, featureId = query.FeatureId, resource = query.Resource,
-                openOnly = query.OpenOnly ? 1 : 0, resolved = query.Resolved ? 1 : 0, toHuman = query.ToHuman ? 1 : 0, before = query.Before, take = limit + 1
+                openOnly = query.OpenOnly ? 1 : 0, beforeResolvedAt = query.BeforeResolvedAt, toHuman = query.ToHuman ? 1 : 0, before = query.Before, take = limit + 1
             }, cancellationToken: ct))).ToList();
         var page = rows.Take(limit).ToList();
-        return new MessageListPage(page.Select(ToView).ToList(), rows.Count > limit ? page[^1].Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture) : null);
+        var next = rows.Count <= limit ? null
+            : query.Resolved ? ResolvedCursor.Format(page[^1].ResolvedAt!.Value, page[^1].Sequence)
+            : page[^1].Sequence.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return new MessageListPage(page.Select(ToView).ToList(), next);
     }
 
     public async Task<long> GetMessageEventHeadAsync(CancellationToken ct = default)

@@ -954,7 +954,7 @@ public sealed partial class MySqlWorkStore
                 var row = (await ReadItemRowAsync(connection, null, allocated, ct))!;
                 var stillMine = row.HasLiveClaim(now) && row.ClaimHolder == actor.Name && string.Equals(row.ClaimMarker, spec.Marker, StringComparison.Ordinal);
                 if (stillMine || WorkStatuses.IsFinished(WorkStatuses.Parse(row.Status)))
-                    return new NextWorkResult(await ToViewAsync(connection, null, row, ct), Reused: true);
+                    return new NextWorkResult(await WithThreadAsync(connection, await ToViewAsync(connection, null, row, ct), ct), Reused: true);
 
                 throw await ClaimLostAsync(connection, null, row, now, ct);
             }
@@ -974,7 +974,7 @@ public sealed partial class MySqlWorkStore
                         await keyTransaction.CommitAsync(ct);
                     }
 
-                    return new NextWorkResult(await LoadItemViewAsync(connection, null, claimed, ct), Reused: true);
+                    return new NextWorkResult(await WithThreadAsync(connection, await LoadItemViewAsync(connection, null, claimed, ct), ct), Reused: true);
                 }
             }
 
@@ -1090,11 +1090,7 @@ public sealed partial class MySqlWorkStore
                 await CommitAsync(connection, transaction,
                     [new PendingChange(after.ProjectId, after.ProjectKey, WorkEntityKind.Item, after.Id, after.Key, recover ? WorkChangeKinds.Recovered : WorkChangeKinds.Claimed, changes)],
                     actor, now, ct);
-                return new NextWorkResult(after with
-                {
-                    OpenMessages = await ReadOpenMessagesAsync(connection, null, itemId, ct),
-                    Questions = await ReadItemQuestionsAsync(connection, null, itemId, ct)
-                }, Reused: false, Recovery: recovery);
+                return new NextWorkResult(await WithThreadAsync(connection, after, ct), Reused: false, Recovery: recovery);
             }
             catch (MySqlException exception) when (exception.Number is (MySqlDeadlock or MySqlRecordChanged) && attempt < DeadlockAttempts)
             {
