@@ -41,6 +41,7 @@ import { MESSAGE_KINDS, MessageKind, MessageView } from './work.models';
               }
               <wrk-actor [actor]="message.resolved_by" /> {{ message.resolved_at | ago }}
             </div>
+            @if (message.answer) { <blockquote class="wrk-pre wrk-answer" [attr.aria-label]="message.state === 'declined' ? 'Reason for declining' : 'Answer'">{{ message.answer }}</blockquote> }
           }
           <div class="wrk-row">
             @if (message.state === 'open') {
@@ -66,7 +67,7 @@ import { MESSAGE_KINDS, MessageKind, MessageView } from './work.models';
       }
     </div>
   `,
-  styles: [`.wrk-list-gap { display: flex; flex-direction: column; gap: 8px; }`]
+  styles: [`.wrk-list-gap { display: flex; flex-direction: column; gap: 8px; } .wrk-answer { margin: 4px 0 0; padding-left: 10px; border-left: 3px solid var(--wrk-border, #ccc); }`]
 })
 export class MessageListComponent extends WorkPageBase {
   readonly messages = input.required<MessageView[]>();

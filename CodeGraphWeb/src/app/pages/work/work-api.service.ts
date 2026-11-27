@@ -133,7 +133,7 @@ export class WorkApiService {
     return (await this.request<{ items: WorkChange[] }>('GET', `/projects/${encodeURIComponent(project)}/items/${encodeURIComponent(item)}/changes`, undefined, { limit })).items;
   }
 
-  messages(project: string, filters: { channel?: string; item?: string; feature?: string; resource?: string; open?: boolean; toHuman?: boolean; before?: string; limit?: number } = {}):
+  messages(project: string, filters: { channel?: string; item?: string; feature?: string; resource?: string; open?: boolean; resolved?: boolean; toHuman?: boolean; before?: string; limit?: number } = {}):
     Promise<{ items: MessageView[]; next_before?: string }> {
     return this.request('GET', `/projects/${encodeURIComponent(project)}/messages`, undefined, {
       channel: filters.channel,
@@ -141,6 +141,7 @@ export class WorkApiService {
       feature: filters.feature,
       resource: filters.resource,
       open: filters.open,
+      resolved: filters.resolved,
       to_human: filters.toHuman,
       before: filters.before,
       limit: filters.limit

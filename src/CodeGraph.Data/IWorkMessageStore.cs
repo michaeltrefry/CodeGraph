@@ -89,6 +89,8 @@ public sealed record AckSpec(Guid ProjectId, string Recipient, IReadOnlyList<Gui
 /// <param name="OpenOnly">Only questions and requests that are still open.</param>
 /// <param name="ToHuman">Only messages addressed to the humans.</param>
 /// <param name="Before">Only messages older than this message sequence (a page cursor), or null.</param>
+/// <param name="Resolved">Only questions and requests that are answered or declined, most recently closed first; the page cursor is then <see cref="ResolvedCursor"/>.</param>
+/// <param name="BeforeResolvedAt">With <paramref name="Resolved"/>: only messages closed before this instant, or at it with a lower sequence than <paramref name="Before"/>.</param>
 public sealed record MessageListQuery(
     Guid ProjectId,
     string? Channel,
@@ -98,7 +100,30 @@ public sealed record MessageListQuery(
     bool OpenOnly,
     bool ToHuman,
     long? Before,
-    int Limit);
+    int Limit,
+    bool Resolved = false,
+    DateTime? BeforeResolvedAt = null);
+
+/// <summary>The page cursor of a resolved listing: the last message's resolution instant (ticks) and sequence, as "ticks.sequence".</summary>
+public static class ResolvedCursor
+{
+    public static string Format(DateTime resolvedAt, long sequence) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{resolvedAt.Ticks}.{sequence}");
+
+    public static bool TryParse(string value, out DateTime resolvedAt, out long sequence)
+    {
+        resolvedAt = default;
+        sequence = 0;
+        var parts = value.Split('.');
+        if (parts.Length != 2
+            || !long.TryParse(parts[0], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var ticks)
+            || !long.TryParse(parts[1], System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out sequence)
+            || ticks > DateTime.MaxValue.Ticks)
+            return false;
+        resolvedAt = new DateTime(ticks, DateTimeKind.Utc);
+        return true;
+    }
+}
 
 /// <param name="NextBefore">The cursor of the next (older) page, or null on the last page.</param>
 public sealed record MessageListPage(IReadOnlyList<MessageView> Items, string? NextBefore);

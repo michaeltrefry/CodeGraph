@@ -76,6 +76,8 @@ public static class WorkMessageLimits
     public const int SummaryLength = 160;
     public const int MaxBriefingInboxLines = 10;
     public const int MaxOpenMessages = 20;
+    /// <summary>The questions and requests, open and closed, an item's brief carries: the newest this many.</summary>
+    public const int MaxItemQuestions = 20;
     /// <summary>A direct message to a session with no item is passed to the next session of its project and repository for this long after the session ends.</summary>
     public static readonly TimeSpan DirectMessageRetention = TimeSpan.FromDays(7);
 }
@@ -185,7 +187,10 @@ public sealed record MessageView(
     DateTime? ResolvedAt = null,
     DeliveryState? Delivery = null,
     bool? HandedOver = null,
-    bool? ResolutionRelayedFromChat = null);
+    bool? ResolutionRelayedFromChat = null,
+    // The reply that answered or declined this question or request, and its text (CG-180); none when it was closed by ack.
+    Guid? AnswerId = null,
+    string? Answer = null);
 
 /// <summary>One line of a list (E4): a message to choose from, not to read.</summary>
 public sealed record MessageLine(

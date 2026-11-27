@@ -9,7 +9,7 @@ import { MessageListComponent } from '../work/work-messages-ui';
 import { ResourcesComponent } from '../work/work-resources-ui';
 import { SessionListComponent } from '../work/work-sessions-ui';
 import { AgoPipe } from '../work/work-shared';
-import { FeatureView, ItemView, MessageView, ProjectView, ResourceView, SessionView } from '../work/work.models';
+import { FeatureView, ItemView, MessageView, ProjectView, ResourceView, SessionView, answeredQuestions } from '../work/work.models';
 import {
   DEFAULT_FEATURE_FILTER, FEATURE_SORTS, FeatureFilter, FeatureSort, FeatureStatusFilter, clearFilters, featureTable, filterFromParams,
   filterToParams, fullDate, hasFilters, requirementCountLabel, shownText, sortByColumn
@@ -49,6 +49,11 @@ const COLUMNS: Column[] = [
           <section class="wrk-card" [class.wrk-attention]="blockedOnYou().length > 0" aria-labelledby="prj-h-you">
             <h2 id="prj-h-you">Blocked on you <span class="wrk-count">{{ blockedOnYou().length }}</span></h2>
             <wrk-message-list [messages]="blockedOnYou()" [project]="p.key" [acknowledgeable]="true" empty="Nothing is waiting on you." (changed)="reload()" />
+          </section>
+
+          <section class="wrk-card" aria-labelledby="prj-h-answered">
+            <h2 id="prj-h-answered">Answered <span class="wrk-count">{{ answered().length }}</span></h2>
+            <wrk-message-list [messages]="answered()" [project]="p.key" empty="No answered questions yet." (changed)="reload()" />
           </section>
 
           <!-- Above Features, which can run long; the activity shows only the latest few. -->
@@ -209,6 +214,8 @@ export class ProjectWorkComponent extends WorkPageBase implements OnDestroy {
   readonly sessions = signal<SessionView[]>([]);
   readonly resources = signal<ResourceView[]>([]);
   readonly blockedOnYou = signal<MessageView[]>([]);
+  /** The latest questions to the humans that were answered or declined, with the answer. */
+  readonly answered = signal<MessageView[]>([]);
   readonly claimed = signal<ItemView[]>([]);
   readonly features = signal<FeatureView[]>([]);
   readonly featuresLoaded = signal(false);
@@ -315,18 +322,20 @@ export class ProjectWorkComponent extends WorkPageBase implements OnDestroy {
 
   private async loadNow(key: string, generation: number): Promise<void> {
     try {
-      const [sessions, resources, messages, claimed] = await Promise.all([
+      const [sessions, resources, messages, claimed, , toHumans] = await Promise.all([
         this.api.sessions(key),
         this.api.resources(key),
         this.api.messages(key, { open: true, toHuman: true, limit: 50 }),
         this.api.items(key, { claimed: true, status: ['ready', 'in_progress', 'in_review', 'backlog'] }),
-        this.loadRecent(key, 40)
+        this.loadRecent(key, 40),
+        this.api.messages(key, { resolved: true, toHuman: true, limit: 50 })
       ]);
       if (generation !== this.generation) return;
       this.error.set(null);
       this.sessions.set(sessions);
       this.resources.set(resources);
       this.blockedOnYou.set(messages.items);
+      this.answered.set(answeredQuestions(toHumans.items));
       this.claimed.set(claimed);
     } catch (error) {
       if (generation === this.generation) await this.run(() => Promise.reject(error));

@@ -68,10 +68,10 @@ describe('ProjectWorkComponent', () => {
   it('shows Blocked on you, Holds and waiters, Recent activity and Features, with Live sessions as the sidebar', async () => {
     const { root, api, streamMessages } = await render();
     const headings = [...root.querySelectorAll('h2')].map(h2 => h2.textContent?.replace(/\s+/g, ' ').trim());
-    expect(headings).toEqual(['Blocked on you 1', 'Holds and waiters', 'Recent activity', 'Features', 'Live sessions 1']);
+    expect(headings).toEqual(['Blocked on you 1', 'Answered 0', 'Holds and waiters', 'Recent activity', 'Features', 'Live sessions 1']);
     // Live sessions is the sidebar; Holds and Recent activity sit between Blocked on you and Features, which can run long.
     expect(root.querySelector('.prj-work-side h2')?.textContent?.trim()).toBe('Live sessions 1');
-    expect([...root.querySelectorAll('.prj-work-main > section h2')].map(h => h.id)).toEqual(['prj-h-you', 'prj-h-features']);
+    expect([...root.querySelectorAll('.prj-work-main > section h2')].map(h => h.id)).toEqual(['prj-h-you', 'prj-h-answered', 'prj-h-features']);
     expect(api.features).toHaveBeenCalledWith('W');
     expect(api.messages).toHaveBeenCalledWith('W', { open: true, toHuman: true, limit: 50 });
     expect(streamMessages).toHaveBeenCalledWith('W', expect.any(Function), undefined, expect.any(Function));
@@ -80,6 +80,27 @@ describe('ProjectWorkComponent', () => {
     expect(root.textContent).toContain('gpu-0');
     // Recent activity is limited to the latest 3 entries.
     expect(root.querySelectorAll('[aria-labelledby="prj-h-activity"] .wrk-list > li')).toHaveLength(3);
+  });
+
+  it('keeps answered and declined questions to the humans as history, with the answer', async () => {
+    const answered: MessageView = {
+      ...question, id: 'a', state: 'answered', blocking: true, body: 'May I rebase?', answer: 'Yes, rebase onto main.',
+      resolved_by: { name: 'michael', kind: 'user' }, resolved_at: '2026-01-02T00:04:00Z'
+    };
+    const declined: MessageView = { ...answered, id: 'd', state: 'declined', body: 'May I force-push?', answer: 'No, open a new branch.' };
+    const later: MessageView = { ...declined, resolved_at: '2026-01-02T00:05:00Z' };
+    const messages = vi.fn((_key: string, filters: { open?: boolean }) => Promise.resolve({ items: filters.open ? [question] : [answered, later] }));
+    const { root, api } = await render({}, { messages });
+    expect(api.messages).toHaveBeenCalledWith('W', { resolved: true, toHuman: true, limit: 50 });
+    const history = root.querySelector('[aria-labelledby="prj-h-answered"]')!;
+    expect(history.querySelector('h2')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Answered 2');
+    expect(history.textContent).toContain('May I rebase?');
+    expect(history.textContent).toContain('Yes, rebase onto main.');
+    expect(history.textContent).toContain('No, open a new branch.');
+    expect(history.textContent).not.toContain('Which key should I use?');
+    expect(history.textContent).not.toContain('blocks W-3');
+    // The most recently closed comes first.
+    expect(history.querySelector('.wrk-answer')?.textContent).toBe('No, open a new branch.');
   });
 
   it('renders the features table with flags, status, progress, remaining and the count', async () => {

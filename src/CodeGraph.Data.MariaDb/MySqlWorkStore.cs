@@ -775,7 +775,11 @@ public sealed partial class MySqlWorkStore(
         var view = await LoadItemViewAsync(connection, transaction, itemId, ct, fullHandoffs);
         // The brief carries the thread's open questions and requests (§5.9), whoever reads it.
         if (view is not null)
-            view = view with { OpenMessages = await ReadOpenMessagesAsync(connection, transaction, itemId, ct) };
+            view = view with
+            {
+                OpenMessages = await ReadOpenMessagesAsync(connection, transaction, itemId, ct),
+                Questions = await ReadItemQuestionsAsync(connection, transaction, itemId, ct)
+            };
         if(view is not null)DreamPolicy.RequireCurrentProject(view.ProjectId);
         await transaction.CommitAsync(ct);
         return view;
